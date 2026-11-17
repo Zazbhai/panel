@@ -2,11 +2,32 @@ const rotationForm = document.getElementById("rotationForm");
 const databaseUrlsInput = document.getElementById("databaseUrls");
 const saveRotationButton = document.getElementById("saveRotationButton");
 const rotationStatus = document.getElementById("rotationStatus");
+const checkNumberStatsButton = document.getElementById("checkNumberStatsButton");
+const numberStatsStatus = document.getElementById("numberStatsStatus");
+const totalNumbers = document.getElementById("totalNumbers");
+const activeNumbers = document.getElementById("activeNumbers");
+const offlineNumbers = document.getElementById("offlineNumbers");
 let rotationReady = false;
 let rotationSaving = false;
 let rotationLoading = false;
+let numberStatsLoading = false;
 let rotationDirty = false;
 let lastSavedDatabaseUrls = "";
+
+function updateRotationControls() {
+  const busy = rotationLoading || rotationSaving || numberStatsLoading;
+  databaseUrlsInput.disabled = rotationSaving || numberStatsLoading;
+  saveRotationButton.disabled = !rotationReady || busy;
+  checkNumberStatsButton.disabled = !rotationReady || busy || rotationDirty;
+}
+
+function clearNumberStats() {
+  totalNumbers.textContent = "—";
+  activeNumbers.textContent = "—";
+  offlineNumbers.textContent = "—";
+  numberStatsStatus.textContent = "";
+  numberStatsStatus.classList.remove("error");
+}
 
 function setRotationStatus(message, isError = false) {
   rotationStatus.textContent = message;
@@ -31,7 +52,20 @@ async function readRotationResponse(response) {
     const error = result && result.error
       ? result.error
       : `Database rotation request failed (HTTP ${response.status}).`;
-    throw new Error(removalDetails.length ? `${error} Removed: ${removalDetails.join("; ")}` : error);
+    const failedDatabases = Array.isArray(result && result.failedDatabases)
+      ? result.failedDatabases
+      : [];
+    const failureDetails = failedDatabases.slice(0, 3).map((item) => {
+      const url = typeof item.url === "string" ? item.url : "Database URL";
+      const displayUrl = url.length > 80 ? `${url.slice(0, 77)}...` : url;
+      return `${displayUrl}: ${item.reason}`;
+    });
+    if (failedDatabases.length > 3) failureDetails.push(`and ${failedDatabases.length - 3} more`);
+    const details = [
+      removalDetails.length ? `Removed: ${removalDetails.join("; ")}` : "",
+      failureDetails.length ? `Database errors: ${failureDetails.join("; ")}` : ""
+    ].filter(Boolean);
+    throw new Error(details.length ? `${error} ${details.join(" ")}` : error);
   }
   return result;
 }
@@ -39,21 +73,21 @@ async function readRotationResponse(response) {
 async function loadRotationSettings(isBackgroundRefresh = false) {
   if (rotationLoading) return;
   if (isBackgroundRefresh
-    && (rotationSaving || rotationDirty || document.visibilityState !== "visible")) return;
+    && (rotationSaving || numberStatsLoading || rotationDirty || document.visibilityState !== "visible")) return;
   rotationLoading = true;
   if (!isBackgroundRefresh) {
     rotationReady = false;
-    saveRotationButton.disabled = true;
   }
+  updateRotationControls();
   try {
     const response = await window.dashboardApiFetch("/api/rotation");
     const result = await readRotationResponse(response);
     const savedUrls = result.databaseUrls.join("\n");
     const changed = savedUrls !== lastSavedDatabaseUrls;
     lastSavedDatabaseUrls = savedUrls;
+    if (changed) clearNumberStats();
     if (!rotationDirty) databaseUrlsInput.value = savedUrls;
     rotationReady = true;
-    saveRotationButton.disabled = false;
     if (!isBackgroundRefresh) {
       setRotationStatus(result.initialized
         ? "Database rotation settings loaded."
@@ -67,12 +101,14 @@ async function loadRotationSettings(isBackgroundRefresh = false) {
     setRotationStatus(`Could not load database rotation settings: ${error.message}`, true);
   } finally {
     rotationLoading = false;
+    updateRotationControls();
   }
 }
 
 databaseUrlsInput.addEventListener("input", () => {
   rotationDirty = databaseUrlsInput.value !== lastSavedDatabaseUrls;
   if (rotationDirty) setRotationStatus("Unsaved database rotation changes.", false);
+  updateRotationControls();
 });
 
 rotationForm.addEventListener("submit", async (event) => {
@@ -87,8 +123,7 @@ rotationForm.addEventListener("submit", async (event) => {
     .map((url) => url.trim())
     .filter(Boolean);
   rotationSaving = true;
-  saveRotationButton.disabled = true;
-  databaseUrlsInput.disabled = true;
+  updateRotationControls();
   setRotationStatus("Checking Firebase databases and removing duplicates.");
   try {
     const response = await window.dashboardApiFetch("/api/rotation", {
@@ -100,6 +135,7 @@ rotationForm.addEventListener("submit", async (event) => {
     databaseUrlsInput.value = result.databaseUrls.join("\n");
     lastSavedDatabaseUrls = result.databaseUrls.join("\n");
     rotationDirty = false;
+    clearNumberStats();
     const removed = Array.isArray(result.removed) ? result.removed : [];
     const removalMessage = removed.length
       ? ` Removed ${removed.length}: ${removed.slice(0, 3).map((item) => {
@@ -113,8 +149,71 @@ rotationForm.addEventListener("submit", async (event) => {
     setRotationStatus(`Could not save database rotation settings: ${error.message}`, true);
   } finally {
     rotationSaving = false;
-    databaseUrlsInput.disabled = false;
-    saveRotationButton.disabled = false;
+    updateRotationControls();
+  }
+});
+
+checkNumberStatsButton.addEventListener("click", async () => {
+  if (!rotationReady || rotationLoading || rotationSaving || rotationDirty || numberStatsLoading) return;
+  numberStatsLoading = true;
+  updateRotationControls();
+  clearNumberStats();
+  numberStatsStatus.textContent = "Scanning saved databases and client messages. This may take a while.";
+  try {
+    const response = await window.dashboardApiFetch("/api/rotation/number-stats");
+    const result = await readRotationResponse(response);
+    const counts = [result.totalNumbers, result.activeNumbers, result.offlineNumbers];
+    if (!counts.every((count) => Number.isSafeInteger(count) && count >= 0)
+      || result.activeNumbers + result.offlineNumbers !== result.totalNumbers
+      || !Number.isSafeInteger(result.databaseCount)
+      || !Number.isSafeInteger(result.scannedDatabases)
+      || !Number.isSafeInteger(result.clientCount)
+      || !Number.isSafeInteger(result.messageReadFailures)
+      || !Array.isArray(result.messageFailuresByDatabase)
+      || !Array.isArray(result.failedDatabases)) {
+      throw new Error("The server returned invalid number totals.");
+    }
+
+    totalNumbers.textContent = String(result.totalNumbers);
+    activeNumbers.textContent = String(result.activeNumbers);
+    offlineNumbers.textContent = String(result.offlineNumbers);
+    const failures = [];
+    if (result.failedDatabases.length) {
+      const databaseDetails = result.failedDatabases.slice(0, 3).map((item) => {
+        const url = typeof item.url === "string" ? item.url : "Database URL";
+        const displayUrl = url.length > 80 ? `${url.slice(0, 77)}...` : url;
+        return `${displayUrl}: ${item.reason}`;
+      });
+      if (result.failedDatabases.length > 3) {
+        databaseDetails.push(`and ${result.failedDatabases.length - 3} more`);
+      }
+      failures.push(`Database errors: ${databaseDetails.join("; ")}.`);
+    }
+    if (result.messageReadFailures) {
+      const messageDetails = result.messageFailuresByDatabase.slice(0, 3).map((item) => {
+        const url = typeof item.url === "string" ? item.url : "Database URL";
+        const displayUrl = url.length > 80 ? `${url.slice(0, 77)}...` : url;
+        return `${displayUrl} (${item.failures})`;
+      });
+      if (result.messageFailuresByDatabase.length > 3) {
+        messageDetails.push(`and ${result.messageFailuresByDatabase.length - 3} more`);
+      }
+      failures.push(`${result.messageReadFailures} client message read${result.messageReadFailures === 1 ? "" : "s"} failed${messageDetails.length ? ` across ${messageDetails.join("; ")}` : ""}.`);
+    }
+    const summary = `Scanned ${result.scannedDatabases} of ${result.databaseCount} databases and ${result.clientCount} clients.`;
+    numberStatsStatus.textContent = failures.length
+      ? `${summary} Results may be incomplete. ${failures.join(" ")}`
+      : result.totalNumbers
+        ? summary
+        : `${summary} No phone numbers could be inferred from client messages.`;
+    numberStatsStatus.classList.toggle("error", failures.length > 0);
+  } catch (error) {
+    clearNumberStats();
+    numberStatsStatus.textContent = `Could not check combined number totals: ${error.message}`;
+    numberStatsStatus.classList.add("error");
+  } finally {
+    numberStatsLoading = false;
+    updateRotationControls();
   }
 });
 

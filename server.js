@@ -694,6 +694,84 @@ async function readActiveNumbers(database) {
   return { numbers: [...numbers.values()], messageReadFailures };
 }
 
+async function readRotatingNumberStats() {
+  const databaseUrls = await withRotationLock(async () => {
+    const state = await readRotationState();
+    return [...state.databaseUrls];
+  });
+  const failedDatabases = [];
+  const clients = [];
+  let scannedDatabases = 0;
+
+  for (let index = 0; index < databaseUrls.length; index += databasePingConcurrency) {
+    const batch = databaseUrls.slice(index, index + databasePingConcurrency);
+    const results = await Promise.allSettled(batch.map(async (url) => ({
+      url,
+      records: await fetchDatabaseJson(`${url}/clients.json`)
+    })));
+    for (let offset = 0; offset < results.length; offset += 1) {
+      const result = results[offset];
+      const url = batch[offset];
+      if (result.status === "rejected") {
+        failedDatabases.push({ url, reason: result.reason.message });
+        continue;
+      }
+      const records = result.value.records;
+      if (records !== null && (typeof records !== "object" || Array.isArray(records))) {
+        failedDatabases.push({ url, reason: "Firebase returned an invalid clients list." });
+        continue;
+      }
+      scannedDatabases += 1;
+      if (!records) continue;
+      for (const [deviceId, client] of Object.entries(records)) {
+        if (!isValidDatabaseKey(deviceId) || !client
+          || typeof client !== "object" || Array.isArray(client)) continue;
+        clients.push({ url, deviceId, active: client.status === true });
+      }
+    }
+  }
+
+  const numbers = new Map();
+  let messageReadFailures = 0;
+  const messageFailuresByDatabase = new Map();
+  for (let index = 0; index < clients.length; index += databasePingConcurrency) {
+    const batch = clients.slice(index, index + databasePingConcurrency);
+    const results = await Promise.allSettled(batch.map(async (client) => ({
+      client,
+      number: getLatestCarrierNumber(await fetchDatabaseJson(
+        `${client.url}/messages/${encodeURIComponent(client.deviceId)}.json`
+      ))
+    })));
+    for (let offset = 0; offset < results.length; offset += 1) {
+      const result = results[offset];
+      if (result.status === "rejected") {
+        messageReadFailures += 1;
+        const url = batch[offset].url;
+        messageFailuresByDatabase.set(url, (messageFailuresByDatabase.get(url) || 0) + 1);
+        continue;
+      }
+      const { client, number } = result.value;
+      if (!number) continue;
+      const current = numbers.get(number);
+      numbers.set(number, { active: Boolean(client.active || (current && current.active)) });
+    }
+  }
+
+  const activeNumbers = [...numbers.values()].filter((number) => number.active).length;
+  return {
+    databaseCount: databaseUrls.length,
+    scannedDatabases,
+    failedDatabases,
+    clientCount: clients.length,
+    messageReadFailures,
+    messageFailuresByDatabase: [...messageFailuresByDatabase]
+      .map(([url, failures]) => ({ url, failures })),
+    totalNumbers: numbers.size,
+    activeNumbers,
+    offlineNumbers: numbers.size - activeNumbers
+  };
+}
+
 async function reserveNumber(service, database, candidate, serviceState, rotationState) {
   const usedNumbers = new Set(serviceState.usedNumbers);
   usedNumbers.add(candidate.number);
@@ -1384,6 +1462,28 @@ async function handleRequest(request, response) {
     } catch (error) {
       console.error("Could not read recent orders:", error.message);
       sendJson(response, 500, { error: "Could not read recent orders." });
+    }
+    return;
+  }
+  if (requestUrl.pathname === "/api/rotation/number-stats") {
+    if (request.method !== "GET") {
+      response.writeHead(405, { Allow: "GET" });
+      response.end("Method Not Allowed");
+      return;
+    }
+    try {
+      const stats = await readRotatingNumberStats();
+      if (stats.databaseCount > 0 && stats.scannedDatabases === 0) {
+        sendJson(response, 502, {
+          ...stats,
+          error: "Could not read client records from any configured database."
+        });
+        return;
+      }
+      sendJson(response, 200, stats);
+    } catch (error) {
+      console.error("Could not scan numbers across rotating databases:", error.message);
+      sendJson(response, 500, { error: "Could not scan numbers across configured databases." });
     }
     return;
   }
