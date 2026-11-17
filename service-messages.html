@@ -444,12 +444,12 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
       </nav>
     </header>
     <div class="page-heading" id="page-content" tabindex="-1">
-      <div><h1>Service messages</h1><p class="page-description">Messages matching your enabled service templates.</p></div>
+      <div><h1>Latest OTPs</h1><p class="page-description">The six newest OTPs saved from recent orders.</p></div>
       <button id="refreshButton" class="secondary" type="button" disabled><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 7a7 7 0 0 1 11.5-1.5L20 8M4 16l2.4 2.5A7 7 0 0 0 17.9 17"/></svg><span>Refresh</span></button>
     </div>
     <dl class="message-overview" aria-label="Message overview">
-      <div><dt>Matching messages</dt><dd id="totalMessageCount">—</dd></div>
-      <div><dt>Online devices</dt><dd id="activeDeviceCount">—</dd></div>
+      <div><dt>Latest OTPs</dt><dd id="totalMessageCount">—</dd></div>
+      <div><dt>OTP orders</dt><dd id="activeDeviceCount">—</dd></div>
       <div><dt>Enabled services</dt><dd id="enabledServiceCount">—</dd></div>
     </dl>
     <div class="message-controls">
@@ -464,7 +464,7 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
     <p id="status" class="status" role="status" aria-live="polite"></p>
     <section class="message-feed" aria-labelledby="messageFeedHeading">
       <div class="message-feed-heading">
-        <div class="message-feed-title"><h2 id="messageFeedHeading">Inbox</h2><span id="messageCount" class="count" role="status" aria-live="polite" aria-atomic="true"></span></div>
+        <div class="message-feed-title"><h2 id="messageFeedHeading">Latest six</h2><span id="messageCount" class="count" role="status" aria-live="polite" aria-atomic="true"></span></div>
         <label class="enabled-control auto-refresh-control" for="autoRefresh"><input id="autoRefresh" type="checkbox" role="switch" checked><span>Auto-refresh <span class="refresh-interval">· 5s</span></span></label>
       </div>
       <div id="messageList" class="message-list" aria-busy="true"></div>

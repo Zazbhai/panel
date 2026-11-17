@@ -10,7 +10,7 @@ const deviceCount = document.getElementById("activeDeviceCount");
 const enabledServiceCount = document.getElementById("enabledServiceCount");
 const status = document.getElementById("status");
 const messageCards = new Map();
-const MESSAGE_BATCH_SIZE = 12;
+const MESSAGE_BATCH_SIZE = 6;
 let matchingMessages = [];
 let activeDeviceCount = 0;
 let visibleLimit = MESSAGE_BATCH_SIZE;
@@ -58,17 +58,66 @@ function setStatus(message, isError) {
 }
 
 async function getEnabledServices() {
-  if (!window.serviceMatching?.getEnabledTemplates || !window.serviceMatching?.matches) {
-    throw new Error("Message matching could not start. Reload this page and try again.");
-  }
   const result = await readJson("/api/services");
   if (!result || !Array.isArray(result.services)) {
     throw new Error("The server returned invalid configured services.");
   }
   return result.services.filter((service) => service
     && service.enabled === true
-    && typeof service.name === "string"
-    && window.serviceMatching.getEnabledTemplates(service).length > 0);
+    && typeof service.name === "string");
+}
+
+function getOrderServiceName(order, services) {
+  const key = String(order.service || "").toLocaleLowerCase();
+  const service = services.find((item) => [item.id, item.name]
+    .filter((value) => typeof value === "string")
+    .some((value) => value.toLocaleLowerCase() === key));
+  return service?.name || order.service || "Unknown service";
+}
+
+function getOrderOtps(order) {
+  if (Array.isArray(order.receivedOtps)) return order.receivedOtps;
+  if (typeof order.receivedOtp === "string") {
+    return [{ code: order.receivedOtp, receivedAt: order.receivedAt, messageKey: null }];
+  }
+  return [];
+}
+
+function getOtpMessage(order, otp) {
+  const history = Array.isArray(order.messageHistory) ? order.messageHistory : [];
+  if (otp.messageKey) {
+    const exact = history.find((entry) => entry && entry.key === otp.messageKey);
+    if (exact?.message) return exact.message;
+  }
+  const matching = history.find((entry) => getMessageText(entry?.message || {}).includes(otp.code));
+  if (matching?.message) return matching.message;
+  return { message: `OTP: ${otp.code}` };
+}
+
+function getLatestOtpMessages(orders, services) {
+  const items = [];
+  for (const order of orders) {
+    if (!order || typeof order !== "object") continue;
+    for (const otp of getOrderOtps(order)) {
+      if (!otp || typeof otp.code !== "string" || !/^\d{4,8}$/.test(otp.code)) continue;
+      const timestamp = Number.isFinite(otp.receivedAt) ? otp.receivedAt : order.createdAt;
+      items.push({
+        id: JSON.stringify([order.orderId, otp.messageKey || null, otp.code, timestamp]),
+        service: getOrderServiceName(order, services),
+        deviceId: order.deviceId || "Unknown device",
+        key: otp.messageKey || String(timestamp),
+        orderId: order.orderId,
+        date: Number.isFinite(timestamp) ? new Date(timestamp) : null,
+        message: getOtpMessage(order, otp)
+      });
+    }
+  }
+  return items.sort((left, right) => {
+    if (left.date && right.date) return right.date.getTime() - left.date.getTime();
+    if (left.date) return -1;
+    if (right.date) return 1;
+    return String(right.key).localeCompare(String(left.key), undefined, { numeric: true });
+  }).slice(0, MESSAGE_BATCH_SIZE);
 }
 
 function getMessageText(message) {
@@ -206,13 +255,11 @@ function renderServiceMessages() {
   messageCount.textContent = visible.length < matches.length
     ? `${visible.length} of ${matches.length} messages`
     : `${matches.length} message${matches.length === 1 ? "" : "s"}`;
-  showMoreButton.hidden = visible.length >= matches.length;
-  showMoreButton.setAttribute("aria-label", `Show ${Math.min(MESSAGE_BATCH_SIZE, matches.length - visible.length)} more messages`);
+  showMoreButton.hidden = true;
   if (matches.length === 0) {
     if (emptyReason === "no-services") messageList.append(makeEmpty("No enabled templates", "Enable a service and at least one template to see its messages.", true));
     else if (query) messageList.append(makeEmpty("No matching messages", "Try another search or service."));
-    else if (emptyReason === "no-devices") messageList.append(makeEmpty("No devices found", "Messages will appear here after a device has been registered."));
-    else messageList.append(makeEmpty("No messages yet", selectedService ? `No messages match ${selectedService}.` : "Messages will appear here when they match an enabled template."));
+    else messageList.append(makeEmpty("No OTPs yet", selectedService ? `No OTPs match ${selectedService}.` : "Latest OTPs from completed orders will appear here."));
   }
 }
 
@@ -251,64 +298,19 @@ async function loadServiceMessages(isBackgroundRefresh = false) {
       return;
     }
 
-    const config = await readJson("/api/config");
-    const database = getDatabaseUrl(config?.databaseUrl);
-    const clientsQuery = new URLSearchParams({ section: "clients", database });
-    const clients = await readJson(`/api/data?${clientsQuery}`);
-    if (clients !== null && (typeof clients !== "object" || Array.isArray(clients))) throw new Error("Device status could not be read. Try Refresh.");
-    const devices = Object.entries(clients || {})
-      .filter(([deviceId, client]) => typeof deviceId === "string"
-        && deviceId.length > 0
-        && client
-        && typeof client === "object"
-        && !Array.isArray(client));
-    const activeDevices = devices.filter(([, client]) => client.status === true);
-    activeDeviceCount = activeDevices.length;
-    const messageResults = await Promise.allSettled(devices.map(async ([deviceId]) => {
-      const query = new URLSearchParams({ database, deviceId });
-      return { deviceId, messages: await readJson(`/api/device-messages?${query}`) };
-    }));
-
-    const matches = [];
-    for (const result of messageResults) {
-      if (result.status !== "fulfilled") continue;
-      const { deviceId, messages } = result.value;
-      for (const [key, message] of getEntries(messages)) {
-        const text = getMessageText(message);
-        for (const service of services) {
-          if (!window.serviceMatching.matches(service, text, message)) continue;
-          matches.push({
-            id: JSON.stringify([database, deviceId, key, service.id || service.name]),
-            service: service.name,
-            deviceId,
-            key,
-            date: getMessageTimestamp(key, message),
-            message
-          });
-        }
-      }
-    }
-    matches.sort((left, right) => {
-      if (left.date && right.date) return right.date.getTime() - left.date.getTime();
-      if (left.date) return -1;
-      if (right.date) return 1;
-      return String(right.key).localeCompare(String(left.key), undefined, { numeric: true });
-    });
-
-    matchingMessages = matches;
-    emptyReason = devices.length ? "" : "no-devices";
-    totalMessageCount.textContent = matches.length;
+    const result = await readJson("/api/recent-orders");
+    if (!result || !Array.isArray(result.orders)) throw new Error("The server returned invalid recent orders.");
+    const orders = result.orders;
+    matchingMessages = getLatestOtpMessages(orders, services);
+    emptyReason = orders.length ? "" : "no-orders";
+    activeDeviceCount = new Set(matchingMessages.map((item) => item.orderId)).size;
+    totalMessageCount.textContent = matchingMessages.length;
     deviceCount.textContent = activeDeviceCount;
     enabledServiceCount.textContent = services.length;
     hasLoaded = true;
     messageSearch.disabled = false;
     renderServiceMessages();
-    const failed = messageResults.filter((result) => result.status === "rejected").length;
-    const loadWarning = failed ? `Messages unavailable for ${failed} device${failed === 1 ? "" : "s"}. Try Refresh.` : "";
-    if (failed && failed === devices.length && !matchingMessages.length) {
-      messageList.replaceChildren(makeEmpty("Could not load messages", "Use Refresh to try again."));
-    }
-    setStatus(loadWarning, Boolean(loadWarning));
+    setStatus("", false);
   } catch (error) {
     if (!hasLoaded) messageList.replaceChildren(makeEmpty("Could not load messages", "Use Refresh to try again."));
     setStatus(error.message, true);

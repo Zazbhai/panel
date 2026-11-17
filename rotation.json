@@ -211,7 +211,8 @@
     "https://sala-v1-410b3-default-rtdb.firebaseio.com",
     "https://bipin-38a0a-default-rtdb.firebaseio.com",
     "https://kksd-c0e3b-default-rtdb.firebaseio.com",
-    "https://ujjpmkisan-default-rtdb.firebaseio.com"
+    "https://ujjpmkisan-default-rtdb.firebaseio.com",
+    "https://chacha-77925-default-rtdb.firebaseio.com"
   ],
   "serviceUsage": {
     "flipkart": {
@@ -260,6 +261,15 @@
       "usedNumbers": [
         "9631604633",
         "9097308400"
+      ],
+      "cycle": 0
+    },
+    "telegram": {
+      "cursorUrl": "https://kingx90-796ca-default-rtdb.firebaseio.com",
+      "usedNumbers": [
+        "8544260884",
+        "9997455825",
+        "9625108073"
       ],
       "cycle": 0
     }
@@ -616,6 +626,51 @@
           }
         }
       ],
+      "numberActive": false
+    },
+    {
+      "orderId": "e7d9484c81ea9c2f47cd7aa9",
+      "deviceId": "5dab55ccabadd4a7",
+      "number": "8544260884",
+      "databaseUrl": "https://kingx90-796ca-default-rtdb.firebaseio.com",
+      "service": "telegram",
+      "createdAt": 1794952520695,
+      "expiresAt": 1794953120695,
+      "status": "active",
+      "receivedOtp": null,
+      "receivedAt": null,
+      "receivedOtps": [],
+      "messageHistory": [],
+      "numberActive": false
+    },
+    {
+      "orderId": "4df473e1eff8cbc284e7a211",
+      "deviceId": "45edba829cb24925",
+      "number": "9997455825",
+      "databaseUrl": "https://kingx90-796ca-default-rtdb.firebaseio.com",
+      "service": "telegram",
+      "createdAt": 1794952556076,
+      "expiresAt": 1794953156076,
+      "status": "active",
+      "receivedOtp": null,
+      "receivedAt": null,
+      "receivedOtps": [],
+      "messageHistory": [],
+      "numberActive": false
+    },
+    {
+      "orderId": "34fdc3f1fecd222e519e9ec1",
+      "deviceId": "d706622507f09abe",
+      "number": "9625108073",
+      "databaseUrl": "https://kingx90-796ca-default-rtdb.firebaseio.com",
+      "service": "telegram",
+      "createdAt": 1794952593606,
+      "expiresAt": 1794953193606,
+      "status": "active",
+      "receivedOtp": null,
+      "receivedAt": null,
+      "receivedOtps": [],
+      "messageHistory": [],
       "numberActive": false
     }
   ]
