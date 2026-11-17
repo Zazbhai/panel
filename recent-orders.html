@@ -218,11 +218,6 @@ tbody tr:hover { background: #f5f4ef; }
 .order-id { min-width: 160px; }
 .database { min-width: 190px; max-width: 240px; color: var(--muted); font-size: .75rem; }
 .table-wrap .badge { white-space: nowrap; }
-.order-details-row > td { background: var(--soft); }
-.order-detail-panel { padding: 8px 0; }
-.order-detail-panel h3:first-child { margin-top: 0; }
-.order-detail-panel .data-grid { margin: 12px 0; }
-.order-message-status { margin-top: 12px; }
 .notice { padding: 14px 16px; border: 1px solid #e4d0bb; border-radius: 6px; background: #fbf3e8; color: #75532d; font-size: .8125rem; }
 .api-key-panel { display: grid; grid-template-columns: 1fr auto; gap: 10px 14px; margin-bottom: 20px; padding: 24px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
 .api-key-panel > strong, .api-key-panel > label, .api-key-panel > p { grid-column: 1 / -1; }
@@ -314,11 +309,102 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
   .dialog-footer button { flex: 1; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; scroll-behavior: auto !important; } }
+
+.orders-page .page-heading { align-items: center; margin-bottom: 24px; }
+.orders-page .page-heading > button { flex-shrink: 0; }
+.order-filters { display: grid; gap: 18px; margin-bottom: 22px; padding-bottom: 22px; border-bottom: 1px solid var(--line); }
+.order-date-presets { display: flex; flex-wrap: wrap; gap: 5px; padding: 4px; border: 1px solid var(--line); border-radius: 10px; background: var(--soft); }
+.order-date-presets button { min-height: 34px; padding: 6px 14px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted); font-size: .75rem; font-weight: 500; }
+.order-date-presets button:hover { color: var(--ink); background: #e8e7df; }
+.order-date-presets button[aria-pressed="true"] { color: var(--ink); border-color: #d3d1c5; background: var(--surface); box-shadow: 0 1px 2px #2929230a; }
+.order-date-presets button[data-range="custom"] { display: inline-flex; align-items: center; gap: 7px; }
+.order-date-presets button .icon { width: 14px; height: 14px; }
+.custom-order-dates { display: grid; grid-template-columns: minmax(150px, 220px) minmax(150px, 220px) auto; align-items: end; gap: 14px; padding: 16px; border: 1px solid #d9c9b8; border-radius: 9px; background: #fcf7f0; }
+.custom-order-dates[hidden] { display: none; }
+.custom-order-dates button { min-height: 40px; }
+.date-error { grid-column: 1 / -1; margin: 0; color: var(--danger); font-size: .75rem; }
+.order-filter-fields { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(180px, .6fr); align-items: end; gap: 18px; }
+.order-overview { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 0 0 28px; }
+.order-overview > div { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 16px 20px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.order-overview dt { color: var(--muted); font-size: .8125rem; }
+.order-overview dd { margin: 0; color: var(--ink); font-size: 1.4rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+.order-overview > div:nth-child(2) dd { color: #9b6c2f; }
+.order-overview > div:nth-child(3) dd { color: var(--success); }
+.order-list-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 10px; }
+.order-list-heading > div { display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px; }
+.order-list-heading h2 { margin: 0; }
+.order-list-heading .count { color: var(--muted); font-size: .75rem; }
+.orders-page #ordersStatus:empty { display: none; }
+.order-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: stretch; gap: 16px; }
+.order-card { display: flex; flex-direction: column; min-width: 0; padding: 20px; border: 1px solid #cfcfc2; border-top: 3px solid #8e8e80; border-radius: 12px; background: var(--surface); box-shadow: 0 2px 4px #29292305; transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease; }
+.order-card[data-state="completed"] { border-top-color: var(--success); }
+.order-card[data-state="active"] { border-top-color: #b4823e; }
+.order-card[data-state="expired"], .order-card[data-state="cancelled"] { border-top-color: #9b665f; }
+.order-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.order-card-header h3 { min-width: 0; margin: 0; color: var(--ink); font-size: .9375rem; overflow-wrap: anywhere; }
+.order-state { flex-shrink: 0; color: var(--muted); font-size: .75rem; }
+.order-card[data-state="completed"] .order-state { color: var(--success); }
+.order-card[data-state="active"] .order-state { color: #95682a; }
+.order-reference { display: block; margin-top: 5px; color: var(--muted); font-family: Consolas, monospace; font-size: .6875rem; overflow-wrap: anywhere; }
+.order-values { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(90px, .75fr); gap: 12px; margin: 22px 0 16px; }
+.order-values > div { min-width: 0; }
+.order-values dt { color: var(--muted); font-size: .6875rem; }
+.order-values dd { margin: 5px 0 0; color: var(--ink); font-size: .875rem; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.order-values .order-code { font-family: Consolas, monospace; }
+.order-card-meta { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 16px; color: var(--muted); font-size: .6875rem; }
+.order-card-meta time { overflow-wrap: anywhere; }
+.order-lock { color: var(--muted); }
+.order-disclosure { margin-top: auto; border-top: 1px solid var(--line); padding-top: 12px; }
+.order-disclosure summary { display: flex; justify-content: space-between; align-items: center; min-height: 32px; color: var(--ink); font-size: .75rem; cursor: pointer; list-style: none; }
+.order-disclosure summary::-webkit-details-marker { display: none; }
+.order-disclosure summary::after { content: ""; width: 7px; height: 7px; border: solid var(--muted); border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); margin: -4px 3px 0 8px; }
+.order-disclosure[open] summary::after { transform: rotate(225deg); margin-top: 4px; }
+.order-detail-panel { padding-top: 18px; }
+.order-detail-panel h3 { margin: 0 0 10px; font-size: .8125rem; }
+.order-detail-panel .data-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }
+.order-detail-panel .data-field { min-width: 0; }
+.order-detail-panel dt { color: var(--muted); font-size: .6875rem; }
+.order-detail-panel dd { margin: 3px 0 0; color: var(--ink); font-size: .75rem; overflow-wrap: anywhere; }
+.order-detail-panel .message-list { display: grid; }
+.order-detail-panel .message { padding: 12px 0; border-bottom: 1px solid var(--line); }
+.order-detail-panel .message:last-child { border-bottom: 0; }
+.order-detail-panel .message-meta { display: flex; flex-wrap: wrap; gap: 5px 9px; margin-bottom: 6px; color: var(--muted); font-size: .6875rem; }
+.order-detail-panel .message-body { margin: 0; color: var(--ink); font-size: .75rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.order-list-footer { display: flex; justify-content: center; margin-top: 24px; }
+.order-list-footer:has(> [hidden]) { display: none; }
+#showMoreOrders { min-width: 152px; }
+.order-empty { grid-column: 1 / -1; padding: 48px 24px; border: 1px dashed #c7c5b7; border-radius: 12px; background: var(--surface); text-align: center; }
+.order-empty h3 { margin: 0 0 6px; color: var(--ink); font-size: .9375rem; }
+.order-empty p { margin: 0; font-size: .8125rem; }
+.order-scope-note { margin: 18px 0 0; color: var(--muted); font-size: .6875rem; }
+@media (hover: hover) and (prefers-reduced-motion: no-preference) { .order-card:hover { border-color: #a9a99a; box-shadow: 0 7px 18px #2929230a; transform: translateY(-2px); } }
+@media (max-width: 1100px) { .order-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 700px) {
+  .order-overview { gap: 10px; }
+  .order-overview > div { flex-direction: column; align-items: flex-start; gap: 8px; padding: 13px; }
+  .order-overview dt { font-size: .75rem; }
+  .order-overview dd { font-size: 1.25rem; }
+  .order-grid { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .custom-order-dates, .order-filter-fields { grid-template-columns: minmax(0, 1fr); }
+  .custom-order-dates button { width: 100%; }
+}
+@media (max-width: 600px) {
+  .orders-page .page-heading { flex-direction: row; align-items: flex-start; gap: 12px; }
+  .orders-page .page-description { max-width: 30ch; }
+  .orders-page #refreshOrdersButton { padding-inline: 11px; }
+  .order-date-presets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .order-date-presets button { min-height: 40px; }
+  .order-date-presets button[data-range="all"] { grid-column: 1 / -1; }
+  .order-date-presets button[data-range="custom"] { justify-content: center; }
+  .order-list-heading { align-items: flex-start; }
+  .order-list-heading .refresh-note { display: none; }
+  .order-card { padding: 18px; }
+}
   </style>
 </head>
 <body>
   <a class="skip-link" href="#page-content">Skip to content</a>
-  <main id="main-content">
+  <main id="main-content" class="orders-page">
     <header class="app-header">
       <a class="app-brand" href="/"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>Dashboard</span></a>
       <button class="nav-toggle secondary icon-button" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="page-navigation"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
@@ -334,17 +420,39 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
     </header>
     <div class="page-heading" id="page-content" tabindex="-1">
       <div><h1>Recent orders</h1><p class="page-description">Allocated numbers, received codes and reservation status.</p></div>
-      <span class="refresh-note"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 7a7 7 0 0 1 11.5-1.5L20 8M4 16l2.4 2.5A7 7 0 0 0 17.9 17"/></svg>Updates every 5s</span>
+      <button id="refreshOrdersButton" class="secondary" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 7a7 7 0 0 1 11.5-1.5L20 8M4 16l2.4 2.5A7 7 0 0 0 17.9 17"/></svg>Refresh</button>
     </div>
-    <section class="panel table-panel" aria-labelledby="ordersHeading">
-      <div class="toolbar"><strong id="ordersHeading">Number allocations</strong><button id="refreshOrdersButton" class="secondary" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 7a7 7 0 0 1 11.5-1.5L20 8M4 16l2.4 2.5A7 7 0 0 0 17.9 17"/></svg>Refresh orders</button></div>
-      <p id="ordersStatus" class="status" role="status" aria-live="polite">Loading orders…</p>
-      <div class="table-wrap" tabindex="0" role="region" aria-label="Recent orders table, scroll horizontally for all columns">
-        <table>
-          <thead><tr><th scope="col">Order ID</th><th scope="col">Service</th><th scope="col">Number</th><th scope="col">Device</th><th scope="col">Database</th><th scope="col">Created</th><th scope="col">Lock</th><th scope="col">OTP</th><th scope="col">Status</th><th scope="col">Details</th></tr></thead>
-          <tbody id="ordersTableBody"></tbody>
-        </table>
+    <section class="order-filters" aria-label="Filter orders">
+      <div id="orderDatePresets" class="order-date-presets" role="group" aria-label="Order date range">
+        <button type="button" data-range="all" aria-pressed="true">All dates</button>
+        <button type="button" data-range="today" aria-pressed="false">Today</button>
+        <button type="button" data-range="yesterday" aria-pressed="false">Yesterday</button>
+        <button type="button" data-range="week" aria-pressed="false">This week</button>
+        <button type="button" data-range="month" aria-pressed="false">This month</button>
+        <button type="button" data-range="custom" aria-pressed="false" aria-controls="customOrderDates" aria-expanded="false">Custom dates<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18"/></svg></button>
       </div>
+      <form id="customOrderDates" class="custom-order-dates" hidden>
+        <label class="field" for="orderDateFrom">From<input id="orderDateFrom" type="date" required></label>
+        <label class="field" for="orderDateTo">To<input id="orderDateTo" type="date" required></label>
+        <button type="submit">Apply dates</button>
+        <p id="orderDateError" class="date-error" role="status" aria-live="polite"></p>
+      </form>
+      <div class="order-filter-fields">
+        <label class="field" for="orderSearch">Search orders<input id="orderSearch" type="search" placeholder="Order ID, service, number or device" autocomplete="off"></label>
+        <label class="field" for="orderStatusFilter">Status<select id="orderStatusFilter"><option value="">All statuses</option><option value="active">Waiting</option><option value="completed">OTP received</option><option value="expired">Expired</option><option value="cancelled">Cancelled</option></select></label>
+      </div>
+    </section>
+    <dl class="order-overview" aria-label="Filtered order counts">
+      <div><dt>Orders</dt><dd id="totalOrderCount">—</dd></div>
+      <div><dt>Waiting</dt><dd id="waitingOrderCount">—</dd></div>
+      <div><dt>OTP received</dt><dd id="completedOrderCount">—</dd></div>
+    </dl>
+    <section aria-labelledby="ordersHeading">
+      <div class="order-list-heading"><div><h2 id="ordersHeading">Number allocations</h2><span id="orderCount" class="count" role="status" aria-live="polite" aria-atomic="true"></span></div><span class="refresh-note" id="ordersRefreshStatus" role="status" aria-live="polite">Updates every 5s</span></div>
+      <p id="ordersStatus" class="status" role="status" aria-live="polite">Loading orders…</p>
+      <div id="orderList" class="order-grid" aria-busy="true"></div>
+      <div class="order-list-footer"><button id="showMoreOrders" class="secondary" type="button" aria-controls="orderList" hidden>Show more<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button></div>
+      <p class="order-scope-note">Filters apply to loaded recent orders.</p>
     </section>
   </main>
   <script data-dashboard-ui>
@@ -506,8 +614,90 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
   };
 })();
   </script>
+  <script data-service-matching>
+(() => {
+  const matcherCache = new WeakMap();
+
+  function getEnabledTemplates(service) {
+    if (!service || typeof service !== "object") return [];
+    const templates = Array.isArray(service.templates)
+      ? service.templates
+      : typeof service.template === "string"
+        ? [{ text: service.template, enabled: true }]
+        : [];
+    return templates.filter((template) => template
+      && template.enabled !== false
+      && typeof template.text === "string"
+      && template.text.includes("{{OTP}}"));
+  }
+
+  function escapeRegExp(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  function escapeTemplateText(value) {
+    return value.split(/(\s+)/).map((part) =>
+      /^\s+$/.test(part) ? "\\s+" : escapeRegExp(part)).join("");
+  }
+
+  function makeTemplatePattern(text, codePattern) {
+    const markerPattern = /\{\{OTP\}\}|\{\{ANY\}\}|\{\{DIGITS:(\d{1,2})\}\}/g;
+    const parts = [];
+    let lastIndex = 0;
+    let marker;
+    while ((marker = markerPattern.exec(text))) {
+      parts.push(escapeTemplateText(text.slice(lastIndex, marker.index)));
+      if (marker[0] === "{{OTP}}") {
+        parts.push(codePattern);
+      } else if (marker[0] === "{{ANY}}") {
+        parts.push("\\S+?");
+      } else {
+        const digitCount = Number(marker[1]);
+        parts.push(digitCount >= 1 && digitCount <= 32
+          ? `\\d{${digitCount}}`
+          : escapeTemplateText(marker[0]));
+      }
+      lastIndex = markerPattern.lastIndex;
+    }
+    parts.push(escapeTemplateText(text.slice(lastIndex)));
+    return new RegExp(`^${parts.join("")}$`, "i");
+  }
+
+  function matches(service, text, message) {
+    if (!service || typeof service !== "object" || typeof text !== "string") return false;
+    let matcher = matcherCache.get(service);
+    if (!matcher) {
+      const senderFilter = typeof service.senderFilter === "string"
+        ? service.senderFilter.trim().toLowerCase()
+        : "";
+      const minOtpLength = Number.isInteger(service.minOtpLength)
+        ? service.minOtpLength
+        : 4;
+      const maxOtpLength = Number.isInteger(service.maxOtpLength)
+        ? service.maxOtpLength
+        : 8;
+      const codePattern = String.raw`\d(?:[\s-]?\d){${minOtpLength - 1},${maxOtpLength - 1}}`;
+      matcher = {
+        senderFilter,
+        patterns: getEnabledTemplates(service).map((template) =>
+          makeTemplatePattern(template.text, codePattern))
+      };
+      matcherCache.set(service, matcher);
+    }
+
+    if (matcher.senderFilter) {
+      const sender = message && (typeof message.sender === "string" || typeof message.sender === "number")
+        ? String(message.sender).toLowerCase()
+        : "";
+      if (!sender.includes(matcher.senderFilter)) return false;
+    }
+    return matcher.patterns.some((pattern) => pattern.test(text));
+  }
+
+  window.serviceMatching = { getEnabledTemplates, matches };
+})();
+  </script>
   <script src="/api-client.js" defer></script>
-  <script src="/service-matching.js" defer></script>
   <script src="/recent-orders.js" defer></script>
 </body>
 </html>

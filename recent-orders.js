@@ -1,7 +1,26 @@
 const refreshOrdersButton = document.getElementById("refreshOrdersButton");
 const ordersStatus = document.getElementById("ordersStatus");
-const ordersTableBody = document.getElementById("ordersTableBody");
+const orderList = document.getElementById("orderList");
+const orderSearch = document.getElementById("orderSearch");
+const statusFilter = document.getElementById("orderStatusFilter");
+const datePresets = document.getElementById("orderDatePresets");
+const customDates = document.getElementById("customOrderDates");
+const dateFrom = document.getElementById("orderDateFrom");
+const dateTo = document.getElementById("orderDateTo");
+const dateError = document.getElementById("orderDateError");
+const orderCount = document.getElementById("orderCount");
+const showMoreOrders = document.getElementById("showMoreOrders");
+const ordersRefreshStatus = document.getElementById("ordersRefreshStatus");
+const orderCards = new Map();
+const ORDER_BATCH_SIZE = 6;
+const ORDER_REFRESH_INTERVAL = 5000;
+const ORDER_REQUEST_TIMEOUT = 10000;
+let visibleLimit = ORDER_BATCH_SIZE;
+let selectedRange = "all";
+let appliedCustomRange = null;
+let cardSequence = 0;
 let ordersLoading = false;
+let requestSequence = 0;
 let displayedOrders = [];
 let serviceTemplatesPromise = null;
 const expandedOrderIds = new Set();
@@ -24,25 +43,8 @@ async function readJson(url) {
   return data;
 }
 
-function makeOrderCell(value, className) {
-  const cell = document.createElement("td");
-  if (className) cell.className = className;
-  cell.textContent = value === null || value === undefined || value === ""
-    ? "—"
-    : String(value);
-  return cell;
-}
-
-function makeOrderBadge(label, className) {
-  const cell = document.createElement("td");
-  const badge = document.createElement("span");
-  badge.className = `badge ${className}`;
-  badge.textContent = label;
-  cell.append(badge);
-  return cell;
-}
-
 function formatOrderTime(timestamp) {
+  if (timestamp === null || timestamp === undefined || timestamp === "") return "Not reported";
   const date = new Date(timestamp);
   return Number.isNaN(date.getTime())
     ? "Unknown"
@@ -85,6 +87,29 @@ function getMessageEntries(messages) {
     });
 }
 
+function getOrderOtpHistory(order) {
+  if (Array.isArray(order.receivedOtps)) {
+    return order.receivedOtps
+      .filter((entry) => entry && typeof entry.code === "string")
+      .map((entry) => entry.code);
+  }
+  return typeof order.receivedOtp === "string" && order.receivedOtp ? [order.receivedOtp] : [];
+}
+
+function getSavedOrderMessages(order) {
+  if (!Array.isArray(order.messageHistory)) return [];
+  return order.messageHistory
+    .filter((entry) => entry
+      && typeof entry.key === "string"
+      && Number.isFinite(entry.timestamp)
+      && entry.message
+      && typeof entry.message === "object"
+      && !Array.isArray(entry.message))
+    .map((entry) => [entry.key, entry.message.timestamp === undefined
+      ? { ...entry.message, timestamp: entry.timestamp }
+      : entry.message]);
+}
+
 async function getOrderServiceConfig(order) {
   if (!serviceTemplatesPromise) serviceTemplatesPromise = readJson("/api/services");
   let result;
@@ -99,7 +124,7 @@ async function getOrderServiceConfig(order) {
   }
   const service = result.services.find((item) => item
     && typeof item.name === "string"
-    && item.name.trim().toLowerCase() === order.service);
+    && item.name.trim().toLowerCase() === String(order.service).trim().toLowerCase());
   return service || null;
 }
 
@@ -135,9 +160,7 @@ function makeOrderMessageRow(order, [key, message]) {
   return row;
 }
 
-function makeOrderDetails(order, detailRow) {
-  const cell = document.createElement("td");
-  cell.colSpan = 10;
+function makeOrderDetails(order, disclosure) {
   const panel = document.createElement("div");
   panel.className = "order-detail-panel";
   const heading = document.createElement("h3");
@@ -154,7 +177,8 @@ function makeOrderDetails(order, detailRow) {
     ["Expires", formatOrderTime(order.expiresAt)],
     ["Status", order.status],
     ["OTP locked", order.locked ? "Yes" : "No"],
-    ["Received OTP", order.receivedOtp]
+    ["Latest OTP", order.receivedOtp],
+    ["OTP history", getOrderOtpHistory(order).join(", ")]
   ];
   for (const [label, value] of fields) {
     const field = document.createElement("div");
@@ -173,8 +197,7 @@ function makeOrderDetails(order, detailRow) {
   const messageList = document.createElement("div");
   messageList.className = "message-list";
   panel.append(heading, details, messagesHeading, messageStatus, messageList);
-  cell.append(panel);
-  detailRow.append(cell);
+  disclosure.append(panel);
   orderMessagePanels.set(order.orderId, { messageStatus, messageList });
   renderOrderMessages(order);
 }
@@ -218,13 +241,11 @@ async function loadOrderMessages(order) {
   renderOrderMessages(order);
   try {
     const service = await getOrderServiceConfig(order);
-    const query = new URLSearchParams({ database: order.databaseUrl, deviceId: order.deviceId });
-    const messages = await readJson(`/api/device-messages?${query}`);
     const endTime = Math.min(
       Date.now(),
-      Number.isFinite(order.receivedAt) ? order.receivedAt : order.expiresAt
+      Number.isFinite(order.expiresAt) ? order.expiresAt : Date.now()
     );
-    state.entries = getMessageEntries(messages).filter(([key, message]) => {
+    state.entries = getSavedOrderMessages(order).filter(([key, message]) => {
       const date = getMessageTimestamp(key, message);
       if (!date) return false;
       const timestamp = date.getTime();
@@ -241,65 +262,144 @@ async function loadOrderMessages(order) {
   }
 }
 
-function makeOrderRows(order) {
-  const row = document.createElement("tr");
-  const detailsRow = document.createElement("tr");
-  detailsRow.className = "order-details-row";
-  detailsRow.hidden = !expandedOrderIds.has(order.orderId);
+function makeOrderCard(order) {
+  const card = document.createElement("article");
+  card.className = "order-card";
+  card.dataset.orderId = order.orderId;
+  const titleId = `order-title-${++cardSequence}`;
+  card.setAttribute("aria-labelledby", titleId);
+  card.innerHTML = `<div class="order-card-header"><h3 id="${titleId}"></h3><span class="order-state"></span></div><span class="order-reference"></span><dl class="order-values"><div><dt>Allocated number</dt><dd class="order-number"></dd></div><div><dt>Received OTP</dt><dd class="order-code"></dd></div></dl><div class="order-card-meta"><time></time><span class="order-lock"></span></div><details class="order-disclosure"><summary>Details &amp; messages</summary></details>`;
+  const disclosure = card.querySelector("details");
+  disclosure.addEventListener("toggle", () => {
+    if (!disclosure.open) { expandedOrderIds.delete(order.orderId); return; }
+    expandedOrderIds.add(order.orderId);
+    const current = displayedOrders.find((item) => item.orderId === order.orderId);
+    if (current) loadOrderMessages(current);
+  });
+  return card;
+}
+
+function updateOrderCard(card, order) {
   const statusLabels = {
     active: "Waiting",
     completed: "OTP received",
     cancelled: "Cancelled",
     expired: "Expired"
   };
-  row.append(
-    makeOrderCell(order.orderId, "order-id"),
-    makeOrderCell(order.service),
-    makeOrderCell(order.number, "number"),
-    makeOrderCell(order.deviceId),
-    makeOrderCell(order.databaseUrl, "database"),
-    makeOrderCell(formatOrderTime(order.createdAt)),
-    makeOrderBadge(order.locked ? "Locked" : "Unlocked", order.locked ? "locked" : "unlocked"),
-    makeOrderCell(order.receivedOtp, "otp"),
-    makeOrderBadge(statusLabels[order.status] || "Unknown", order.status || "")
-  );
-  const detailsCell = document.createElement("td");
-  const detailsButton = document.createElement("button");
-  detailsButton.type = "button";
-  detailsButton.className = "secondary";
-  detailsButton.textContent = expandedOrderIds.has(order.orderId) ? "Hide details" : "View messages";
-  detailsButton.setAttribute("aria-expanded", String(expandedOrderIds.has(order.orderId)));
-  detailsButton.addEventListener("click", () => {
-    if (expandedOrderIds.has(order.orderId)) expandedOrderIds.delete(order.orderId);
-    else expandedOrderIds.add(order.orderId);
-    renderOrders(displayedOrders);
-  });
-  detailsCell.append(detailsButton);
-  row.append(detailsCell);
-  makeOrderDetails(order, detailsRow);
-  return [row, detailsRow];
+  const signature = JSON.stringify(order);
+  if (card.orderSignature === signature) return;
+  card.orderSignature = signature;
+  card.dataset.state = Object.hasOwn(statusLabels, order.status) ? order.status : "unknown";
+  card.querySelector("h3").textContent = order.service || "Unnamed service";
+  card.querySelector(".order-state").textContent = statusLabels[order.status] || "Unknown";
+  card.querySelector(".order-reference").textContent = order.orderId;
+  card.querySelector(".order-number").textContent = order.number || "Not reported";
+  card.querySelector(".order-code").textContent = order.receivedOtp || "—";
+  card.querySelector(".order-lock").textContent = order.locked ? "OTP locked" : "Unlocked";
+  card.querySelector("time").textContent = formatOrderTime(order.createdAt);
+  const date = new Date(order.createdAt);
+  if (Number.isFinite(date.getTime())) card.querySelector("time").dateTime = date.toISOString();
+  const disclosure = card.querySelector("details");
+  disclosure.querySelector(".order-detail-panel")?.remove();
+  makeOrderDetails(order, disclosure);
+  disclosure.open = expandedOrderIds.has(order.orderId);
+}
+
+function parseCalendarDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(year, month - 1, day);
+  return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day ? date : null;
+}
+
+function getDateBounds() {
+  if (selectedRange === "all") return null;
+  if (selectedRange === "custom") return appliedCustomRange;
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+  if (selectedRange === "yesterday") { end.setTime(start.getTime()); start.setDate(start.getDate() - 1); }
+  if (selectedRange === "week") {
+    start.setDate(start.getDate() - (start.getDay() + 6) % 7);
+    end.setTime(start.getTime());
+    end.setDate(end.getDate() + 7);
+  }
+  if (selectedRange === "month") {
+    start.setDate(1);
+    end.setFullYear(start.getFullYear(), start.getMonth() + 1, 1);
+  }
+  return { start: start.getTime(), end: end.getTime() };
+}
+
+function makeOrderEmpty(title, text) {
+  const empty = document.createElement("div");
+  empty.className = "empty order-empty";
+  const heading = document.createElement("h3");
+  heading.textContent = title;
+  const description = document.createElement("p");
+  description.textContent = text;
+  empty.append(heading, description);
+  return empty;
 }
 
 function renderOrders(orders, refreshExpandedMessages = false) {
   displayedOrders = orders;
-  orderMessagePanels.clear();
-  const rows = [];
-  for (const order of orders) rows.push(...makeOrderRows(order));
-  ordersTableBody.replaceChildren(...rows);
-  for (const order of orders) {
+  const bounds = getDateBounds();
+  const query = orderSearch.value.trim().toLocaleLowerCase();
+  const matches = orders.filter((order) => (!bounds || (Number.isFinite(order.createdAt) && order.createdAt >= bounds.start && order.createdAt < bounds.end))
+    && (!statusFilter.value || order.status === statusFilter.value)
+    && [order.orderId, order.service, order.number, order.deviceId].join(" ").toLocaleLowerCase().includes(query))
+    .sort((left, right) => (Number(right.createdAt) || 0) - (Number(left.createdAt) || 0));
+  document.getElementById("totalOrderCount").textContent = matches.length;
+  document.getElementById("waitingOrderCount").textContent = matches.filter((order) => order.status === "active").length;
+  document.getElementById("completedOrderCount").textContent = matches.filter((order) => order.status === "completed").length;
+  const visible = matches.slice(0, visibleLimit);
+  const ids = new Set(visible.map((order) => order.orderId));
+  for (const [id, card] of orderCards) {
+    if (!ids.has(id)) { card.remove(); orderCards.delete(id); orderMessagePanels.delete(id); }
+  }
+  orderList.querySelectorAll(".empty").forEach((empty) => { if (empty.parentElement === orderList) empty.remove(); });
+  for (const [index, order] of visible.entries()) {
+    const card = orderCards.get(order.orderId) || makeOrderCard(order);
+    updateOrderCard(card, order);
+    orderCards.set(order.orderId, card);
+    if (orderList.children[index] !== card) orderList.insertBefore(card, orderList.children[index] || null);
     if (!expandedOrderIds.has(order.orderId)) continue;
     if (refreshExpandedMessages || !orderMessageStates.has(order.orderId)) {
       loadOrderMessages(order);
     }
   }
+  orderCount.textContent = visible.length < matches.length ? `${visible.length} of ${matches.length} orders` : `${matches.length} order${matches.length === 1 ? "" : "s"}`;
+  showMoreOrders.hidden = visible.length >= matches.length;
+  showMoreOrders.setAttribute("aria-label", `Show ${Math.min(ORDER_BATCH_SIZE, matches.length - visible.length)} more orders`);
+  if (!matches.length) orderList.append(makeOrderEmpty(orders.length ? "No matching orders" : "No orders yet", orders.length ? "Try another date range, status or search." : "Allocated numbers will appear here."));
+  const existingIds = new Set(orders.map((order) => order.orderId));
+  for (const id of orderMessageStates.keys()) if (!existingIds.has(id)) { orderMessageStates.delete(id); expandedOrderIds.delete(id); }
+}
+
+function setRefreshStatus(text) {
+  if (ordersRefreshStatus) ordersRefreshStatus.textContent = text;
+}
+
+function isPageVisible() {
+  return document.visibilityState !== "hidden";
 }
 
 async function loadRecentOrders() {
   if (ordersLoading) return;
   ordersLoading = true;
+  const requestId = ++requestSequence;
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), ORDER_REQUEST_TIMEOUT);
   refreshOrdersButton.disabled = true;
+  orderList.setAttribute("aria-busy", "true");
+  setRefreshStatus("Updating...");
   try {
-    const response = await window.dashboardApiFetch("/api/recent-orders");
+    const response = await window.dashboardApiFetch(`/api/recent-orders?_=${Date.now()}`, {
+      cache: "no-store",
+      signal: controller.signal
+    });
     let result;
     try {
       result = await response.json();
@@ -315,32 +415,73 @@ async function loadRecentOrders() {
       throw new Error("The server returned an invalid recent orders list.");
     }
 
-    ordersTableBody.replaceChildren();
-    if (result.orders.length === 0) {
-      displayedOrders = [];
-      orderMessagePanels.clear();
-      const row = document.createElement("tr");
-      const empty = makeOrderCell("No orders have been allocated yet.");
-      empty.colSpan = 10;
-      empty.className = "empty";
-      row.append(empty);
-      ordersTableBody.append(row);
-    } else {
-      renderOrders(result.orders, true);
-    }
-    ordersStatus.textContent = `Loaded ${result.orders.length} order${result.orders.length === 1 ? "" : "s"}.`;
+    if (requestId !== requestSequence) return;
+    renderOrders(result.orders, true);
+    ordersStatus.textContent = "";
     ordersStatus.classList.remove("error");
+    setRefreshStatus(`Updated ${new Intl.DateTimeFormat(undefined, { timeStyle: "short" }).format(new Date())}`);
   } catch (error) {
-    ordersStatus.textContent = `Could not load recent orders: ${error.message}`;
+    if (requestId !== requestSequence) return;
+    const message = error && error.name === "AbortError"
+      ? "The update timed out. Retrying..."
+      : error.message;
+    ordersStatus.textContent = `Could not load recent orders: ${message}`;
     ordersStatus.classList.add("error");
+    setRefreshStatus("Update failed; retrying");
+    if (!displayedOrders.length) orderList.replaceChildren(makeOrderEmpty("Could not load orders", "Use Refresh to try again."));
   } finally {
-    ordersLoading = false;
-    refreshOrdersButton.disabled = false;
+    window.clearTimeout(timeoutId);
+    if (requestId === requestSequence) {
+      ordersLoading = false;
+      refreshOrdersButton.disabled = false;
+      orderList.setAttribute("aria-busy", "false");
+    }
   }
 }
 
 refreshOrdersButton.addEventListener("click", loadRecentOrders);
-setInterval(() => {
-  if (document.visibilityState === "visible") loadRecentOrders();
-}, 5000);
+function applyOrderFilters() { visibleLimit = ORDER_BATCH_SIZE; renderOrders(displayedOrders); }
+orderSearch.addEventListener("input", applyOrderFilters);
+statusFilter.addEventListener("change", applyOrderFilters);
+function selectRange(range) {
+  selectedRange = range;
+  datePresets.querySelectorAll("button").forEach((button) => { button.setAttribute("aria-pressed", String(button.dataset.range === range)); });
+}
+datePresets.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-range]");
+  if (!button) return;
+  const custom = button.dataset.range === "custom";
+  customDates.hidden = !custom;
+  datePresets.querySelector('[data-range="custom"]').setAttribute("aria-expanded", String(custom));
+  dateError.textContent = "";
+  if (custom) { dateFrom.focus(); return; }
+  selectRange(button.dataset.range);
+  applyOrderFilters();
+});
+customDates.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const start = parseCalendarDate(dateFrom.value);
+  const end = parseCalendarDate(dateTo.value);
+  if (!start || !end || start > end) { dateError.textContent = "Choose an end date on or after the start date."; dateTo.focus(); return; }
+  end.setDate(end.getDate() + 1);
+  appliedCustomRange = { start: start.getTime(), end: end.getTime() };
+  dateError.textContent = "";
+  selectRange("custom");
+  applyOrderFilters();
+});
+showMoreOrders.addEventListener("click", () => {
+  const count = orderCards.size;
+  visibleLimit += ORDER_BATCH_SIZE;
+  renderOrders(displayedOrders);
+  const card = orderList.children[count];
+  if (card) { card.tabIndex = -1; card.focus(); }
+});
+const refreshTimer = window.setInterval(() => {
+  if (isPageVisible()) loadRecentOrders();
+}, ORDER_REFRESH_INTERVAL);
+window.addEventListener("pagehide", () => window.clearInterval(refreshTimer), { once: true });
+document.addEventListener("visibilitychange", () => {
+  if (isPageVisible()) loadRecentOrders();
+});
+window.addEventListener("focus", () => loadRecentOrders());
 loadRecentOrders();

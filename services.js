@@ -3,6 +3,8 @@ const serviceForm = document.getElementById("serviceForm");
 const serviceIdInput = document.getElementById("serviceId");
 const serviceNameInput = document.getElementById("serviceName");
 const templateList = document.getElementById("templateList");
+const templateCount = document.getElementById("templateCount");
+const configuredServiceCount = document.getElementById("configuredServiceCount");
 const addTemplateButton = document.getElementById("addTemplateButton");
 const minOtpLengthInput = document.getElementById("minOtpLength");
 const maxOtpLengthInput = document.getElementById("maxOtpLength");
@@ -237,6 +239,16 @@ function makeServiceCard(service) {
 
   const templates = document.createElement("div");
   templates.className = "service-template-list";
+  templates.hidden = true;
+  const templateToggle = document.createElement("button");
+  templateToggle.type = "button";
+  templateToggle.className = "template-preview-toggle quiet";
+  templateToggle.setAttribute("aria-expanded", "false");
+  templateToggle.textContent = `${service.templates.length} template${service.templates.length === 1 ? "" : "s"}`;
+  templateToggle.addEventListener("click", () => {
+    templates.hidden = !templates.hidden;
+    templateToggle.setAttribute("aria-expanded", String(!templates.hidden));
+  });
   service.templates.forEach((item, index) => {
     const template = document.createElement("div");
     template.className = "service-template-item";
@@ -292,11 +304,12 @@ function makeServiceCard(service) {
     }
   });
   actions.append(edit, remove);
-  card.append(heading, templates, settings, actions);
+  card.append(heading, templateToggle, templates, settings, actions);
   return card;
 }
 
 function renderServices() {
+  configuredServiceCount.textContent = `${services.length} service${services.length === 1 ? "" : "s"}`;
   if (services.length === 0) {
     const empty = document.createElement("p");
     empty.className = "hint";
@@ -316,8 +329,7 @@ function addTemplateEditor(template = { text: "", enabled: true }) {
 
   const label = document.createElement("label");
   label.className = "field";
-  const title = document.createElement("span");
-  title.textContent = `Template ${index}`;
+  label.setAttribute("aria-label", `Template ${index} message`);
   const messageTemplateInput = document.createElement("textarea");
   messageTemplateInput.id = inputId;
   messageTemplateInput.rows = 5;
@@ -325,7 +337,34 @@ function addTemplateEditor(template = { text: "", enabled: true }) {
   messageTemplateInput.required = true;
   messageTemplateInput.placeholder = "Paste a sample message with its code";
   messageTemplateInput.value = template.text;
-  label.append(title, messageTemplateInput);
+  messageTemplateInput.setAttribute("aria-label", `Template ${index} message`);
+  label.append(messageTemplateInput);
+
+  row.id = `template-editor-${sequence}`;
+  const heading = document.createElement("div");
+  heading.className = "template-editor-heading";
+  const title = document.createElement("span");
+  title.className = "template-editor-title";
+  title.textContent = `Template ${index}`;
+  const headingActions = document.createElement("div");
+  headingActions.className = "template-heading-actions";
+  const enabledLabel = document.createElement("label");
+  enabledLabel.className = "enabled-control template-enabled-control";
+  const enabledInput = document.createElement("input");
+  enabledInput.type = "checkbox";
+  enabledInput.dataset.templateEnabled = "";
+  enabledInput.checked = template.enabled !== false;
+  enabledInput.setAttribute("aria-label", `Match template ${index}`);
+  enabledLabel.append(enabledInput, document.createTextNode("Match"));
+  const removeButton = document.createElement("button");
+  removeButton.type = "button";
+  removeButton.className = "quiet template-remove";
+  removeButton.dataset.templateAction = "remove";
+  removeButton.setAttribute("aria-label", `Remove template ${index}`);
+  removeButton.title = "Remove template";
+  removeButton.innerHTML = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2m3 0-.9 14H5.9L5 6m5 4v6m4-6v6"/></svg>';
+  headingActions.append(enabledLabel, removeButton);
+  heading.append(title, headingActions);
 
   const actions = document.createElement("div");
   actions.className = "template-editor-actions";
@@ -335,22 +374,10 @@ function addTemplateEditor(template = { text: "", enabled: true }) {
   markButton.dataset.templateAction = "mark";
   markButton.textContent = "Mark selected code as OTP";
 
-  const enabledLabel = document.createElement("label");
-  enabledLabel.className = "enabled-control template-enabled-control";
-  const enabledInput = document.createElement("input");
-  enabledInput.type = "checkbox";
-  enabledInput.dataset.templateEnabled = "";
-  enabledInput.checked = template.enabled !== false;
-  enabledLabel.append(enabledInput, document.createTextNode("Match this template"));
-
-  const removeButton = document.createElement("button");
-  removeButton.type = "button";
-  removeButton.className = "quiet";
-  removeButton.dataset.templateAction = "remove";
-  removeButton.textContent = "Remove";
-  actions.append(markButton, enabledLabel, removeButton);
-  row.append(label, actions);
+  actions.append(markButton);
+  row.append(heading, label, actions);
   templateList.append(row);
+  templateCount.textContent = templateList.children.length;
   updateTemplateRemoveButtons();
 }
 
@@ -402,9 +429,12 @@ templateList.addEventListener("click", (event) => {
   } else if (button.dataset.templateAction === "remove") {
     row.remove();
     Array.from(templateList.children).forEach((item, index) => {
-      const title = item.querySelector(".field > span");
+      const title = item.querySelector(".template-editor-title");
       title.textContent = `Template ${index + 1}`;
+      item.querySelector("[data-template-enabled]").setAttribute("aria-label", `Match template ${index + 1}`);
+      item.querySelector("[data-template-action=remove]").setAttribute("aria-label", `Remove template ${index + 1}`);
     });
+    templateCount.textContent = templateList.children.length;
     updateTemplateRemoveButtons();
   }
 });

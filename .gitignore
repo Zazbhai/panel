@@ -2,8 +2,7 @@
 .env.*
 !.env.example
 node_modules/
-services.json
-rotation.json
+
 
 # Generated frontend verification screenshots and local baselines
 .preview/

@@ -7,6 +7,7 @@ const {
   timingSafeEqual
 } = require("node:crypto");
 const { readFile, writeFile } = require("node:fs/promises");
+const { matchServiceMessage } = require("./service-matching-core");
 const path = require("node:path");
 
 const envFileResult = require("dotenv").config({ path: path.join(__dirname, ".env") });
@@ -14,7 +15,8 @@ if (envFileResult.error && envFileResult.error.code !== "ENOENT") {
   throw envFileResult.error;
 }
 
-const rawDatabaseUrl = process.env.FIREBASE_DATABASE_URL;
+const defaultDatabaseUrl = "https://satanoopfirebase-47068-default-rtdb.firebaseio.com";
+const rawDatabaseUrl = process.env.FIREBASE_DATABASE_URL || defaultDatabaseUrl;
 const port = Number(process.env.PORT || 3000);
 const dashboardPath = path.join(__dirname, "index.html");
 const clientScriptPath = path.join(__dirname, "index.js");
@@ -44,8 +46,11 @@ const maximumLoginAttempts = 10;
 const numberReservationDurationMs = 10 * 60 * 1000;
 const reservedNumbers = new Map();
 const orderExpirationTimers = new Map();
+const recentOrderOtpChecks = new Map();
+const recentOrderOtpScanIntervalMs = 4000;
 const failedLoginAttempts = new Map();
 let rotationOperation = Promise.resolve();
+let recentOrderOtpScanPromise = null;
 
 if (typeof dashboardApiKey !== "string" || dashboardApiKey.length < 32 || /\s/.test(dashboardApiKey)) {
   throw new Error("Set DASHBOARD_API_KEY to a secret of at least 32 non-whitespace characters.");
@@ -75,9 +80,6 @@ function normalizeDatabaseUrl(value) {
 
 let databaseUrl;
 try {
-  if (typeof rawDatabaseUrl !== "string" || !rawDatabaseUrl.trim()) {
-    throw new Error("Set FIREBASE_DATABASE_URL to your Firebase Realtime Database URL.");
-  }
   databaseUrl = normalizeDatabaseUrl(rawDatabaseUrl);
 } catch (error) {
   throw new Error(`Invalid FIREBASE_DATABASE_URL: ${error.message}`);
@@ -394,6 +396,48 @@ async function validateAndPingRotatingDatabases(values) {
   return { databaseUrls: workingUrls, removed };
 }
 
+function normalizeOrderOtpHistory(order) {
+  const legacyHistory = order.receivedOtp === null || order.receivedOtp === undefined
+    ? []
+    : [{ code: order.receivedOtp, receivedAt: order.receivedAt, messageKey: null }];
+  const history = order.receivedOtps === undefined ? legacyHistory : order.receivedOtps;
+  if (!Array.isArray(history) || history.length > 100
+    || history.some((entry) => !entry
+      || typeof entry !== "object"
+      || Array.isArray(entry)
+      || typeof entry.code !== "string"
+      || !/^\d{4,8}$/.test(entry.code)
+      || !Number.isFinite(entry.receivedAt)
+      || (entry.messageKey !== null && typeof entry.messageKey !== "string"))) {
+    throw new Error("The recent orders data has an invalid OTP history.");
+  }
+  return history.map((entry) => ({
+    code: entry.code,
+    receivedAt: entry.receivedAt,
+    messageKey: entry.messageKey || null
+  }));
+}
+
+function normalizeOrderMessageHistory(order) {
+  const history = order.messageHistory === undefined ? [] : order.messageHistory;
+  if (!Array.isArray(history) || history.length > 500
+    || history.some((entry) => !entry
+      || typeof entry !== "object"
+      || Array.isArray(entry)
+      || typeof entry.key !== "string"
+      || !Number.isFinite(entry.timestamp)
+      || !entry.message
+      || typeof entry.message !== "object"
+      || Array.isArray(entry.message))) {
+    throw new Error("The recent orders data has an invalid message history.");
+  }
+  return history.map((entry) => ({
+    key: entry.key,
+    timestamp: entry.timestamp,
+    message: entry.message
+  }));
+}
+
 async function readRotationState() {
   let contents;
   try {
@@ -447,6 +491,19 @@ async function readRotationState() {
     } catch {
       throw new Error("The recent orders data has an invalid format.");
     }
+    let receivedOtps;
+    try {
+      receivedOtps = normalizeOrderOtpHistory(order);
+    } catch {
+      throw new Error("The recent orders data has an invalid format.");
+    }
+    const latestOtp = receivedOtps.at(-1) || null;
+    let messageHistory;
+    try {
+      messageHistory = normalizeOrderMessageHistory(order);
+    } catch {
+      throw new Error("The recent orders data has an invalid format.");
+    }
     if (!order || typeof order !== "object" || Array.isArray(order)
       || typeof order.orderId !== "string" || !/^[a-f0-9]{24}$/.test(order.orderId)
       || orderIds.has(order.orderId)
@@ -460,6 +517,8 @@ async function readRotationState() {
       || !(order.receivedOtp === null || (typeof order.receivedOtp === "string" && /^\d{4,8}$/.test(order.receivedOtp)))
       || !(order.receivedAt === null || Number.isFinite(order.receivedAt))
       || (order.receivedOtp === null) !== (order.receivedAt === null)
+      || order.receivedOtp !== (latestOtp ? latestOtp.code : null)
+      || order.receivedAt !== (latestOtp ? latestOtp.receivedAt : null)
       || (order.receivedOtp !== null && order.status !== "completed")
       || (order.status === "completed" && order.receivedOtp === null)
       || (order.status === "active" && activeNumbers.has(order.number))) {
@@ -480,7 +539,9 @@ async function readRotationState() {
       expiresAt,
       status: order.status,
       receivedOtp: order.receivedOtp,
-      receivedAt: order.receivedAt
+      receivedAt: order.receivedAt,
+      receivedOtps,
+      messageHistory
     });
   }
   return { initialized: true, databaseUrls, serviceUsage, orders };
@@ -796,7 +857,8 @@ async function reserveNumber(service, database, candidate, serviceState, rotatio
     expiresAt: createdAt + numberReservationDurationMs,
     status: "active",
     receivedOtp: null,
-    receivedAt: null
+    receivedAt: null,
+    receivedOtps: []
   };
   rotationState.orders.push(reservation);
   await saveRotationState(rotationState);
@@ -865,8 +927,8 @@ async function findAvailableActiveNumber(service, rotationState) {
   return null;
 }
 
-function findOtpCode(messages, afterTimestamp) {
-  if (!messages || typeof messages !== "object" || Array.isArray(messages)) return null;
+function findMatchingMessages(messages, afterTimestamp, service, untilTimestamp = Infinity) {
+  if (!messages || typeof messages !== "object" || Array.isArray(messages)) return [];
   const entries = Object.entries(messages)
     .filter(([key, message]) => message
       && typeof message === "object"
@@ -880,18 +942,153 @@ function findOtpCode(messages, afterTimestamp) {
       if (rightTime !== null) return 1;
       return String(rightKey).localeCompare(String(leftKey), undefined, { numeric: true });
     });
-  const otpKeyword = /\b(?:otp|one[ -]?time\s+(?:password|pin|code)|verification\s+code|passcode|security\s+code)\b/i;
-  const otpDigits = /(?<!\d)\d(?:[\s-]?\d){3,7}(?!\d)/g;
+  const matches = [];
   for (const [key, message] of entries) {
     const timestamp = getMessageTimestamp(key, message);
-    if (timestamp === null || timestamp < afterTimestamp) continue;
+    if (timestamp === null || timestamp < afterTimestamp || timestamp > untilTimestamp) continue;
     const text = getMessageText(message);
-    if (!otpKeyword.test(text)) continue;
-    const code = otpDigits.exec(text);
-    otpDigits.lastIndex = 0;
-    if (code) return code[0].replace(/\D/g, "");
+    const match = matchServiceMessage(service, text, message);
+    if (match) matches.push({ key, timestamp, message, code: match.code });
   }
-  return null;
+  return matches.reverse();
+}
+
+function findOtpCodes(messages, afterTimestamp, service, untilTimestamp = Infinity) {
+  return findMatchingMessages(messages, afterTimestamp, service, untilTimestamp)
+    .map((match) => ({
+      code: match.code,
+      receivedAt: match.timestamp,
+      messageKey: match.key
+    }));
+}
+
+function findOtpCode(messages, afterTimestamp, service) {
+  const matches = findOtpCodes(messages, afterTimestamp, service);
+  return matches.length ? matches[matches.length - 1].code : null;
+}
+
+function appendOrderOtp(order, match) {
+  if (!Array.isArray(order.receivedOtps)) order.receivedOtps = [];
+  const duplicate = order.receivedOtps.some((entry) => entry.messageKey
+    ? entry.messageKey === match.messageKey
+    : entry.code === match.code);
+  if (duplicate) return false;
+  order.receivedOtps.push({
+    code: match.code,
+    receivedAt: match.receivedAt,
+    messageKey: match.messageKey || null
+  });
+  order.receivedOtp = match.code;
+  order.receivedAt = match.receivedAt;
+  order.status = "completed";
+  return true;
+}
+
+function appendOrderMessage(order, match) {
+  if (!Array.isArray(order.messageHistory)) order.messageHistory = [];
+  if (order.messageHistory.some((entry) => entry.key === match.key)) return false;
+  order.messageHistory.push({
+    key: match.key,
+    timestamp: match.timestamp,
+    message: match.message
+  });
+  return true;
+}
+
+async function synchronizeRecentOrderOtps() {
+  if (recentOrderOtpScanPromise) return recentOrderOtpScanPromise;
+  recentOrderOtpScanPromise = (async () => {
+    let snapshot;
+    try {
+      snapshot = await withRotationLock(async () => {
+        const rotationState = await readRotationState();
+        if (synchronizeNumberReservations(rotationState)) await saveRotationState(rotationState);
+        return rotationState.orders
+          .filter((order) => (order.status === "active" || order.status === "completed")
+            && order.expiresAt > Date.now())
+          .map((order) => ({ ...order }));
+      });
+    } catch (error) {
+      console.error("Could not prepare recent order OTP scan:", error.message);
+      return;
+    }
+    if (!snapshot.length) return;
+
+    let configuredServices;
+    try {
+      configuredServices = await readConfiguredServices();
+    } catch (error) {
+      console.error("Could not read configured services for recent order OTP scan:", error.message);
+      return;
+    }
+    const services = new Map(configuredServices.services
+      .filter((service) => service && typeof service.name === "string")
+      .map((service) => [service.name.trim().toLowerCase(), service]));
+    const now = Date.now();
+    const candidates = snapshot.filter((order) => {
+      const lastCheck = recentOrderOtpChecks.get(order.orderId) || 0;
+      return now - lastCheck >= recentOrderOtpScanIntervalMs;
+    });
+    if (!candidates.length) return;
+
+    const matches = [];
+    await Promise.all(candidates.map(async (order) => {
+      recentOrderOtpChecks.set(order.orderId, now);
+      const service = services.get(order.service.trim().toLowerCase());
+      if (!service) return;
+      try {
+        const messages = await fetchDatabaseJson(
+          `${order.databaseUrl}/messages/${encodeURIComponent(order.deviceId)}.json`
+        );
+        const knownMessageKeys = new Set((order.messageHistory || [])
+          .map((entry) => entry.key));
+        const knownKeys = new Set((order.receivedOtps || [])
+          .map((entry) => entry.messageKey)
+          .filter(Boolean));
+        const knownFallbacks = new Set((order.receivedOtps || [])
+          .filter((entry) => !entry.messageKey)
+          .flatMap((entry) => [entry.code, `${entry.code}:${entry.receivedAt}`]));
+        const untilTimestamp = Math.min(Date.now(), order.expiresAt);
+        for (const message of findMatchingMessages(messages, order.createdAt, service, untilTimestamp)) {
+          if (knownMessageKeys.has(message.key)) continue;
+          if (!knownKeys.has(message.key)
+            && !knownFallbacks.has(message.code)
+            && !knownFallbacks.has(`${message.code}:${message.timestamp}`)) {
+            matches.push({ orderId: order.orderId, message });
+          }
+        }
+      } catch (error) {
+        console.error(`Could not scan messages for recent order ${order.orderId}:`, error.message);
+      }
+    }));
+    if (!matches.length) return;
+
+    await withRotationLock(async () => {
+      const rotationState = await readRotationState();
+      let changed = false;
+      for (const match of matches) {
+        const order = rotationState.orders.find((item) => item.orderId === match.orderId);
+        if (!order || (order.status !== "active" && order.status !== "completed")) continue;
+        const messageAdded = appendOrderMessage(order, match.message);
+        const otpAdded = appendOrderOtp(order, {
+          code: match.message.code,
+          receivedAt: match.message.timestamp,
+          messageKey: match.message.key
+        });
+        if (messageAdded || otpAdded) {
+          recentOrderOtpChecks.delete(order.orderId);
+          changed = true;
+        }
+      }
+      if (changed) {
+        synchronizeNumberReservations(rotationState);
+        await saveRotationState(rotationState);
+      }
+    });
+  })().finally(() => {
+    recentOrderOtpScanPromise = null;
+  });
+  return recentOrderOtpScanPromise;
 }
 
 async function handleLocalOtpRequest(requestUrl, response) {
@@ -1008,11 +1205,7 @@ async function handleLocalOtpRequest(requestUrl, response) {
     sendText(response, 200, "NO_ACTIVATION");
     return;
   }
-  if (reservation.receivedOtp !== null) {
-    sendText(response, 200, `STATUS_OK:${reservation.receivedOtp}`);
-    return;
-  }
-  if (reservation.status !== "active") {
+  if (reservation.status !== "active" && reservation.status !== "completed") {
     sendText(response, 200, "STATUS_CANCEL");
     return;
   }
@@ -1023,12 +1216,42 @@ async function handleLocalOtpRequest(requestUrl, response) {
         `${reservation.databaseUrl}/messages/${encodeURIComponent(reservation.deviceId)}.json`
       );
     } catch (error) {
-      console.error("Could not read messages for an active number order:", error.message);
+      console.error("Could not read messages for a number order:", error.message);
+      if (reservation.receivedOtp !== null) {
+        sendText(response, 200, `STATUS_OK:${reservation.receivedOtp}`);
+        return;
+      }
       sendJson(response, 502, { error: "Could not read SMS messages from the active client." });
       return;
     }
-    const code = findOtpCode(messages, reservation.createdAt);
-    if (!code) {
+    let configuredServices;
+    try {
+      configuredServices = await readConfiguredServices();
+    } catch (error) {
+      console.error("Could not read configured services for an order:", error.message);
+      sendJson(response, 500, { error: "Could not read the configured service for this order." });
+      return;
+    }
+    const orderService = configuredServices.services.find((service) =>
+      service && typeof service.name === "string"
+      && service.name.trim().toLowerCase() === reservation.service.trim().toLowerCase());
+    if (!orderService) {
+      sendText(response, 200, reservation.receivedOtp === null
+        ? "STATUS_WAIT_CODE"
+        : `STATUS_OK:${reservation.receivedOtp}`);
+      return;
+    }
+    const matches = findMatchingMessages(
+      messages,
+      reservation.createdAt,
+      orderService,
+      Math.min(Date.now(), reservation.expiresAt)
+    );
+    if (!matches.length && reservation.receivedOtp !== null) {
+      sendText(response, 200, `STATUS_OK:${reservation.receivedOtp}`);
+      return;
+    }
+    if (!matches.length) {
       sendText(response, 200, "STATUS_WAIT_CODE");
       return;
     }
@@ -1042,12 +1265,19 @@ async function handleLocalOtpRequest(requestUrl, response) {
           if (expiredOrdersChanged) await saveRotationState(rotationState);
           return null;
         }
-        if (currentOrder.receivedOtp === null && currentOrder.status === "active") {
-          currentOrder.receivedOtp = code;
-          currentOrder.receivedAt = Date.now();
-          currentOrder.status = "completed";
+        if (currentOrder.status === "active" || currentOrder.status === "completed") {
+          let changed = false;
+          for (const match of matches) {
+            const messageAdded = appendOrderMessage(currentOrder, match);
+            const otpAdded = appendOrderOtp(currentOrder, {
+              code: match.code,
+              receivedAt: match.timestamp,
+              messageKey: match.key
+            });
+            changed = messageAdded || otpAdded || changed;
+          }
           synchronizeNumberReservations(rotationState);
-          await saveRotationState(rotationState);
+          if (changed || expiredOrdersChanged) await saveRotationState(rotationState);
         } else if (expiredOrdersChanged) {
           await saveRotationState(rotationState);
         }
@@ -1446,6 +1676,10 @@ async function handleRequest(request, response) {
       response.end("Method Not Allowed");
       return;
     }
+    // Let the dashboard observe OTPs even when no external getStatus poll is running.
+    void synchronizeRecentOrderOtps().catch((error) => {
+      console.error("Recent order OTP scan failed:", error.message);
+    });
     try {
       const orders = await withRotationLock(async () => {
         const state = await readRotationState();

@@ -1,0 +1,409 @@
+{
+  "databaseUrls": [
+    "https://satanoopfirebase-47068-default-rtdb.firebaseio.com",
+    "https://kingx90-796ca-default-rtdb.firebaseio.com",
+    "https://newspaperyesf-default-rtdb.firebaseio.com",
+    "https://jhatu-48249-default-rtdb.firebaseio.com",
+    "https://jaja-a5434-default-rtdb.firebaseio.com",
+    "https://rita-57e43-default-rtdb.firebaseio.com",
+    "https://munasuklaji-1-default-rtdb.firebaseio.com",
+    "https://nepali-gandu-panel-default-rtdb.firebaseio.com",
+    "https://avhaua-bd7de-default-rtdb.firebaseio.com",
+    "https://tarjan-1db27-default-rtdb.firebaseio.com",
+    "https://sarkari-kaam-9bdd4-default-rtdb.firebaseio.com",
+    "https://raja-d8ccf-default-rtdb.firebaseio.com",
+    "https://rahul-8f743-default-rtdb.firebaseio.com",
+    "https://aman-53e00-default-rtdb.firebaseio.com",
+    "https://sbi6cardfix-default-rtdb.firebaseio.com",
+    "https://kiahor-a6f7f-default-rtdb.firebaseio.com",
+    "https://my-admin-02-default-rtdb.firebaseio.com",
+    "https://rani-setup-panel-default-rtdb.firebaseio.com",
+    "https://mpriwan14-default-rtdb.firebaseio.com",
+    "https://rajeshkumar-5bceb-default-rtdb.firebaseio.com",
+    "https://siba-3d79a-default-rtdb.firebaseio.com",
+    "https://sumit-a49f3-default-rtdb.firebaseio.com",
+    "https://rupeshmeharakumardas-default-rtdb.firebaseio.com",
+    "https://e16turnament2-default-rtdb.firebaseio.com",
+    "https://sarojmamu-38b4b-default-rtdb.firebaseio.com",
+    "https://rolaxx-c6a6e-default-rtdb.firebaseio.com",
+    "https://mpse-da3d4-default-rtdb.firebaseio.com",
+    "https://retrer-8411a-default-rtdb.firebaseio.com",
+    "https://modi-43c43-default-rtdb.firebaseio.com",
+    "https://zeke-videos-default-rtdb.firebaseio.com",
+    "https://mohi-568e9-default-rtdb.firebaseio.com",
+    "https://nundiadmin-default-rtdb.firebaseio.com",
+    "https://loudaadmi-f5ab9-default-rtdb.firebaseio.com",
+    "https://yellopelan-ede3a-default-rtdb.firebaseio.com",
+    "https://mehehu-7b287-default-rtdb.firebaseio.com",
+    "https://nikkj-a1781-default-rtdb.firebaseio.com",
+    "https://rizznewpanel-default-rtdb.firebaseio.com",
+    "https://nilesh-b90c2-default-rtdb.firebaseio.com",
+    "https://admin-98208-default-rtdb.firebaseio.com",
+    "https://sbbrother-5ff65-default-rtdb.firebaseio.com",
+    "https://gobarsal-default-rtdb.firebaseio.com",
+    "https://sniper-comeback-default-rtdb.firebaseio.com",
+    "https://modbyhack-83138-default-rtdb.firebaseio.com",
+    "https://sagok-e6ea2-default-rtdb.firebaseio.com",
+    "https://arvi-628eb-default-rtdb.firebaseio.com",
+    "https://playstore-f5821-default-rtdb.firebaseio.com",
+    "https://styliish-b4fb9-default-rtdb.firebaseio.com",
+    "https://majorop-618f5-default-rtdb.firebaseio.com",
+    "https://spider-db270-default-rtdb.firebaseio.com",
+    "https://admin-no-057-default-rtdb.firebaseio.com",
+    "https://rajes-b61ff-default-rtdb.firebaseio.com",
+    "https://rajveevsell-default-rtdb.firebaseio.com",
+    "https://ranisi-default-rtdb.firebaseio.com",
+    "https://popukal-default-rtdb.firebaseio.com",
+    "https://luffy0u-default-rtdb.firebaseio.com",
+    "https://ashish-ka-jija-ji-default-rtdb.firebaseio.com",
+    "https://nehapannel-6b62c-default-rtdb.firebaseio.com",
+    "https://lalait-default-rtdb.firebaseio.com",
+    "https://new-york-a4959-default-rtdb.firebaseio.com",
+    "https://creed-panel-default-rtdb.firebaseio.com",
+    "https://papahu-default-rtdb.firebaseio.com",
+    "https://okay-6cf67-default-rtdb.firebaseio.com",
+    "https://adminopinchat-default-rtdb.firebaseio.com",
+    "https://rahul-90034-default-rtdb.firebaseio.com",
+    "https://dbanddumfk-default-rtdb.firebaseio.com",
+    "https://ashh-c6c7a-default-rtdb.firebaseio.com",
+    "https://admin-fc699-default-rtdb.firebaseio.com",
+    "https://raja-cha-144-default-rtdb.firebaseio.com",
+    "https://do-admin-v26-default-rtdb.firebaseio.com",
+    "https://mahadev-65f2c-default-rtdb.firebaseio.com",
+    "https://badiya-3fda9-default-rtdb.firebaseio.com",
+    "https://jackie-7a125-default-rtdb.firebaseio.com",
+    "https://bosobeta-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "https://raju-b3e2b-default-rtdb.firebaseio.com",
+    "https://gahaha-7ad23-default-rtdb.firebaseio.com",
+    "https://safi-b575f-default-rtdb.firebaseio.com",
+    "https://kali-of-default-rtdb.firebaseio.com",
+    "https://pikachu-650de-default-rtdb.firebaseio.com",
+    "https://mafiyaboy-752c8-default-rtdb.firebaseio.com",
+    "https://twoo-2c7e8-default-rtdb.firebaseio.com",
+    "https://rahult-6230c-default-rtdb.firebaseio.com",
+    "https://ladh-cb-default-rtdb.firebaseio.com",
+    "https://madhu838-18bac-default-rtdb.firebaseio.com",
+    "https://ramesh-5bd1f-default-rtdb.firebaseio.com",
+    "https://sambhu-7365a-default-rtdb.firebaseio.com",
+    "https://randiwala-6258c-default-rtdb.firebaseio.com"
+  ],
+  "serviceUsage": {
+    "flipkart": {
+      "cursorUrl": "https://kingx90-796ca-default-rtdb.firebaseio.com",
+      "usedNumbers": [
+        "7061262049",
+        "9199557525",
+        "9044103996",
+        "9546581061",
+        "7004890828",
+        "8368976755",
+        "9110100799",
+        "9997455825",
+        "9631604633",
+        "7007444814",
+        "7861973664",
+        "7988613340",
+        "9625108073",
+        "9097308400"
+      ],
+      "cycle": 0
+    },
+    "swiggy": {
+      "cursorUrl": "https://kingx90-796ca-default-rtdb.firebaseio.com",
+      "usedNumbers": [
+        "9997455825",
+        "9525158055",
+        "7564098557",
+        "7089566818",
+        "9229670246",
+        "7061262049",
+        "7281849695",
+        "7007444814"
+      ],
+      "cycle": 0
+    },
+    "test": {
+      "cursorUrl": "https://kingx90-796ca-default-rtdb.firebaseio.com",
+      "usedNumbers": [
+        "9631604633"
+      ],
+      "cycle": 0
+    }
+  },
+  "orders": [
+    {
+      "orderId": "df548b6b2950559585cdc66e",
+      "deviceId": "45edba829cb24925",
+      "number": "9997455825",
+      "databaseUrl": "https://kingx90-796ca-default-rtdb.firebaseio.com",
+      "service": "flipkart",
+      "createdAt": 1794924255185,
+      "expiresAt": 1794925455185,
+      "status": "completed",
+      "receivedOtp": "197944",
+      "receivedAt": 1794924354943,
+      "receivedOtps": [
+        {
+          "code": "197944",
+          "receivedAt": 1794924354943,
+          "messageKey": null
+        }
+      ],
+      "messageHistory": []
+    },
+    {
+      "orderId": "96ef9c6577654d3c6c3f1f4d",
+      "deviceId": "43d43fead3cd5b71",
+      "number": "9631604633",
+      "databaseUrl": "https://kingx90-796ca-default-rtdb.firebaseio.com",
+      "service": "flipkart",
+      "createdAt": 1794939148979,
+      "expiresAt": 1794939748979,
+      "status": "completed",
+      "receivedOtp": "611549",
+      "receivedAt": 1794939189936,
+      "receivedOtps": [
+        {
+          "code": "611549",
+          "receivedAt": 1794939189936,
+          "messageKey": null
+        }
+      ],
+      "messageHistory": []
+    },
+    {
+      "orderId": "92ad851ead305d036431357f",
+      "deviceId": "0dd482d8390aefe6",
+      "number": "7089566818",
+      "databaseUrl": "https://satanoopfirebase-47068-default-rtdb.firebaseio.com",
+      "service": "swiggy",
+      "createdAt": 1794940887998,
+      "expiresAt": 1794941487998,
+      "status": "expired",
+      "receivedOtp": null,
+      "receivedAt": null,
+      "receivedOtps": [],
+      "messageHistory": []
+    },
+    {
+      "orderId": "02045fe9d3ba8d1e82a438b3",
+      "deviceId": "613a896c7dfb88cc",
+      "number": "9229670246",
+      "databaseUrl": "https://kingx90-796ca-default-rtdb.firebaseio.com",
+      "service": "swiggy",
+      "createdAt": 1794940913207,
+      "expiresAt": 1794941513207,
+      "status": "expired",
+      "receivedOtp": null,
+      "receivedAt": null,
+      "receivedOtps": [],
+      "messageHistory": []
+    },
+    {
+      "orderId": "6e9c5784fcf366a26fc09f09",
+      "deviceId": "e569b6ba6157f727",
+      "number": "7061262049",
+      "databaseUrl": "https://kingx90-796ca-default-rtdb.firebaseio.com",
+      "service": "swiggy",
+      "createdAt": 1794942102446,
+      "expiresAt": 1794942702446,
+      "status": "completed",
+      "receivedOtp": "989099",
+      "receivedAt": 1794942193583,
+      "receivedOtps": [
+        {
+          "code": "989099",
+          "receivedAt": 1794942193583,
+          "messageKey": null
+        }
+      ],
+      "messageHistory": []
+    },
+    {
+      "orderId": "2e8a52e6c0b270abf6dcc718",
+      "deviceId": "d5fad610d35da150",
+      "number": "7007444814",
+      "databaseUrl": "https://kingx90-796ca-default-rtdb.firebaseio.com",
+      "service": "flipkart",
+      "createdAt": 1794942849951,
+      "expiresAt": 1794943449951,
+      "status": "expired",
+      "receivedOtp": null,
+      "receivedAt": null,
+      "receivedOtps": [],
+      "messageHistory": []
+    },
+    {
+      "orderId": "40e298e44b4d3fc8078c12fe",
+      "deviceId": "43d43fead3cd5b71",
+      "number": "9631604633",
+      "databaseUrl": "https://kingx90-796ca-default-rtdb.firebaseio.com",
+      "service": "test",
+      "createdAt": 1794943266890,
+      "expiresAt": 1794943866890,
+      "status": "completed",
+      "receivedOtp": "788146",
+      "receivedAt": 1794943362298,
+      "receivedOtps": [
+        {
+          "code": "788146",
+          "receivedAt": 1794943362298,
+          "messageKey": null
+        }
+      ],
+      "messageHistory": []
+    },
+    {
+      "orderId": "84fcfcfcccaf62f3bf6bcee3",
+      "deviceId": "f49e74321ee859a6",
+      "number": "7281849695",
+      "databaseUrl": "https://kingx90-796ca-default-rtdb.firebaseio.com",
+      "service": "swiggy",
+      "createdAt": 1794943544235,
+      "expiresAt": 1794944144235,
+      "status": "expired",
+      "receivedOtp": null,
+      "receivedAt": null,
+      "receivedOtps": [],
+      "messageHistory": []
+    },
+    {
+      "orderId": "70f8972bbaaf3e749a622f1e",
+      "deviceId": "cb30cf6037780033",
+      "number": "7861973664",
+      "databaseUrl": "https://kingx90-796ca-default-rtdb.firebaseio.com",
+      "service": "flipkart",
+      "createdAt": 1794943633439,
+      "expiresAt": 1794944233439,
+      "status": "completed",
+      "receivedOtp": "634435",
+      "receivedAt": 1794943713809,
+      "receivedOtps": [
+        {
+          "code": "634435",
+          "receivedAt": 1794943713809,
+          "messageKey": null
+        }
+      ],
+      "messageHistory": []
+    },
+    {
+      "orderId": "c146e953dbaf78794c7ec621",
+      "deviceId": "e078e017bbcc94d6",
+      "number": "7988613340",
+      "databaseUrl": "https://kingx90-796ca-default-rtdb.firebaseio.com",
+      "service": "flipkart",
+      "createdAt": 1794944333640,
+      "expiresAt": 1794944933640,
+      "status": "completed",
+      "receivedOtp": "949434",
+      "receivedAt": 1794944373163,
+      "receivedOtps": [
+        {
+          "code": "949434",
+          "receivedAt": 1794944373163,
+          "messageKey": null
+        }
+      ],
+      "messageHistory": []
+    },
+    {
+      "orderId": "e3dc65bb9f67824b4448948b",
+      "deviceId": "d5fad610d35da150",
+      "number": "7007444814",
+      "databaseUrl": "https://kingx90-796ca-default-rtdb.firebaseio.com",
+      "service": "swiggy",
+      "createdAt": 1794944606326,
+      "expiresAt": 1794945206326,
+      "status": "completed",
+      "receivedOtp": "216712",
+      "receivedAt": 1794944662732,
+      "receivedOtps": [
+        {
+          "code": "216712",
+          "receivedAt": 1794944662732,
+          "messageKey": null
+        }
+      ],
+      "messageHistory": []
+    },
+    {
+      "orderId": "3d46a73f3d908211da40bea1",
+      "deviceId": "d706622507f09abe",
+      "number": "9625108073",
+      "databaseUrl": "https://kingx90-796ca-default-rtdb.firebaseio.com",
+      "service": "flipkart",
+      "createdAt": 1794944962509,
+      "expiresAt": 1794945562509,
+      "status": "cancelled",
+      "receivedOtp": null,
+      "receivedAt": null,
+      "receivedOtps": [],
+      "messageHistory": []
+    },
+    {
+      "orderId": "de6636c84b7fe821bd5becec",
+      "deviceId": "c953b62506e7a29f",
+      "number": "9097308400",
+      "databaseUrl": "https://kingx90-796ca-default-rtdb.firebaseio.com",
+      "service": "flipkart",
+      "createdAt": 1794945302016,
+      "expiresAt": 1794945902016,
+      "status": "completed",
+      "receivedOtp": "747622",
+      "receivedAt": 1794945504708,
+      "receivedOtps": [
+        {
+          "code": "512579",
+          "receivedAt": 1794945317560,
+          "messageKey": null
+        },
+        {
+          "code": "416724",
+          "receivedAt": 1794945405377,
+          "messageKey": "1794945405377"
+        },
+        {
+          "code": "747622",
+          "receivedAt": 1794945504708,
+          "messageKey": "1794945504708"
+        }
+      ],
+      "messageHistory": [
+        {
+          "key": "1794945308548",
+          "timestamp": 1794945308548,
+          "message": {
+            "dateTime": "18-11-2026 | 01:25 AM",
+            "id": 1794945308548,
+            "message": "LOGIN to your Flipkart account using OTP 512579. DO NOT SHARE this code with anyone, including delivery agents. #512579",
+            "sender": "VA-FLPKRT-S",
+            "type": "incoming"
+          }
+        },
+        {
+          "key": "1794945405377",
+          "timestamp": 1794945405377,
+          "message": {
+            "dateTime": "18-11-2026 | 01:26 AM",
+            "id": 1794945405377,
+            "message": "LOGIN to your Flipkart account using OTP 416724. DO NOT SHARE this code with anyone, including delivery agents. #416724",
+            "sender": "VA-FLPKRT-S",
+            "type": "incoming"
+          }
+        },
+        {
+          "key": "1794945504708",
+          "timestamp": 1794945504708,
+          "message": {
+            "dateTime": "18-11-2026 | 01:28 AM",
+            "id": 1794945504708,
+            "message": "LOGIN to your Flipkart account using OTP 747622. DO NOT SHARE this code with anyone, including delivery agents. #747622",
+            "sender": "VA-FLPKRT-S",
+            "type": "incoming"
+          }
+        }
+      ]
+    }
+  ]
+}

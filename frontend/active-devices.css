@@ -1,0 +1,96 @@
+.devices-page .page-heading { margin-bottom: 24px; align-items: center; }
+.device-heading-actions { display: flex; align-items: center; gap: 18px; }
+.device-heading-actions .refresh-note { padding: 0; }
+.database-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, .65fr); gap: 24px; align-items: end; margin-bottom: 24px; }
+.database-toolbar .field { gap: 8px; }
+.device-search-control { display: flex; align-items: center; position: relative; }
+.device-search-control .icon { position: absolute; left: 12px; color: var(--muted); pointer-events: none; }
+.devices-page .device-search-control input { padding-left: 37px; }
+.devices-page select { text-overflow: ellipsis; }
+.database-notice { margin: -12px 0 24px; font-size: .8125rem; color: var(--muted); }
+.device-overview { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 0 0 26px; }
+.device-stat { display: flex; justify-content: space-between; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 16px 20px; }
+.device-stat dt { color: var(--muted); font-size: .8125rem; }
+.device-stat dd { margin: 0; font-size: 1.375rem; font-weight: 650; line-height: 1.3; font-variant-numeric: tabular-nums; }
+.device-stat.online dd { color: var(--success); }
+.device-stat.offline dd { color: var(--muted); }
+.devices-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+.devices-section-heading h2 { margin: 0; }
+.devices-section-heading .count { margin-left: auto; text-align: right; }
+.device-status-filters { display: inline-flex; gap: 3px; padding: 3px; border: 1px solid var(--line); border-radius: 9px; background: var(--soft); }
+.device-status-filters button { min-height: 32px; padding: 5px 13px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted); font-weight: 500; }
+.device-status-filters button:hover:not(:disabled) { color: var(--ink); border-color: transparent; background: #e8e7de; }
+.device-status-filters button[aria-pressed="true"] { color: var(--ink); border-color: #d3d2c7; background: var(--surface); box-shadow: 0 1px 2px #2929230a; }
+.device-status-filters button:focus-visible { position: relative; z-index: 1; }
+.device-list-footer { display: flex; justify-content: center; margin-top: 24px; }
+.device-list-footer:has(> [hidden]) { display: none; }
+#showMoreDevices { min-width: 154px; }
+.devices-page #status { margin: 0 0 18px; }
+.device-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: stretch; gap: 18px; }
+.devices-page .device-card { --card-line: #b9b9ab; --card-edge: #929385; display: flex; flex-direction: column; padding: 20px; min-width: 0; border: 1px solid var(--card-line); border-top: 3px solid var(--card-edge); border-radius: 12px; background: var(--surface); box-shadow: 0 2px 3px #29292305; transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease; }
+.devices-page .device-card[data-state="online"] { --card-line: #b2c7b7; --card-edge: #5a8669; }
+.devices-page .device-card[data-state="unknown"] { --card-line: #d2bd99; --card-edge: #a78550; }
+.devices-page .device-card:focus-within { border-color: var(--card-edge); box-shadow: 0 0 0 3px #b84e2b0b, 0 5px 15px #29292309; }
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .devices-page .device-card:hover { border-color: var(--card-edge); box-shadow: 0 7px 20px #2929230c; transform: translateY(-2px); }
+}
+.device-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+.device-identity { min-width: 0; }
+.device-title { margin: 0; color: var(--ink); font-size: .9375rem; font-weight: 650; overflow-wrap: anywhere; line-height: 1.4; }
+.device-record-id { display: block; margin-top: 4px; color: var(--muted); font-size: .75rem; overflow-wrap: anywhere; }
+.device-state { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; min-height: 22px; font-size: .75rem; color: var(--muted); }
+.device-state::before { content: ""; display: block; width: 6px; height: 6px; border-radius: 50%; background: #8d8e82; }
+.device-state.online { color: var(--success); }
+.device-state.online::before { background: var(--success); }
+.device-state.unknown::before { background: transparent; border: 1px solid var(--muted); }
+.device-telemetry { display: grid; grid-template-columns: minmax(95px, .7fr) minmax(0, 1.3fr); gap: 14px; margin-bottom: 18px; }
+.device-telemetry .device-field { gap: 5px; font-size: .8125rem; }
+.device-battery { display: inline-flex; align-items: center; gap: 7px; color: var(--ink); }
+.device-battery .icon { width: 16px; height: 16px; color: var(--muted); }
+.device-battery.low { color: var(--danger); }
+.device-phones { margin: 0 0 18px; display: grid; gap: 7px; }
+.device-phone { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px 12px; padding: 9px 11px; border-radius: 5px; background: var(--soft); min-width: 0; }
+.device-phone dt { font-size: .75rem; color: var(--muted); }
+.device-phone dd { margin: 0; font-size: .8125rem; color: var(--ink); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.device-phone-missing { font-size: .8125rem; margin: 0 0 18px; color: var(--muted); }
+.devices-page .message-section { margin-top: auto; border-top: 1px solid var(--line); padding-top: 12px; }
+.devices-page .message-section > summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; list-style: none; color: var(--ink); padding: 4px 0; min-height: 32px; font-size: .8125rem; }
+.devices-page .message-section > summary::-webkit-details-marker { display: none; }
+.devices-page .message-section > summary::after { content: ""; width: 7px; height: 7px; border: solid var(--muted); border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); margin: -4px 3px 0 8px; }
+.devices-page .message-section[open] > summary::after { transform: rotate(225deg); margin-top: 4px; }
+.devices-page .message-section .message-list { max-height: 480px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; padding-right: 4px; }
+.devices-page .message-section .message { padding: 14px 0; }
+.devices-page .message-body { font-size: .8125rem; }
+.devices-page .message-meta { gap: 5px 10px; }
+.devices-page .number-evidence { margin: 10px 0; padding: 12px; }
+.devices-page .number-source { overflow-wrap: anywhere; }
+.devices-page .number-caveat { font-size: .75rem; }
+.device-grid > .device-empty { grid-column: 1 / -1; padding: 44px 24px; border: 1px solid var(--line); border-radius: 12px; text-align: center; background: var(--surface); }
+.device-empty h3 { margin: 0 0 6px; color: var(--ink); font-size: .9375rem; }
+.device-empty p { margin: 0; font-size: .8125rem; }
+@media (max-width: 1100px) { .device-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 700px) {
+  .database-toolbar { grid-template-columns: 1fr; gap: 16px; }
+  .devices-page .page-heading { align-items: flex-start; }
+  .device-heading-actions .refresh-note { display: none; }
+  .device-heading-actions { flex-shrink: 0; }
+  .device-overview { gap: 10px; margin-bottom: 22px; }
+  .device-stat { padding: 12px 14px; align-items: flex-start; flex-direction: column; gap: 5px; }
+}
+@media (max-width: 600px) {
+  .devices-section-heading { flex-wrap: wrap; gap: 12px; }
+  .devices-section-heading h2 { flex: 1 1 calc(100% - 160px); }
+  .devices-section-heading .count { order: 1; }
+  .device-status-filters { order: 2; width: 100%; }
+  .device-status-filters button { flex: 1; min-height: 38px; }
+  .devices-page .page-heading { flex-direction: row; gap: 12px; }
+  .device-heading-actions button { padding: 9px 11px; }
+  .device-heading-actions .refresh-note { display: none; }
+  .devices-page .page-description { max-width: 30ch; }
+  .device-grid { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .device-card-header { margin-bottom: 18px; }
+  .devices-page .device-card { padding: 18px; }
+  .device-stat dt { font-size: .75rem; }
+  .device-stat dd { font-size: 1.25rem; }
+  .devices-page .message-section > summary { min-height: 40px; }
+}

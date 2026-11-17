@@ -1,0 +1,2216 @@
+[
+  {
+    "id": "1794920856957-7ehql6",
+    "name": "Flipkart",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "LOGIN to your Flipkart account using OTP {{OTP}}. DO NOT SHARE this code with anyone, including delivery agents. #{{OTP}}",
+        "enabled": true
+      },
+      {
+        "text": "Dear Customer, Your OTP for Flipkart Super Coins Claim is {{OTP}}. Please note this is valid for 10 minutes only. - Team QwikCilver",
+        "enabled": true
+      },
+      {
+        "text": "LOGIN to your Flipkart account using OTP {{OTP}}. DO NOT SHARE this code with anyone, including delivery agents. #{{DIGITS:6}}",
+        "enabled": true
+      },
+      {
+        "text": "[#] {{OTP}} is your LOGIN OTP for Flipkart. DO NOT SHARE this code with anyone, including Flipkart delivery agents.",
+        "enabled": true
+      },
+      {
+        "text": "Ä#Ñ {{OTP}} is your LOGIN OTP for Flipkart. DO NOT SHARE this code with anyone, including Flipkart delivery agents.",
+        "enabled": true
+      },
+      {
+        "text": "Use code {{OTP}} to update the e-mail ID for your Flipkart account. Do not share this code with anyone. #{{DIGITS:6}}",
+        "enabled": true
+      },
+      {
+        "text": "Use code {{OTP}} to UPDATE the PHONE NUMBER for your Flipkart account. Do not share this code with anyone.",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 8,
+    "senderFilter": ""
+  },
+  {
+    "id": "1794921785903-geaq9f",
+    "name": "Swiggy",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "This is a Swiggy login OTP. Do not share the OTP or your number with anyone including Swiggy Personnel through message or call. Your OTP {{OTP}} to log into Swiggy account.",
+        "enabled": true
+      },
+      {
+        "text": "Swiggy Instamart order {{ANY}} is arriving. Share code {{OTP}} to begin Open Box Delivery. View item-level OTPs on your app or reach out to agent in case of any issues",
+        "enabled": true
+      },
+      {
+        "text": "Use OTP {{OTP}} to delete your account at Swiggy. You won't be able to restore your account & associated data later. Don't share this OTP with anyone!",
+        "enabled": true
+      },
+      {
+        "text": "Swiggy Instamart Use {{OTP}} to accept {{ANY}}.... Verify for damage/missing items before sharing. Post-acceptance, returns only for mfg defects.",
+        "enabled": true
+      },
+      {
+        "text": "Use OTP {{OTP}} to log into your Swiggy account. Do not share the OTP or your number with anyone including Swiggy personnel. {{ANY}}",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 8,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-0-1mg",
+    "name": "1MG",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Your TATA 1mg OTP is {{OTP}}. Stay safe and healthy ) Message ID {{ANY}}",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-1-55club",
+    "name": "55Club",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Local service validation code {{OTP}} , never inform strangers.------PURESMOOTH",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-2-567slots",
+    "name": "567slots",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Your OTP is {{OTP}}. For verification only. Valid for 2 minutes. -BAXRWA",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP is {{OTP}}. For verification only. Valid for 2 minutes. -BAXRWB",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-3-6-club",
+    "name": "6 Club",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Please enter {{OTP}} to finish your account registration process. --AJAY ENTERPRISES",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-4-91club",
+    "name": "91Club",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Hello! Thank you for joining us. Kindly enter OTP {{OTP}} to verify your account. --AJAY ENTERPRISES",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is your OTP. Valid for 5 mins. Do not share. ------PURESMOOTH",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP is {{OTP}}. Valid for 5 mins. Do not share.------PURESMOOTH",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-5-abhibus",
+    "name": "Abhibus",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "{{OTP}} is your OTP.",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-6-all",
+    "name": "All",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Please Verify Your Mobile No. By Using This Register Code {{OTP}}. PUBLIC GRIEVANCES DIVISION, PUNJAB POLICE.",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 4,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-7-amazon",
+    "name": "Amazon",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Amazon {{OTP}} is your sign-in code. For your security, don't share it. Amazon will never contact you to ask for this code.",
+        "enabled": true
+      },
+      {
+        "text": "Amazon {{OTP}} is your sign-in OTP. For your security, don't share it. Amazon will never contact you to ask for this OTP.",
+        "enabled": true
+      },
+      {
+        "text": "Amazon OTP for payment of INR {{ANY}} to Amazon Pay is {{OTP}}. If unauthorized, deny here {{ANY}}",
+        "enabled": true
+      },
+      {
+        "text": "Amazon Your code is {{OTP}}. Don't share it. If you didn't request it, deny here {{ANY}}",
+        "enabled": true
+      },
+      {
+        "text": "Amazon Use {{OTP}} to reset your password. Do not give this code to anyone.",
+        "enabled": true
+      },
+      {
+        "text": "Amazon Use {{OTP}} to reset your password. Don't give this code to anyone.",
+        "enabled": true
+      },
+      {
+        "text": "Your Amazon Web Services (AWS) verification code is {{OTP}}",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is your Amazon OTP. Do not share it with anyone.",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} आपका Amazon OTP है. इसे किसी के साथ साझा न करें.",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is your Amazon OTP. Don't share it with anyone.",
+        "enabled": true
+      },
+      {
+        "text": "Amazon Your OTP is {{OTP}}. Do not share it with others",
+        "enabled": true
+      },
+      {
+        "text": "Amazon {{OTP}} से पासवर्ड रीसेट करें। इसे साझा न करें।",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-8-amazon-old",
+    "name": "Amazon Old",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Amazon {{OTP}} is your sign-in code. For your security, don't share it. Amazon will never contact you to ask for this code.",
+        "enabled": true
+      },
+      {
+        "text": "Amazon {{OTP}} is your sign-in OTP. For your security, don't share it. Amazon will never contact you to ask for this OTP.",
+        "enabled": true
+      },
+      {
+        "text": "Amazon Amazon Pay के लिए INR {{ANY}} के भुगतान का OTP {{OTP}} है. यदि अनधिकृत है, तो यहां से इनकार करें {{ANY}}",
+        "enabled": true
+      },
+      {
+        "text": "Amazon Your code is {{OTP}}. Don't share it. If you didn't request it, deny here {{ANY}}",
+        "enabled": true
+      },
+      {
+        "text": "Amazon Use {{OTP}} to reset your password. Do not give this code to anyone.",
+        "enabled": true
+      },
+      {
+        "text": "Amazon Use {{OTP}} to reset your password. Don't give this code to anyone.",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is your Amazon OTP. Do not share it with anyone.",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} आपका Amazon OTP है. इसे किसी के साथ साझा न करें.",
+        "enabled": true
+      },
+      {
+        "text": "Amazon Your code is {{OTP}}. Don't share it with others",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is your Amazon OTP. Don't share it with anyone.",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-9-aws",
+    "name": "AWS",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Your Amazon Web Services (AWS) verification code is {{OTP}}",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-10-bg678",
+    "name": "Bg678",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Dear User, Your login app OTP is {{OTP}} Valid for 2 min. Axon",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-11-bharatgas",
+    "name": "Bharatgas",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "{{OTP}} is your one time password to validate your mobile number on Hello BPCL app. Valid for 5 minutes. DO NOT share it.{{ANY}}",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-12-big-basket",
+    "name": "Big Basket",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Bigbasket login code {{OTP}}. Valid for 3 mins. Account cannot be accessed without this code. Please ignore if not requested. {{ANY}}",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-13-bigbasket",
+    "name": "Bigbasket",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Bigbasket login code {{OTP}}. Valid for 3 mins. Account cannot be accessed without this code. Please ignore if not requested. {{ANY}}",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-14-bingo101",
+    "name": "Bingo101",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Your OTP is {{OTP}}, valid for 10 minutes. Keep it private! -FETCHNOW",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP is {{OTP}}, valid for 10 minutes. Keep it secure! -FETCHNOW",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 4,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-15-borzo",
+    "name": "Borzo",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Borzo code {{OTP}}. Please DO NOT share it with anyone. -Borzo",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 4,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-16-cleartrip",
+    "name": "Cleartrip",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "{{OTP}} is your One Time Password (OTP) to login into Cleartrip.",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 4,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-17-come",
+    "name": "Come",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Hi there! We appreciate your registration. Your code is {{OTP}}. -SHARTEJI TECHNOLOGY PRIVATE LIMITED",
+        "enabled": true
+      },
+      {
+        "text": "COME Code {{OTP}}. Please enter this code to confirm. It will expire in 5 minutes. ------PURESMOOTH",
+        "enabled": true
+      },
+      {
+        "text": "Instant identity code {{OTP}} for quick verification.-SHARTEJI TECHNOLOGY PRIVATE LIMITED",
+        "enabled": true
+      },
+      {
+        "text": "Welcome. Kindly complete your platform enrollment with OTP {{OTP}}. --AJAY ENTERPRISES",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is your OTP. Valid for 5 mins. Do not share. ------PURESMOOTH",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-18-comewindnet",
+    "name": "Comewindnet",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "COME Code {{OTP}}. Please enter this code to confirm. It will expire in 5 minutes. ------PURESMOOTH",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-19-countandearn",
+    "name": "CountandEarn",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "{{OTP}} is your OTP to verify your mobile number with Rayole Software.",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-20-credentials",
+    "name": "credentials",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "{{OTP}} is your One time password (OTP) to login to MyJio. Don't share OTP with anyone.",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is your One time password (OTP) to sign-in to your account on www.jio.com.",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-21-delhivery",
+    "name": "Delhivery",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "{{OTP}} is your OTP to log on to Delhivery website - Delhivery",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-22-dhani-win",
+    "name": "Dhani Win",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Your account registration OTP is {{OTP}}, valid for 5 minutes. Do not share it with anyone. --AJAY ENTERPRISES",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP is {{OTP}}. Valid for 5 mins. Do not share.------PURESMOOTH",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-23-dish-tv",
+    "name": "Dish TV",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "{{OTP}} is your OTP for Story TV App Login. Do not share OTP with anyone for security reasons. {{ANY}}",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 4,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-24-domino-s",
+    "name": "Domino's",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Your OTP is {{OTP}}. Valid for 15mins",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-25-dot-key",
+    "name": "Dot & Key",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "{{OTP}} - use this code to log in to Dot & Key. Valid for 10 minutes. Please keep it private. Powered by Shopflo!",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 4,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-26-eatsure",
+    "name": "Eatsure",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "{{OTP}} is your login otp for Eatsure.",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 4,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-27-eipl",
+    "name": "eIPL",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Dear User, Your login app OTP is {{OTP}} Valid for 2 min. Axon",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 4,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-28-facebook",
+    "name": "Facebook",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "{{OTP}} is your Facebook Lite for Web (WebLite) confirmation code",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is your Facebook for Android confirmation code",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} आपका Facebook for Android पुष्टिकरण कोड है",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is your password reset code for Facebook",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is your Facebook Lite confirmation code",
+        "enabled": true
+      },
+      {
+        "text": "FB-{{OTP}} is your Facebook confirmation code",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is your Facebook password reset code",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} आपका Facebook Lite पुष्टिकरण कोड है",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is your Facebook confirmation code",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} आपका Facebook कन्फ़र्मेशन कोड है",
+        "enabled": true
+      },
+      {
+        "text": "FB-{{OTP}} हा तुमचा Facebook चा पुष्टीकरण कोड आहे.",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 5,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-29-first-cry",
+    "name": "First Cry",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "# {{OTP}} is OTP to create your FirstCry account. OTP is valid for 5 min. Do not share your OTP with anyone. {{ANY}}",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-31-flipkart-old",
+    "name": "Flipkart Old",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "LOGIN to your Flipkart account using OTP {{OTP}}. DO NOT SHARE this code with anyone, including delivery agents. #{{DIGITS:6}}",
+        "enabled": true
+      },
+      {
+        "text": "[#] {{OTP}} is your LOGIN OTP for Flipkart. DO NOT SHARE this code with anyone, including Flipkart delivery agents.",
+        "enabled": true
+      },
+      {
+        "text": "Ä#Ñ {{OTP}} is your LOGIN OTP for Flipkart. DO NOT SHARE this code with anyone, including Flipkart delivery agents.",
+        "enabled": true
+      },
+      {
+        "text": "Use code {{OTP}} to update the e-mail ID for your Flipkart account. Do not share this code with anyone. #{{DIGITS:6}}",
+        "enabled": true
+      },
+      {
+        "text": "Use code {{OTP}} to UPDATE the PHONE NUMBER for your Flipkart account. Do not share this code with anyone.",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-32-flipkart-seller",
+    "name": "Flipkart Seller",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "LOGIN to your Flipkart account using OTP {{OTP}}. DO NOT SHARE this code with anyone, including delivery agents. #{{DIGITS:6}}",
+        "enabled": true
+      },
+      {
+        "text": "[#] {{OTP}} is your LOGIN OTP for Flipkart. DO NOT SHARE this code with anyone, including Flipkart delivery agents.",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-33-flot",
+    "name": "flot",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Dear Customer Your Flot login OTP is {{OTP}}. Enter it to complete sign-up. Valid for 10 mins. Do not share this code. Thanks -Flot",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 4,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-34-gmail-youtube",
+    "name": "Gmail/YouTube",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "G-{{OTP}} is your Google verification code. Don't share your code with anyone.",
+        "enabled": true
+      },
+      {
+        "text": "DO NOT SHARE Your Google Pay OTP is {{OTP}}. Message ID {{ANY}}",
+        "enabled": true
+      },
+      {
+        "text": "G-{{OTP}} is your Google verification code.",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is your YouTube verification code",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-35-goibibo",
+    "name": "Goibibo",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "[#] {{OTP}} is your signup OTP. Treat this as confidential. Goibibo will never call you to verify your OTP. {{ANY}}",
+        "enabled": true
+      },
+      {
+        "text": "[#] {{OTP}} is your login OTP. Treat this as confidential. Goibibo will never call you to verify your OTP. {{ANY}}",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is your signup OTP. Treat this as confidential. Goibibo will never call you to verify your OTP.",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 4,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-36-goldsbet",
+    "name": "Goldsbet",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "{{OTP}} is OTP for logout all your devices with now. it is valid for 30 seconds",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 4,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-37-google-pay",
+    "name": "Google Pay",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "DO NOT SHARE Your Google Pay OTP is {{OTP}}. Message ID {{ANY}}",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-38-googlepay-used",
+    "name": "Googlepay Used",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "DO NOT SHARE Your Google Pay OTP is {{OTP}}. Message ID {{ANY}}",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-39-goplay11",
+    "name": "Goplay11",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "COME Code {{OTP}}. Please enter this code to confirm. It will expire in 5 minutes. ------PURESMOOTH",
+        "enabled": true
+      },
+      {
+        "text": "Your registration OTP is {{OTP}}, valid for 10 mins only. Do not share with anyone. --PURESMOOTH",
+        "enabled": true
+      },
+      {
+        "text": "Verification OTP {{OTP}}. Do not forward this message. -SHARTEJI TECHNOLOGY PRIVATE LIMITED",
+        "enabled": true
+      },
+      {
+        "text": "Instant identity code {{OTP}} for quick verification.-SHARTEJI TECHNOLOGY PRIVATE LIMITED",
+        "enabled": true
+      },
+      {
+        "text": "Access permission validation code {{OTP}}, never disclose to strangers.------PURESMOOTH",
+        "enabled": true
+      },
+      {
+        "text": "Local service validation code {{OTP}} , never inform strangers.------PURESMOOTH",
+        "enabled": true
+      },
+      {
+        "text": "Registration verification code {{OTP}}. Expires in 5 mins only. --PURESMOOTH",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP is {{OTP}}. Valid for 5 mins. Do not share.------PURESMOOTH",
+        "enabled": true
+      },
+      {
+        "text": "Dear User, Your login app OTP is {{OTP}} Valid for 2 min. Axon",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-40-gosats",
+    "name": "Gosats",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Your Gosats Account opening is in process. Kindly verify yourself using OTP {{OTP}}. To check features & T&C kindly visit {{ANY}} & {{ANY}}",
+        "enabled": true
+      },
+      {
+        "text": "[#] {{OTP}} is your LOGIN OTP for Flipkart. DO NOT SHARE this code with anyone, including Flipkart delivery agents.",
+        "enabled": true
+      },
+      {
+        "text": "Use code {{OTP}} to update the e-mail ID for your Flipkart account. Do not share this code with anyone. #{{DIGITS:6}}",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is the OTP for accessing your GOSATS account. This OTP is valid for 3 minutes.",
+        "enabled": true
+      },
+      {
+        "text": "Missed call to {{OTP}} provides only Plan & balance details.",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-41-happy-rummy",
+    "name": "Happy Rummy",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "[YKMS]{{OTP}} is your OTP for registration in the game. Valid for 5min. From YKMS ITECH PRIVATE LIMITED",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 4,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-42-hero777",
+    "name": "Hero777",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "{{OTP}} is your OTP ( One time Password ) For login in {{ANY}} is Valid For 5 Mins. Please Dont Share Otp to anyone. HERO ENTERPRISE",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 4,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-43-hidnn",
+    "name": "Hidnn",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "{{OTP}} is your OTP for Hidnn App. {{ANY}}",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 4,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-44-iconic",
+    "name": "Iconic",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "[#] {{OTP}} is your LOGIN OTP for Flipkart. DO NOT SHARE this code with anyone, including Flipkart delivery agents.",
+        "enabled": true
+      },
+      {
+        "text": "Ä#Ñ {{OTP}} is your LOGIN OTP for Flipkart. DO NOT SHARE this code with anyone, including Flipkart delivery agents.",
+        "enabled": true
+      },
+      {
+        "text": "Use code {{OTP}} to update the e-mail ID for your Flipkart account. Do not share this code with anyone. #{{DIGITS:6}}",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-45-indian-oil",
+    "name": "Indian Oil",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Delivery Authentication Code (DAC) for your refill booking with Invoice Number # 5-{{ANY}} is {{OTP}}.Please share the same with Delivery boy.",
+        "enabled": true
+      },
+      {
+        "text": "Invoice 5-{{ANY}} of amt Rs.{{ANY}} generated for Order 2-{{ANY}} shall be delivered shortly. please share DAC {{OTP}} at the time of delivery.",
+        "enabled": true
+      },
+      {
+        "text": "Order for Cons No {{OTP}} is registered with Ref No.2-{{ANY}}.Expected delivery is within a week.Pay by {{ANY}}",
+        "enabled": true
+      },
+      {
+        "text": "Dear Customer, Please provide the OTP {{OTP}} to your distributor to confirm your Mobile Number.",
+        "enabled": true
+      },
+      {
+        "text": "Your IOCL one time password is {{OTP}} . It would be vaild for 10 mins from {{ANY}} {{ANY}}",
+        "enabled": true
+      },
+      {
+        "text": "Invoice generated for Rs. {{ANY}}.Share DAC {{OTP}} on delivery. Download eInvoice {{ANY}}",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-46-instagram",
+    "name": "Instagram",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "{{OTP}} is your Instagram code. Don't share it. #ig",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is your Instagram code. Don't share it.",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-47-ixigo",
+    "name": "Ixigo",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Use OTP {{OTP}} to login to your ixigo account. ixigo doesn't ask for OTP or contact number to be shared with anyone including ixigo personnel. {{ANY}}",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-48-jaiclub",
+    "name": "Jaiclub",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Your OTP is {{OTP}}. Valid for 5 mins. Do not share.------PURESMOOTH",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-49-jeevansathi",
+    "name": "Jeevansathi",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Use code {{OTP}} to verify your phone number on {{ANY}}. {{ANY}} {{ANY}}",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 4,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-50-jigri",
+    "name": "Jigri",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "{{OTP}} is the otp for mobile verification on STAN. Please do not share this with anyone #{{ANY}}",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP is {{OTP}}, valid for 10 minutes. Keep it private! -FETCHNOW",
+        "enabled": true
+      },
+      {
+        "text": "Dear customer,your OTP for login jeema network is {{OTP}}. -JEEM",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-51-jiohotstar",
+    "name": "JioHotstar",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Hi, your JioHotstar verification code is {{OTP}}",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 4,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-52-jiomart",
+    "name": "JioMart",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "{{OTP}} is OTP code for verifying your phone number to submit your bank details for initiating the refund of amount . Please do not share this OTP with anyone. Notification via JioMart.",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is your OTP to log in to Jiomart with your Reliance Retail Account (valid for 3 mins). Do not share it for security reasons {{ANY}}",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is the OTP to log in to your JioMart Account (valid for 3 mins). Do not share it with anyone for security reasons.",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-53-kamai-kendra",
+    "name": "Kamai Kendra",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Please enter {{OTP}} to verify your account. Thank you for using our service. --LUMICORE",
+        "enabled": true
+      },
+      {
+        "text": "Access permission validation code {{OTP}}, never disclose to strangers.------PURESMOOTH",
+        "enabled": true
+      },
+      {
+        "text": "OTP {{OTP}} for creating a new profile, use it at the earliest.------PURESMOOTH",
+        "enabled": true
+      },
+      {
+        "text": "Local service validation code {{OTP}} , never inform strangers.------PURESMOOTH",
+        "enabled": true
+      },
+      {
+        "text": "Security alert One time passcode {{OTP}} for your validation.------PURESMOOTH",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-54-linkedin",
+    "name": "LinkedIn",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Your LinkedIn verification code is {{OTP}}.",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-55-lottery7",
+    "name": "Lottery7",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Welcome! Your OTP to complete registration is {{OTP}}. Please do not share it. -PURESMOOTH",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-56-meesho",
+    "name": "Meesho",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "OTP for deleting your Meesho account is {{OTP}} and is valid for 5 mins. Please DO NOT share this OTP with anyone to keep your account safe. {{ANY}} Meesho",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP for Meesho login is {{OTP}} and is valid for 10 mins. Please DO NOT share this OTP with anyone to keep your account safe. {{ANY}} Meesho",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP for Meesho login is {{OTP}} and is valid for 5 mins. Please DO NOT share this OTP with anyone to keep your account safe. {{ANY}} Meesho",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP for Meesho login is {{OTP}} and is valid for 1 mins. Please DO NOT share this OTP with anyone to keep your account safe. {{ANY}} Meesho",
+        "enabled": true
+      },
+      {
+        "text": "CANCELLATION request To Cancel and Return, share code {{OTP}} with partner for order Shishi VU red .. from Meesho. Track id SF{{ANY}}FPL -Shadowfax",
+        "enabled": true
+      },
+      {
+        "text": "Sent Rs.{{ANY}} from A/c *{{OTP}} on 25-10-26 to MEESHO TECHNOLOGIES PRIVATE LI.RRN {{ANY}}.Avl Bal Rs.{{ANY}}.Not you?SMS BLOCK to {{ANY}}-Indian Bank",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is your OTP to CANCEL the delivery of shipment {{ANY}} from Meesho. Share OTP with delivery executive to CANCEL the delivery. XpressBees",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is your OTP for registering as a supplier on Meesho. Code valid for 5 minutes only. Please DO NOT share this OTP with anyone. - Meesho",
+        "enabled": true
+      },
+      {
+        "text": "Rs.{{ANY}} Debited from Acc XX207 on {{OTP}} towards UPI/DR/{{ANY}}{{ANY}} AvlBal CR Rs.{{ANY}} if not you?Call {{ANY}}-Nainital Bank",
+        "enabled": true
+      },
+      {
+        "text": "Pick-up for Stylish WF .. from Meesho with AWB{{ANY}} will be picked today, Pickup Code {{OTP}}, Rider Ph{{ANY}} -XpressBees",
+        "enabled": true
+      },
+      {
+        "text": "Pick-up for Women AF Bl.. from Meesho with AWB{{ANY}} will be picked today, Pickup Code {{OTP}}, Rider Ph{{ANY}} -XpressBees",
+        "enabled": true
+      },
+      {
+        "text": "Rectangle VW Sunglasses Comb.. from Meesho arriving today! AWB{{ANY}} Share OTP {{OTP}} with rider. Call{{ANY}} -XpressBees",
+        "enabled": true
+      },
+      {
+        "text": "Coffee GG Color V Neck T-shi.. from Meesho arriving today! AWB{{ANY}} Share OTP {{OTP}} with rider. Call{{ANY}} -XpressBees",
+        "enabled": true
+      },
+      {
+        "text": "Cancellation Share OTP {{OTP}} to reject your order with AWB VL{{ANY}} -Meesho",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-57-meta",
+    "name": "Meta",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "{{OTP}} is your Meta confirmation code.",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-58-money-control",
+    "name": "Money Control",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "{{OTP}} is your OTP code. Do not share this with anyone. Moneycontrol will never call you to verify your OTP. E-EIGHTEEN {{ANY}}",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 4,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-59-myntra",
+    "name": "Myntra",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "[#] {{OTP}} is OTP for account deletion on Myntra. DO NOT share with anyone. MYNTRA never calls to ask for OTP.The otp expires in 10 mins. {{ANY}} - Myntra",
+        "enabled": true
+      },
+      {
+        "text": "[#] {{OTP}} is OTP for email change on Myntra. DO NOT share with anyone. MYNTRA never calls to ask for OTP. The otp expires in 10 mins. {{ANY}} - Myntra",
+        "enabled": true
+      },
+      {
+        "text": "[#] {{OTP}} is OTP for mob change on Myntra. DO NOT share with anyone. MYNTRA never calls to ask for OTP. The otp expires in 10 mins. {{ANY}} - Myntra",
+        "enabled": true
+      },
+      {
+        "text": "[#] {{OTP}} is your OTP to login to Myntra. DO NOT share with anyone. MYNTRA never calls to ask for OTP. The otp expires in 10 mins. {{ANY}} - Myntra",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 4,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-60-nykaa",
+    "name": "Nykaa",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "{{OTP}} is your verification code on Nykaa. The OTP expires within 10 minutes.",
+        "enabled": true
+      },
+      {
+        "text": "Hello! Your Nykaa Fashion OTP is {{OTP}}. Valid for 10 minutes.",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-61-okcupid",
+    "name": "Okcupid",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Your OkCupid verification code is {{OTP}}",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-62-okwin",
+    "name": "Okwin",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Your OTP is {{OTP}}. Valid for 5 mins. Do not share.------PURESMOOTH",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-63-olx",
+    "name": "OLX",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Dear Customer, use code {{OTP}} to login to your OLX account. Never share your code with anyone. #{{DIGITS:4}} {{ANY}} - OLX India",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 4,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-64-paytm-old",
+    "name": "Paytm Old",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Your OTP for login is {{OTP}}. Do not share with anyone. Paytm will never call to verify your OTP.",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-65-phonepe",
+    "name": "PhonePe",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Your OTP for login on PhonePe is {{OTP}}. It is valid for 10 minutes. Do not share your OTP with anyone. {{ANY}}",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 5,
+    "maxOtpLength": 5,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-66-rapido",
+    "name": "Rapido",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "{{OTP}} is the OTP for Rapido app verification.Don't share it with anyone. - Rapido",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-67-raxiwin",
+    "name": "Raxiwin",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Your OTP verification code is {{OTP}}, Please enter the verification code and submit your details to proceed further. Team {{ANY}}",
+        "enabled": true
+      },
+      {
+        "text": "Dear ParentsNew session will be commenced from Login OTP IS {{OTP}} Regards Manasthali",
+        "enabled": true
+      },
+      {
+        "text": "ElasticRun Offer verification code for Mobile Kirana is {{OTP}}",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is Your password For Videomeet account DIGL",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-68-royaljeet",
+    "name": "Royaljeet",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "{{OTP}} is your One Time Password to verify. Don't share this with anyone.",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-69-shikhar-hul",
+    "name": "Shikhar (HUL)",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Share verification code {{OTP}} with the HUL {{ANY}} Representative to validate your store phone number. Valid for 3 mins. {{ANY}} shared will be processed as per Privacy Notice {{ANY}} - HUL",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-70-shopsy",
+    "name": "Shopsy",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "LOGIN to your Flipkart account using OTP {{OTP}}. DO NOT SHARE this code with anyone, including delivery agents. #{{DIGITS:6}}",
+        "enabled": true
+      },
+      {
+        "text": "[#] {{OTP}} is your LOGIN OTP for Flipkart. DO NOT SHARE this code with anyone, including Flipkart delivery agents.",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-71-shreewin",
+    "name": "ShreeWin",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Your OTP is {{OTP}}. Valid for 5 mins. Do not share.------PURESMOOTH",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-72-snapmint",
+    "name": "Snapmint",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "{{OTP}} is the OTP to log in to your Snapmint account. Please DO NOT SHARE this OTP code with anyone including delivery agents. {{ANY}}",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 4,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-73-spin101",
+    "name": "Spin101",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Dear customer,your camiaca otp for mobile verification is {{OTP}}. -CAMIAT",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 4,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-74-spincrush",
+    "name": "Spincrush",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Welcome! Your OTP to complete registration is {{OTP}}. Please do not share it. -PURESMOOTH",
+        "enabled": true
+      },
+      {
+        "text": "Local service validation code {{OTP}} , never inform strangers.------PURESMOOTH",
+        "enabled": true
+      },
+      {
+        "text": "Dear customer,your camiaca otp for mobile verification is {{OTP}}. -CAMIAT",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP is {{OTP}}, valid for 10 minutes. Keep it private! -FETCHNOW",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is your OTP. Valid for 5 mins. Do not share. ------PURESMOOTH",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP is {{OTP}}, valid for 10 minutes. Keep it secure! -FETCHNOW",
+        "enabled": true
+      },
+      {
+        "text": "Dear customer,your OTP for login jeema network is {{OTP}}. -JEEM",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-75-story-max",
+    "name": "Story Max",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "{{OTP}} is your OTP for Storymax App Login. Do not share OTP with anyone for security reasons.",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 4,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-76-story-tv",
+    "name": "Story TV",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "{{OTP}} is your OTP for Story TV App Login. Do not share OTP with anyone for security reasons. {{ANY}}",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 4,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-77-surya",
+    "name": "Surya",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "{{OTP}} is OTP for mobile verification on PM Surya Ghar National Portal. OTP valid upto 30-09-{{ANY}} {{DIGITS:6}}.",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is OTP for mobile verification on PM Surya Ghar National Portal. OTP valid upto 29-09-{{ANY}} {{DIGITS:6}}.",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is OTP for mobile verification on PM Surya Ghar National Portal. OTP valid upto 28-09-{{ANY}} {{DIGITS:6}}.",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is OTP for mobile verification on PM Surya Ghar National Portal. OTP valid upto 26-09-{{ANY}} {{DIGITS:6}}.",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-78-swarail-railone",
+    "name": "Swarail (RailOne)",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Your secret OTP for Password Authentication on RailOne is {{OTP}} for mobile no - {{ANY}}. OTP is valid for 10 mins. Please do not share this OTP. IR-CRIS",
+        "enabled": true
+      },
+      {
+        "text": "Your secret OTP for verifying mobile number on RailOne is {{OTP}} for mobile no - {{ANY}}. OTP is valid for 10 mins. Please do not share this OTP. IR-CRIS",
+        "enabled": true
+      },
+      {
+        "text": "Your secret OTP for retrieving user id on RailOne is {{OTP}} for mobile no - {{ANY}}. OTP is valid for 10 mins. Please do not share this OTP. IR-CRIS",
+        "enabled": true
+      },
+      {
+        "text": "Your secret OTP for Registration on RailOne is {{OTP}} for mobile no - {{ANY}}. OTP is valid for 10 mins. Please do not share this OTP. IR-CRIS",
+        "enabled": true
+      },
+      {
+        "text": "OTP for account recovery of User Name {{ANY}} is {{OTP}}. If it is not done by you, please contact IRCTC Care.-IRCTC",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-80-swiggyold",
+    "name": "Swiggyold",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "This is a Swiggy login OTP. Do not share the OTP or your number with anyone including Swiggy Personnel through message or call. Your OTP {{OTP}} to log into Swiggy account.",
+        "enabled": true
+      },
+      {
+        "text": "Use OTP {{OTP}} to log into your Swiggy account. Do not share the OTP or your number with anyone including Swiggy personnel. {{ANY}}",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-81-telegram",
+    "name": "Telegram",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Dear, your OneTime Password OTP forlogin is {{OTP}} This OTP isvalid for 10minutes, Please donot shareit withanyone,Thankyou-JAINITY EATS INDIA PRIVATELIMITED",
+        "enabled": true
+      },
+      {
+        "text": "This is to verify your COD purchase from Brakeup, Enter {{OTP}} as OTP to confirm, Code is valid for 3minutes Remember,OTPs are secret, Sharing is not caring",
+        "enabled": true
+      },
+      {
+        "text": "OTP for new enquiry registration request is {{OTP}} Please enter this to verify your identity and proceed with the new enquiry registration request-CLINOMIC",
+        "enabled": true
+      },
+      {
+        "text": "Dear, Your One Time Password is {{OTP}} Please enter in the concerned fields for further process in the college mobile application, Thankyou -Resovizag",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is Your OTP to Authenticate WIGOPE Merchant Account, itis Valid for 5Minutes Only, Donot share with Anyone, Regards - WIGOPE Technologies",
+        "enabled": true
+      },
+      {
+        "text": "Dear User,Your OTP for login to Quintal Stall Platform is {{OTP}} Valid for 30minutes, Please dont share this OTP, Regards,Quintal Stall Team",
+        "enabled": true
+      },
+      {
+        "text": "OTP to reset your Mypoojabookingcom login password is {{OTP}} Validity period 3mins, Please donot share your OTP - Kochikar Technologies",
+        "enabled": true
+      },
+      {
+        "text": "Dear Customer, Your OTP for completing the registration is {{OTP}} Please do not share this code with anyone,Thank you,wwwanurupjodicom",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is your one time password for account verification and is valid for 10 mins. Please do not share this OTP with anyone. Trucal",
+        "enabled": true
+      },
+      {
+        "text": "Your account verification code is {{OTP}}. This code is confidential. Please do not share it with anyone. Valid for 15 mints, Trucal",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP is {{OTP}} for verification, Do not share it with anyone, It is valid for 10 minutes,Regards, GHARKING OPC PRIVATE LIMITED",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is your one time password to proceed on PhonePe. It is valid for 10 minutes. Do not share your OTP with anyone. {{ANY}}",
+        "enabled": true
+      },
+      {
+        "text": "LegalTry Your OTP for LegalTry Member Registration is {{OTP}} Do not share this OTP with anyone, {{ANY}} LTR INTERNATIONAL LLP",
+        "enabled": true
+      },
+      {
+        "text": "Hi, Please enter the PIN {{OTP}} to verify your mobile number for {{ANY}} and please save as password for future - {{ANY}}",
+        "enabled": true
+      },
+      {
+        "text": "Dear Student Your Verification Code Is {{OTP}} Enter Your Verification Code to Verify Your Contact Number From Afte Institute",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is the OTP to login into your Oneclicksupport account, Dont share it with anyone, Oneclicksupportin Oneclicksupport",
+        "enabled": true
+      },
+      {
+        "text": "Your account verification code {{OTP}}. Enter this code within 10 minutes to proceed. Do not share it with anyone. Trucal",
+        "enabled": true
+      },
+      {
+        "text": "Your account Security OTP is {{OTP}} for verification, Valid for 5 minutes, Do not disclose this code to anyone, Trucal",
+        "enabled": true
+      },
+      {
+        "text": "Registration OTP, Welcome to Prowell, Your OTP for registration is {{OTP}} Please do not share this code with anyone",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP for login on PhonePe is {{OTP}}. It is valid for 10 minutes. Do not share your OTP with anyone. {{ANY}}",
+        "enabled": true
+      },
+      {
+        "text": "Dear User, Please use OTP {{OTP}} to Registration of MYLAB Software, This OTP is valid for today Powered by- MyLabI",
+        "enabled": true
+      },
+      {
+        "text": "Dear Customer, {{OTP}} is the OTP that you have requested to login into {{ANY}}, Dont share your OTP with anyone",
+        "enabled": true
+      },
+      {
+        "text": "Your login OTP is {{OTP}} Please do not share your OTP with others, Your OTP expires in 10 minutes TRIUNFADOR GJH",
+        "enabled": true
+      },
+      {
+        "text": "OTP {{OTP}}. is required to verify your request. If you did not request this, please ignore this message. Trucal",
+        "enabled": true
+      },
+      {
+        "text": "DEAR,THANKS FOR YOUR PURCHASE AT THENI ANANTHAM YOUR VIP CARD NO IS AND TOTAL POINT IS OTP {{OTP}} Thank You",
+        "enabled": true
+      },
+      {
+        "text": "Your account Security OTP is {{OTP}}, It is valid for 5 minutes, Do not share this code with anyone, Trucal",
+        "enabled": true
+      },
+      {
+        "text": "GreenKhata Your login verification code is {{OTP}} Valid for 5 minutes, Do not share this code with anyone",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is the OTP for your ZyNerd account, Please do not share this code with anyone for security reason",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is your OTP (One Time Password) to proceed on account. Do not share your OTP with anyone. Trucal",
+        "enabled": true
+      },
+      {
+        "text": "Your account verification OTP is {{OTP}}. Keep this code private and do not share it with anyone. Trucal",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is your login verification code,OTP is valid for 30mins, wwwamritamherbalcom - AMREETAMM HERBAL",
+        "enabled": true
+      },
+      {
+        "text": "Your login OTP for accessing 24 UA Movies is {{OTP}} Please do not share it with any one, 24 UA Movies",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP for login to fastayscom is {{OTP}} Do not share it with anyone -Skygen {{ANY}} Services",
+        "enabled": true
+      },
+      {
+        "text": "Your account confirmation code is {{OTP}}. Keep it private and do not share it with anyone. Trucal",
+        "enabled": true
+      },
+      {
+        "text": "Thank you for choosing Servy {{ANY}}, Your one time passcode is {{OTP}} - SERVY PRIVATE LIMITED",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP is {{OTP}}. Enter this code to continue your account process in 10 minutes. Trucal",
+        "enabled": true
+      },
+      {
+        "text": "Your one-time password (OTP) is {{OTP}}. Enter this code to complete your login. Trucal",
+        "enabled": true
+      },
+      {
+        "text": "Dear Customer, Greetings from Experience Andamans, Please use this OTP {{OTP}}",
+        "enabled": true
+      },
+      {
+        "text": "Dear, {{OTP}} is your OTP to login to your CARCLENX account, CARCLENX PVT LTD",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP For Users Email/Mobile Changes Is {{OTP}} Regards SWASTI RECHARGE",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP for overseas number change is {{OTP}} Do not share it with anyone",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP is {{OTP}}, valid for 10 minutes. Keep it private! -FETCHNOW",
+        "enabled": true
+      },
+      {
+        "text": "OTP for Modification in Lot No is {{OTP}} - {{ANY}} Jewellers Sons",
+        "enabled": true
+      },
+      {
+        "text": "Please use OTP {{OTP}} to login to your VegEase account {{ANY}}",
+        "enabled": true
+      },
+      {
+        "text": "Dear, OTP to reset your login password is {{OTP}} - GS SCORE",
+        "enabled": true
+      },
+      {
+        "text": "Dear User,Your OTP {{OTP}} For Password Update-Sun Jackpot",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is the OTP for logging in to {{DIGITS:5}} -{{ANY}}",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP is {{OTP}} to login the Ahana patient app",
+        "enabled": true
+      },
+      {
+        "text": "Your one time password for login is {{OTP}}",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is your OTP, Edutron School ERP",
+        "enabled": true
+      },
+      {
+        "text": "Telegram code {{OTP}}",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} YvcYqn",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}}",
+        "enabled": true
+      },
+      {
+        "text": "Your verification code is {{OTP}}. Enter this OTP to securely verify your account, MS-Systems",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 5,
+    "maxOtpLength": 5,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-82-truecaller",
+    "name": "Truecaller",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Truecaller code {{OTP}}",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-83-truemeds",
+    "name": "Truemeds",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Doctor Consultation {{OTP}} Our Doctor will call you shortly to confirm your medicine. Working hours between 9 am to 10 pm. -TRUEMEDS",
+        "enabled": true
+      },
+      {
+        "text": "Order Placed {{OTP}} Thank you for trusting Truemeds. Your order is placed and your estimated delivery date is {{ANY}}",
+        "enabled": true
+      },
+      {
+        "text": "Use {{OTP}} to log in to Truemeds. Never share this OTP with anyone.",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 8,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-84-tumusi",
+    "name": "Tumusi",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Your account confirmation code is {{OTP}}. Keep it private and do not share it with anyone. Trucal",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is your OTP for App Powered by httpstoondemycom",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 5,
+    "maxOtpLength": 5,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-85-uber",
+    "name": "Uber",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "ÄUberÑ Your code {{OTP}}. Never share this code with anyone. Reply STOP ALL to +91 {{DIGITS:5}} {{DIGITS:5}} to unsubscribe. {{ANY}}",
+        "enabled": true
+      },
+      {
+        "text": "[Uber] Your code {{OTP}}. Never share this code with anyone. Reply STOP ALL to +91 {{DIGITS:5}} {{DIGITS:5}} to unsubscribe. {{ANY}}",
+        "enabled": true
+      },
+      {
+        "text": "[Uber] Your code {{OTP}}. Never share this code with anyone. Reply STOP ALL to +91 {{DIGITS:5}} {{DIGITS:5}} to unsubscribe.",
+        "enabled": true
+      },
+      {
+        "text": "ÄUberÑ Your code {{OTP}}. Never share this code with anyone. Reply STOP ALL to +91 {{DIGITS:5}} {{DIGITS:5}} to unsubscribe.",
+        "enabled": true
+      },
+      {
+        "text": "[Uber] Your code {{OTP}}. Never share this code with anyone. {{ANY}}",
+        "enabled": true
+      },
+      {
+        "text": "ÄUberÑ Your code {{OTP}}. Never share this code with anyone. {{ANY}}",
+        "enabled": true
+      },
+      {
+        "text": "[Uber] आपका कोड {{OTP}}। यह कोड कभी किसी के साथ शेयर न करें।",
+        "enabled": true
+      },
+      {
+        "text": "[Uber] Your code {{OTP}}. Never share this code with anyone.",
+        "enabled": true
+      },
+      {
+        "text": "ÄUberÑ Your code {{OTP}}. Never share this code with anyone.",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 4,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-86-unicef",
+    "name": "UNICEF",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "{{OTP}} is your UNICEF P2E account authentication code. This OTP is sent via Inverted Mushrooms (DLT registered entity).",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 4,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-87-veer-game",
+    "name": "Veer Game",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Hello! Thank you for joining us. Kindly enter OTP {{OTP}} to verify your account. --AJAY ENTERPRISES",
+        "enabled": true
+      },
+      {
+        "text": "Welcome! Your OTP to complete registration is {{OTP}}. Please do not share it. -PURESMOOTH",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP is {{OTP}}. Valid for 5 mins. Do not share.------PURESMOOTH",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-88-wingo",
+    "name": "WIngo",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "{{OTP}} is your OTP for verification of phone number with WinGo.",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 4,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-89-woohoo",
+    "name": "Woohoo",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "[#] {{OTP}} is your Woohoo verification code. Code is valid for 10 minutes. {{ANY}} - Woohoo.in",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-90-wow-eat",
+    "name": "Wow Eat",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Your OTP for login is {{OTP}}. Enter it on our app. Don't disclose it. Expires soon. Wow Eats.",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-91-wp",
+    "name": "Wp",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "{{OTP}}",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-92-yono-arcade",
+    "name": "Yono Arcade",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Dear customer,your camiaca otp for mobile verification is {{OTP}}. -CAMIAT",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP is {{OTP}}, valid for 10 minutes. Keep it private! -FETCHNOW",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP is {{OTP}}, valid for 10 minutes. Keep it secure! -FETCHNOW",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 4,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-93-yono-games",
+    "name": "Yono Games",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Dear customer,your camiaca otp for mobile verification is {{OTP}}. -CAMIAT",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP is {{OTP}}, valid for 10 minutes. Keep it private! -FETCHNOW",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP is {{OTP}}, valid for 10 minutes. Keep it secure! -FETCHNOW",
+        "enabled": true
+      },
+      {
+        "text": "Dear customer,your OTP for login jeema network is {{OTP}}. -JEEM",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-94-yono-vip",
+    "name": "Yono Vip",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Dear customer,your camiaca otp for mobile verification is {{OTP}}. -CAMIAT",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP is {{OTP}}. For verification only. Valid for 2 minutes. -BAXRWB",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP is {{OTP}}, valid for 10 minutes. Keep it private! -FETCHNOW",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP is {{OTP}}, valid for 10 minutes. Keep it secure! -FETCHNOW",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 5,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-95-yonoslots",
+    "name": "Yonoslots",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Dear customer,your camiaca otp for mobile verification is {{OTP}}. -CAMIAT",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP is {{OTP}}. For verification only. Valid for 2 minutes. -BAXRWA",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP is {{OTP}}. For verification only. Valid for 2 minutes. -BAXRWB",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP is {{OTP}}. For verification only. Valid for 2 minutes. -BAXRWC",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP is {{OTP}}, valid for 10 minutes. Keep it private! -FETCHNOW",
+        "enabled": true
+      },
+      {
+        "text": "Your OTP is {{OTP}}, valid for 10 minutes. Keep it secure! -FETCHNOW",
+        "enabled": true
+      },
+      {
+        "text": "Dear customer,your OTP for login jeema network is {{OTP}}. -JEEM",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-96-zepto",
+    "name": "Zepto",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Your OTP is {{OTP}}. Use it to complete your mobile verification on Zepto. Expires in 5 minutes. {{ANY}}",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "smsfmt-97-zomato",
+    "name": "Zomato",
+    "enabled": true,
+    "templates": [
+      {
+        "text": "Dear Partner, {{OTP}} is your OTP to login into your Zomato account. Kindly do not share this verification code with anyone.",
+        "enabled": true
+      },
+      {
+        "text": "Hello, {{OTP}} is the OTP for Zomato App login using your phone number. Do not share it to anyone. {{ANY}} -ZOMATO",
+        "enabled": true
+      },
+      {
+        "text": "Hello, {{OTP}} is the OTP for Zomato App login using your phone number. Do not share it to anyone. -ZOMATO",
+        "enabled": true
+      },
+      {
+        "text": "Hello, {{OTP}} is your Zomato verification code. Enjoy -)",
+        "enabled": true
+      },
+      {
+        "text": "{{OTP}} is your Zomato verification code. Enjoy -)",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 6,
+    "maxOtpLength": 6,
+    "senderFilter": ""
+  },
+  {
+    "id": "1794943251969-0fc8iw",
+    "name": "test",
+    "templates": [
+      {
+        "text": "LOGIN to your Flipkart account using OTP {{OTP}}. DO NOT SHARE this code with anyone, including delivery agents. #{{OTP}}",
+        "enabled": true
+      }
+    ],
+    "minOtpLength": 4,
+    "maxOtpLength": 8,
+    "senderFilter": "",
+    "enabled": false
+  }
+]

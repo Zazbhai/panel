@@ -372,7 +372,7 @@ BAD_SERVICE Missing service or not configured on the Services page.</pre>
 
     <section class="panel" aria-labelledby="getStatusHeading">
       <h2 id="getStatusHeading">Check SMS status</h2>
-      <p>Checks the device assigned to an order. A received OTP completes the order and permanently locks its number for that service.</p>
+      <p>Checks the device assigned to an order. The first matching OTP completes the order and permanently locks its number for that service. Later matching OTPs remain attached to the same locked order, and the newest code is returned.</p>
       <p class="endpoint">GET <span data-local-action="getStatus"></span></p>
       <dl class="params">
         <dt>api_key</dt><dd>Required. Dashboard key from the API access panel.</dd>
