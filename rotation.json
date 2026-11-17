@@ -128,6 +128,13 @@
         "9631604633"
       ],
       "cycle": 0
+    },
+    "wp": {
+      "cursorUrl": "https://kingx90-796ca-default-rtdb.firebaseio.com",
+      "usedNumbers": [
+        "9631604633"
+      ],
+      "cycle": 0
     }
   },
   "orders": [
@@ -400,6 +407,38 @@
             "id": 1794945504708,
             "message": "LOGIN to your Flipkart account using OTP 747622. DO NOT SHARE this code with anyone, including delivery agents. #747622",
             "sender": "VA-FLPKRT-S",
+            "type": "incoming"
+          }
+        }
+      ]
+    },
+    {
+      "orderId": "f91c9c7b7fb25da38c274077",
+      "deviceId": "43d43fead3cd5b71",
+      "number": "9631604633",
+      "databaseUrl": "https://kingx90-796ca-default-rtdb.firebaseio.com",
+      "service": "wp",
+      "createdAt": 1794946646797,
+      "expiresAt": 1794947246797,
+      "status": "completed",
+      "receivedOtp": "661572",
+      "receivedAt": 1794946695849,
+      "receivedOtps": [
+        {
+          "code": "661572",
+          "receivedAt": 1794946695849,
+          "messageKey": "1794946695849"
+        }
+      ],
+      "messageHistory": [
+        {
+          "key": "1794946695849",
+          "timestamp": 1794946695849,
+          "message": {
+            "dateTime": "18-11-2026 | 01:48 am",
+            "id": 1794946695849,
+            "message": "<#> Your WhatsApp account is being registered on a new device\n\nDo not share this code with anyone\nYour WhatsApp code: 661-572\n4sgLq1p5sV6",
+            "sender": "57273200",
             "type": "incoming"
           }
         }

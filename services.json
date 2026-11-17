@@ -2035,7 +2035,7 @@
     "enabled": true,
     "templates": [
       {
-        "text": "{{OTP}}",
+        "text": "<#> Your WhatsApp account is being registered on a new device Do not share this code with anyone Your WhatsApp code: {{OTP}} 4sgLq1p5sV6",
         "enabled": true
       }
     ],

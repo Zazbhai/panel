@@ -504,6 +504,12 @@ async function readRotationState() {
     } catch {
       throw new Error("The recent orders data has an invalid format.");
     }
+    const numberActive = Boolean(order
+      && order.numberActive === true
+      && order.status !== "cancelled"
+      && order.status !== "expired"
+      && Number.isFinite(order.expiresAt)
+      && order.expiresAt > Date.now());
     if (!order || typeof order !== "object" || Array.isArray(order)
       || typeof order.orderId !== "string" || !/^[a-f0-9]{24}$/.test(order.orderId)
       || orderIds.has(order.orderId)
@@ -519,6 +525,7 @@ async function readRotationState() {
       || (order.receivedOtp === null) !== (order.receivedAt === null)
       || order.receivedOtp !== (latestOtp ? latestOtp.code : null)
       || order.receivedAt !== (latestOtp ? latestOtp.receivedAt : null)
+      || (order.numberActive !== undefined && typeof order.numberActive !== "boolean")
       || (order.receivedOtp !== null && order.status !== "completed")
       || (order.status === "completed" && order.receivedOtp === null)
       || (order.status === "active" && activeNumbers.has(order.number))) {
@@ -541,7 +548,8 @@ async function readRotationState() {
       receivedOtp: order.receivedOtp,
       receivedAt: order.receivedAt,
       receivedOtps,
-      messageHistory
+      messageHistory,
+      numberActive
     });
   }
   return { initialized: true, databaseUrls, serviceUsage, orders };
@@ -664,9 +672,14 @@ function synchronizeNumberReservations(rotationState, now = Date.now()) {
   for (const order of rotationState.orders) {
     if (order.status === "active" && order.expiresAt <= now) {
       order.status = "expired";
+      order.numberActive = false;
       changed = true;
     }
     if (order.status !== "active") {
+      if (order.expiresAt <= now && order.numberActive) {
+        order.numberActive = false;
+        changed = true;
+      }
       clearOrderExpirationTimer(order.orderId);
       continue;
     }
@@ -858,7 +871,9 @@ async function reserveNumber(service, database, candidate, serviceState, rotatio
     status: "active",
     receivedOtp: null,
     receivedAt: null,
-    receivedOtps: []
+    receivedOtps: [],
+    messageHistory: [],
+    numberActive: false
   };
   rotationState.orders.push(reservation);
   await saveRotationState(rotationState);
@@ -1032,8 +1047,17 @@ async function synchronizeRecentOrderOtps() {
     if (!candidates.length) return;
 
     const matches = [];
+    const numberStatusUpdates = [];
     await Promise.all(candidates.map(async (order) => {
       recentOrderOtpChecks.set(order.orderId, now);
+      try {
+        const client = await fetchDatabaseJson(
+          `${order.databaseUrl}/clients/${encodeURIComponent(order.deviceId)}.json`
+        );
+        numberStatusUpdates.push({ orderId: order.orderId, numberActive: client?.status === true });
+      } catch (error) {
+        console.error(`Could not check active status for recent order ${order.orderId}:`, error.message);
+      }
       const service = services.get(order.service.trim().toLowerCase());
       if (!service) return;
       try {
@@ -1061,11 +1085,19 @@ async function synchronizeRecentOrderOtps() {
         console.error(`Could not scan messages for recent order ${order.orderId}:`, error.message);
       }
     }));
-    if (!matches.length) return;
+    if (!matches.length && !numberStatusUpdates.length) return;
 
     await withRotationLock(async () => {
       const rotationState = await readRotationState();
       let changed = false;
+      for (const update of numberStatusUpdates) {
+        const order = rotationState.orders.find((item) => item.orderId === update.orderId);
+        if (!order || (order.status !== "active" && order.status !== "completed")) continue;
+        if (order.numberActive !== update.numberActive) {
+          order.numberActive = update.numberActive;
+          changed = true;
+        }
+      }
       for (const match of matches) {
         const order = rotationState.orders.find((item) => item.orderId === match.orderId);
         if (!order || (order.status !== "active" && order.status !== "completed")) continue;
@@ -1171,6 +1203,7 @@ async function handleLocalOtpRequest(requestUrl, response) {
         }
         if (statuses[0] === "8") {
           reservation.status = "cancelled";
+          reservation.numberActive = false;
           synchronizeNumberReservations(rotationState);
           await saveRotationState(rotationState);
           return "ACCESS_CANCEL";

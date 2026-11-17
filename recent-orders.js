@@ -11,6 +11,7 @@ const dateError = document.getElementById("orderDateError");
 const orderCount = document.getElementById("orderCount");
 const showMoreOrders = document.getElementById("showMoreOrders");
 const ordersRefreshStatus = document.getElementById("ordersRefreshStatus");
+const activeNumberCount = document.getElementById("activeNumberCount");
 const orderCards = new Map();
 const ORDER_BATCH_SIZE = 6;
 const ORDER_REFRESH_INTERVAL = 5000;
@@ -23,7 +24,6 @@ let ordersLoading = false;
 let requestSequence = 0;
 let displayedOrders = [];
 let serviceTemplatesPromise = null;
-const expandedOrderIds = new Set();
 const orderMessageStates = new Map();
 const orderMessagePanels = new Map();
 
@@ -160,7 +160,7 @@ function makeOrderMessageRow(order, [key, message]) {
   return row;
 }
 
-function makeOrderDetails(order, disclosure) {
+function makeOrderDetails(order, container) {
   const panel = document.createElement("div");
   panel.className = "order-detail-panel";
   const heading = document.createElement("h3");
@@ -177,6 +177,7 @@ function makeOrderDetails(order, disclosure) {
     ["Expires", formatOrderTime(order.expiresAt)],
     ["Status", order.status],
     ["OTP locked", order.locked ? "Yes" : "No"],
+    ["Number active", order.numberActive ? "Yes" : "No"],
     ["Latest OTP", order.receivedOtp],
     ["OTP history", getOrderOtpHistory(order).join(", ")]
   ];
@@ -197,7 +198,7 @@ function makeOrderDetails(order, disclosure) {
   const messageList = document.createElement("div");
   messageList.className = "message-list";
   panel.append(heading, details, messagesHeading, messageStatus, messageList);
-  disclosure.append(panel);
+  container.append(panel);
   orderMessagePanels.set(order.orderId, { messageStatus, messageList });
   renderOrderMessages(order);
 }
@@ -268,13 +269,20 @@ function makeOrderCard(order) {
   card.dataset.orderId = order.orderId;
   const titleId = `order-title-${++cardSequence}`;
   card.setAttribute("aria-labelledby", titleId);
-  card.innerHTML = `<div class="order-card-header"><h3 id="${titleId}"></h3><span class="order-state"></span></div><span class="order-reference"></span><dl class="order-values"><div><dt>Allocated number</dt><dd class="order-number"></dd></div><div><dt>Received OTP</dt><dd class="order-code"></dd></div></dl><div class="order-card-meta"><time></time><span class="order-lock"></span></div><details class="order-disclosure"><summary>Details &amp; messages</summary></details>`;
-  const disclosure = card.querySelector("details");
-  disclosure.addEventListener("toggle", () => {
-    if (!disclosure.open) { expandedOrderIds.delete(order.orderId); return; }
-    expandedOrderIds.add(order.orderId);
-    const current = displayedOrders.find((item) => item.orderId === order.orderId);
-    if (current) loadOrderMessages(current);
+  card.innerHTML = `<div class="order-card-header"><h3 id="${titleId}"></h3><div class="order-state-group"><span class="order-state"></span><span class="order-live-state" hidden>Number active</span></div></div><span class="order-reference"></span><dl class="order-values"><div><dt>Allocated number</dt><dd class="order-number"></dd></div><div><dt>Received OTP</dt><dd class="order-code"></dd></div></dl><div class="order-card-meta"><time></time><span class="order-lock"></span></div><button class="order-details-trigger" type="button" aria-haspopup="dialog">Details &amp; messages<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button><dialog class="order-dialog"></dialog>`;
+  const trigger = card.querySelector(".order-details-trigger");
+  const dialog = card.querySelector(".order-dialog");
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) dialog.close();
+  });
+  dialog.addEventListener("close", () => {
+    orderMessagePanels.delete(order.orderId);
+    if (trigger.isConnected) trigger.focus();
+  });
+  trigger.addEventListener("click", () => {
+    const current = displayedOrders.find((item) => item.orderId === order.orderId) || order;
+    dialog.showModal();
+    loadOrderMessages(current);
   });
   return card;
 }
@@ -290,8 +298,10 @@ function updateOrderCard(card, order) {
   if (card.orderSignature === signature) return;
   card.orderSignature = signature;
   card.dataset.state = Object.hasOwn(statusLabels, order.status) ? order.status : "unknown";
+  card.dataset.numberActive = String(order.numberActive === true);
   card.querySelector("h3").textContent = order.service || "Unnamed service";
   card.querySelector(".order-state").textContent = statusLabels[order.status] || "Unknown";
+  card.querySelector(".order-live-state").hidden = order.numberActive !== true;
   card.querySelector(".order-reference").textContent = order.orderId;
   card.querySelector(".order-number").textContent = order.number || "Not reported";
   card.querySelector(".order-code").textContent = order.receivedOtp || "—";
@@ -299,10 +309,17 @@ function updateOrderCard(card, order) {
   card.querySelector("time").textContent = formatOrderTime(order.createdAt);
   const date = new Date(order.createdAt);
   if (Number.isFinite(date.getTime())) card.querySelector("time").dateTime = date.toISOString();
-  const disclosure = card.querySelector("details");
-  disclosure.querySelector(".order-detail-panel")?.remove();
-  makeOrderDetails(order, disclosure);
-  disclosure.open = expandedOrderIds.has(order.orderId);
+  const dialog = card.querySelector(".order-dialog");
+  let content = dialog.querySelector(".order-dialog-content");
+  if (!content) {
+    const form = document.createElement("form");
+    form.method = "dialog";
+    form.innerHTML = `<div class="order-dialog-header"><h2>Details &amp; messages</h2><button class="quiet icon-button" value="cancel" type="submit" aria-label="Close order details"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><div class="order-dialog-content"></div>`;
+    dialog.append(form);
+    content = form.querySelector(".order-dialog-content");
+  }
+  content.replaceChildren();
+  makeOrderDetails(order, content);
 }
 
 function parseCalendarDate(value) {
@@ -348,12 +365,14 @@ function renderOrders(orders, refreshExpandedMessages = false) {
   const bounds = getDateBounds();
   const query = orderSearch.value.trim().toLocaleLowerCase();
   const matches = orders.filter((order) => (!bounds || (Number.isFinite(order.createdAt) && order.createdAt >= bounds.start && order.createdAt < bounds.end))
-    && (!statusFilter.value || order.status === statusFilter.value)
+    && (!statusFilter.value
+      || (statusFilter.value === "number-active" ? order.numberActive === true : order.status === statusFilter.value))
     && [order.orderId, order.service, order.number, order.deviceId].join(" ").toLocaleLowerCase().includes(query))
     .sort((left, right) => (Number(right.createdAt) || 0) - (Number(left.createdAt) || 0));
   document.getElementById("totalOrderCount").textContent = matches.length;
   document.getElementById("waitingOrderCount").textContent = matches.filter((order) => order.status === "active").length;
   document.getElementById("completedOrderCount").textContent = matches.filter((order) => order.status === "completed").length;
+  activeNumberCount.textContent = new Set(matches.filter((order) => order.numberActive === true).map((order) => order.number)).size;
   const visible = matches.slice(0, visibleLimit);
   const ids = new Set(visible.map((order) => order.orderId));
   for (const [id, card] of orderCards) {
@@ -365,7 +384,8 @@ function renderOrders(orders, refreshExpandedMessages = false) {
     updateOrderCard(card, order);
     orderCards.set(order.orderId, card);
     if (orderList.children[index] !== card) orderList.insertBefore(card, orderList.children[index] || null);
-    if (!expandedOrderIds.has(order.orderId)) continue;
+    const dialog = card.querySelector(".order-dialog");
+    if (!dialog.open) continue;
     if (refreshExpandedMessages || !orderMessageStates.has(order.orderId)) {
       loadOrderMessages(order);
     }
@@ -375,7 +395,7 @@ function renderOrders(orders, refreshExpandedMessages = false) {
   showMoreOrders.setAttribute("aria-label", `Show ${Math.min(ORDER_BATCH_SIZE, matches.length - visible.length)} more orders`);
   if (!matches.length) orderList.append(makeOrderEmpty(orders.length ? "No matching orders" : "No orders yet", orders.length ? "Try another date range, status or search." : "Allocated numbers will appear here."));
   const existingIds = new Set(orders.map((order) => order.orderId));
-  for (const id of orderMessageStates.keys()) if (!existingIds.has(id)) { orderMessageStates.delete(id); expandedOrderIds.delete(id); }
+  for (const id of orderMessageStates.keys()) if (!existingIds.has(id)) orderMessageStates.delete(id);
 }
 
 function setRefreshStatus(text) {

@@ -13,7 +13,7 @@ class Fixture(checks.Fixture):
     def __init__(self):
         super().__init__()
         self.orders = [
-            {'orderId': f'order-{i}', 'service': 'Flipkart' if i % 2 else 'Test service', 'number': f'90000000{i:02}', 'deviceId': f'device-{i}', 'databaseUrl': DATABASE, 'createdAt': 1794873600000 + i*86400000, 'expiresAt': 1794960000000 + i*86400000, 'receivedAt': 1794960000000 + i*86400000, 'locked': i%2==0, 'receivedOtp': '123456' if i%3==0 else None, 'status': ['completed','active','expired'][i%3]}
+            {'orderId': f'order-{i}', 'service': 'Flipkart' if i % 2 else 'Test service', 'number': f'90000000{i:02}', 'deviceId': f'device-{i}', 'databaseUrl': DATABASE, 'createdAt': 1794873600000 + i*86400000, 'expiresAt': 1794960000000 + i*86400000, 'receivedAt': 1794960000000 + i*86400000, 'locked': i%2==0, 'receivedOtp': '123456' if i%3==0 else None, 'status': ['completed','active','expired'][i%3], 'numberActive': i%3==0}
             for i in range(12)
         ]
         self.orders[0]['service'] = 'Flipkart'
@@ -50,6 +50,8 @@ def main():
         checks.ready(page, '/recent-orders')
         expect(page.locator('.order-card')).to_have_count(6)
         expect(page.locator('#totalOrderCount')).to_have_text('12')
+        expect(page.locator('#activeNumberCount')).to_have_text('4')
+        expect(page.locator('.order-card[data-order-id="order-6"]')).to_have_attribute('data-number-active', 'true')
         expect(page.locator('#orderCount')).to_have_text('6 of 12 orders')
         fixture.orders = fixture.orders[:-1] + [{**fixture.orders[-1], 'orderId': 'order-refreshed'}]
         page.evaluate("window.__dashboardIntervals.find((entry) => entry.delay === 5000).callback()")
@@ -62,8 +64,9 @@ def main():
         page.locator('[data-range="custom"]').click(); expect(page.locator('#customOrderDates')).to_be_visible()
         page.locator('#orderDateFrom').fill('2026-11-18'); page.locator('#orderDateTo').fill('2026-11-18'); page.locator('#customOrderDates button').click(); expect(page.locator('#orderCount')).to_have_text('1 order')
         page.locator('[data-range="all"]').click(); page.locator('#orderStatusFilter').select_option('active'); expect(page.locator('.order-card')).to_have_count(4)
+        page.locator('#orderStatusFilter').select_option('number-active'); expect(page.locator('.order-card')).to_have_count(4)
         page.locator('#orderStatusFilter').select_option(''); page.locator('#orderSearch').fill('order-0'); expect(page.locator('.order-card')).to_have_count(1); page.locator('#orderSearch').fill('')
-        page.locator('[data-range="all"]').click(); page.locator('#showMoreOrders').click(); reads_before = len(fixture.reads); order_zero = page.locator('.order-card[data-order-id="order-0"]'); order_zero.locator('.order-disclosure').click(); expect(order_zero.locator('.order-detail-panel')).to_be_visible(); expect(order_zero.locator('.order-message-status')).to_be_visible(); expect(order_zero.locator('.message-body')).to_contain_text('123456'); assert len(fixture.reads) == reads_before
+        page.locator('[data-range="all"]').click(); page.locator('#showMoreOrders').click(); reads_before = len(fixture.reads); order_zero = page.locator('.order-card[data-order-id="order-0"]'); trigger = order_zero.locator('.order-details-trigger'); trigger.click(); expect(order_zero.locator('.order-dialog[open]')).to_be_visible(); expect(order_zero.locator('.order-detail-panel')).to_be_visible(); expect(order_zero.locator('.order-message-status')).to_be_visible(); expect(order_zero.locator('.message-body')).to_contain_text('123456'); assert len(fixture.reads) == reads_before; page.keyboard.press('Escape'); expect(order_zero.locator('.order-dialog[open]')).to_have_count(0); expect(trigger).to_be_focused()
         for width in (1440,1024,768,390,320): page.set_viewport_size({'width':width,'height':1000 if width>600 else 844}); checks.check_layout(page)
         checks.ready(page, '/services'); expect(page.locator('.template-editor')).to_have_count(1); page.locator('#addTemplateButton').click(); page.locator('#addTemplateButton').click(); expect(page.locator('.template-editor')).to_have_count(3); expect(page.locator('#templateCount')).to_have_text('3'); page.locator('.template-preview-toggle').first.click(); expect(page.locator('.service-template-list').first).to_be_visible()
         for width in (1440,1024,768,390,320): page.set_viewport_size({'width':width,'height':1000 if width>600 else 844}); checks.check_layout(page)
