@@ -72,7 +72,14 @@ strong { font-weight: 600; }
 .workspace-grid > .panel { margin: 0; }
 .services-layout { grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); }
 .rotation-panel { max-width: 900px; }
+.rotation-panel .panel-heading { flex-wrap: wrap; }
 .rotation-panel .hint { margin: 12px 0 22px; max-width: 75ch; }
+.database-count { display: inline-flex; align-items: baseline; gap: 8px; margin: 0; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft); color: var(--muted); font-size: .75rem; white-space: nowrap; }
+.database-count strong { color: var(--ink); font-size: 1.1rem; font-variant-numeric: tabular-nums; }
+.device-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 20px 0 0; }
+.device-stat { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft); }
+.device-stat dt { color: var(--muted); font-size: .75rem; }
+.device-stat dd { margin: 4px 0 0; font-size: 1.5rem; line-height: 1.2; font-weight: 650; font-variant-numeric: tabular-nums; }
 .field, .sms-field, .time-field, .request-fields label { display: grid; align-content: start; gap: 7px; min-width: 0; color: var(--ink); font-size: .8125rem; font-weight: 500; }
 input:not([type="checkbox"]):not([type="hidden"]), textarea, select { width: 100%; min-width: 0; border: 1px solid var(--control-line); border-radius: 6px; background: var(--surface); color: var(--ink); min-height: 40px; padding: 9px 11px; font-size: .875rem; line-height: 1.4; transition: border-color 150ms ease, background-color 150ms ease; }
 input::placeholder, textarea::placeholder { color: #737367; opacity: 1; }
@@ -288,6 +295,7 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
   .connection { align-items: stretch; }
   .connection > button { width: 100%; }
   .sms-grid, .time-filters, .request-fields, .data-grid { grid-template-columns: 1fr; }
+  .device-stats { grid-template-columns: 1fr; }
   .sms-field.full { grid-column: auto; }
   .sms-grid { gap: 16px; }
   .device { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
@@ -340,7 +348,10 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
       
     </div>
     <section class="panel rotation-panel" aria-labelledby="databaseUrlsHeading">
-      <h2 id="databaseUrlsHeading">Database priority</h2>
+      <div class="panel-heading">
+        <h2 id="databaseUrlsHeading">Database priority</h2>
+        <p class="database-count" aria-live="polite"><strong id="databaseCount">—</strong><span>available databases</span></p>
+      </div>
       <p class="panel-note">One URL per line, highest priority first. There is no fixed database count. Saving checks each URL, removes duplicates and unreachable databases, and keeps the remaining order. Large lists may take longer to check.</p>
       <form id="rotationForm">
         <label class="field" for="databaseUrls">Database URLs
@@ -351,18 +362,18 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
         <p id="rotationStatus" class="status" role="status" aria-live="polite">Loading saved settings…</p>
       </form>
     </section>
-    <section class="panel rotation-panel" aria-labelledby="numberStatsHeading">
+    <section class="panel rotation-panel" aria-labelledby="deviceStatsHeading">
       <div class="panel-heading">
-        <h2 id="numberStatsHeading">Combined number totals</h2>
-        <button id="checkNumberStatsButton" class="secondary" type="button" disabled>Check numbers</button>
+        <h2 id="deviceStatsHeading">Combined device totals</h2>
+        <button id="checkDeviceStatsButton" class="secondary" type="button" disabled>Check devices</button>
       </div>
-      <p class="panel-note">Scan the saved databases on demand. Phone numbers are inferred from client messages and counted once across all databases; a number is active if any matching client is active. Save URL changes before scanning.</p>
-      <dl class="number-stats" aria-live="polite">
-        <div class="number-stat"><dt>Total unique numbers</dt><dd id="totalNumbers">—</dd></div>
-        <div class="number-stat"><dt>Active numbers</dt><dd id="activeNumbers">—</dd></div>
-        <div class="number-stat"><dt>Offline numbers</dt><dd id="offlineNumbers">—</dd></div>
+      <p class="panel-note">Scan the saved databases on demand. Only each database's clients.json is read. Devices are counted once per client entry; a device is active when status is true. Save URL changes before scanning.</p>
+      <dl class="device-stats" aria-live="polite">
+        <div class="device-stat"><dt>Total devices</dt><dd id="totalDevices">—</dd></div>
+        <div class="device-stat"><dt>Active devices</dt><dd id="activeDevices">—</dd></div>
+        <div class="device-stat"><dt>Offline devices</dt><dd id="offlineDevices">—</dd></div>
       </dl>
-      <p id="numberStatsStatus" class="status" role="status" aria-live="polite"></p>
+      <p id="deviceStatsStatus" class="status" role="status" aria-live="polite"></p>
     </section>
   </main>
   <script data-dashboard-ui>

@@ -461,6 +461,17 @@ ACCESS_CANCEL     Cancellation successful.</pre>
   "ig": "Instagram"
 }</pre>
     </section>
+
+    <section class="panel" aria-labelledby="addDatabaseUrlHeading">
+      <h2 id="addDatabaseUrlHeading">Add a database to rotation</h2>
+      <p>Checks the Firebase clients endpoint first and saves the URL only when it returns HTTP 200. Existing URLs are left unchanged.</p>
+      <p class="endpoint">POST /api/addDatabaseUrl?api_key=&lt;dashboard-key&gt;</p>
+      <dl class="params">
+        <dt>api_key</dt><dd>Required. Dashboard API key.</dd>
+        <dt>databaseUrl</dt><dd>Required JSON field containing an HTTPS Firebase Realtime Database URL.</dd>
+      </dl>
+      <pre>{"databaseUrl":"https://project-default-rtdb.firebaseio.com"}</pre>
+    </section>
   </main>
   <script data-dashboard-ui>
 (() => {

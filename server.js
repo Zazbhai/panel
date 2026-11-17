@@ -51,6 +51,7 @@ const recentOrderOtpScanIntervalMs = 4000;
 const failedLoginAttempts = new Map();
 let rotationOperation = Promise.resolve();
 let recentOrderOtpScanPromise = null;
+let deviceStatsJob = null;
 
 if (typeof dashboardApiKey !== "string" || dashboardApiKey.length < 32 || /\s/.test(dashboardApiKey)) {
   throw new Error("Set DASHBOARD_API_KEY to a secret of at least 32 non-whitespace characters.");
@@ -307,8 +308,8 @@ async function saveConfiguredServices(services) {
   await writeFile(servicesDataPath, JSON.stringify(services, null, 2), "utf8");
 }
 
-function normalizeRotatingDatabaseUrls(values) {
-  if (!Array.isArray(values) || values.length === 0) {
+function normalizeRotatingDatabaseUrls(values, allowEmpty = false) {
+  if (!Array.isArray(values) || (!allowEmpty && values.length === 0)) {
     throw new Error("Provide at least one database URL.");
   }
   const urls = [];
@@ -396,6 +397,25 @@ async function validateAndPingRotatingDatabases(values) {
   return { databaseUrls: workingUrls, removed };
 }
 
+async function pingDatabaseUrl(url) {
+  try {
+    const response = await fetch(`${url}/clients.json?shallow=true`, {
+      signal: AbortSignal.timeout(6000)
+    });
+    if (response.status !== 200) {
+      return { ok: false, reason: `Firebase returned HTTP ${response.status}; only HTTP 200 URLs are accepted.` };
+    }
+    return { ok: true };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: error.name === "TimeoutError"
+        ? "Firebase connection timed out."
+        : "Firebase connection failed."
+    };
+  }
+}
+
 function normalizeOrderOtpHistory(order) {
   const legacyHistory = order.receivedOtp === null || order.receivedOtp === undefined
     ? []
@@ -458,7 +478,7 @@ async function readRotationState() {
   if (!stored || typeof stored !== "object" || Array.isArray(stored)) {
     throw new Error("The database rotation file has an invalid format.");
   }
-  const databaseUrls = normalizeRotatingDatabaseUrls(stored.databaseUrls);
+  const databaseUrls = normalizeRotatingDatabaseUrls(stored.databaseUrls, true);
   if (!stored.serviceUsage || typeof stored.serviceUsage !== "object" || Array.isArray(stored.serviceUsage)) {
     throw new Error("The database rotation usage data has an invalid format.");
   }
@@ -473,7 +493,7 @@ async function readRotationState() {
       throw new Error("The database rotation usage data has an invalid format.");
     }
     serviceUsage[service] = {
-      cursorUrl: databaseUrls.includes(state.cursorUrl) ? state.cursorUrl : databaseUrls[0],
+      cursorUrl: databaseUrls.includes(state.cursorUrl) ? state.cursorUrl : databaseUrls[0] || "",
       usedNumbers: [...new Set(state.usedNumbers)],
       cycle: state.cycle
     };
@@ -724,7 +744,11 @@ async function initializeOrderExpirationTimers() {
 
 async function fetchDatabaseJson(endpoint) {
   const response = await fetch(endpoint, { signal: AbortSignal.timeout(15000) });
-  if (!response.ok) throw new Error("Firebase request failed.");
+  if (!response.ok) {
+    const error = new Error("Firebase request failed.");
+    error.status = response.status;
+    throw error;
+  }
   try {
     return await response.json();
   } catch {
@@ -768,14 +792,16 @@ async function readActiveNumbers(database) {
   return { numbers: [...numbers.values()], messageReadFailures };
 }
 
-async function readRotatingNumberStats() {
+async function readRotatingDeviceStats() {
   const databaseUrls = await withRotationLock(async () => {
     const state = await readRotationState();
     return [...state.databaseUrls];
   });
   const failedDatabases = [];
-  const clients = [];
+  const missingDatabaseUrls = [];
   let scannedDatabases = 0;
+  let deviceCount = 0;
+  let activeDeviceCount = 0;
 
   for (let index = 0; index < databaseUrls.length; index += databasePingConcurrency) {
     const batch = databaseUrls.slice(index, index + databasePingConcurrency);
@@ -787,7 +813,12 @@ async function readRotatingNumberStats() {
       const result = results[offset];
       const url = batch[offset];
       if (result.status === "rejected") {
-        failedDatabases.push({ url, reason: result.reason.message });
+        const status = result.reason && result.reason.status;
+        const reason = status === 404
+          ? "clients.json was not found (HTTP 404); removed from rotation."
+          : result.reason.message;
+        failedDatabases.push({ url, reason });
+        if (status === 404) missingDatabaseUrls.push(url);
         continue;
       }
       const records = result.value.records;
@@ -798,52 +829,66 @@ async function readRotatingNumberStats() {
       scannedDatabases += 1;
       if (!records) continue;
       for (const [deviceId, client] of Object.entries(records)) {
-        if (!isValidDatabaseKey(deviceId) || !client
-          || typeof client !== "object" || Array.isArray(client)) continue;
-        clients.push({ url, deviceId, active: client.status === true });
+        if (!isValidDatabaseKey(deviceId)) continue;
+        deviceCount += 1;
+        if (client && typeof client === "object" && !Array.isArray(client)
+          && client.status === true) {
+          activeDeviceCount += 1;
+        }
       }
     }
   }
 
-  const numbers = new Map();
-  let messageReadFailures = 0;
-  const messageFailuresByDatabase = new Map();
-  for (let index = 0; index < clients.length; index += databasePingConcurrency) {
-    const batch = clients.slice(index, index + databasePingConcurrency);
-    const results = await Promise.allSettled(batch.map(async (client) => ({
-      client,
-      number: getLatestCarrierNumber(await fetchDatabaseJson(
-        `${client.url}/messages/${encodeURIComponent(client.deviceId)}.json`
-      ))
-    })));
-    for (let offset = 0; offset < results.length; offset += 1) {
-      const result = results[offset];
-      if (result.status === "rejected") {
-        messageReadFailures += 1;
-        const url = batch[offset].url;
-        messageFailuresByDatabase.set(url, (messageFailuresByDatabase.get(url) || 0) + 1);
-        continue;
+  const removedDatabases = missingDatabaseUrls.length
+    ? await withRotationLock(async () => {
+      const state = await readRotationState();
+      const missing = new Set(missingDatabaseUrls);
+      const removed = state.databaseUrls.filter((url) => missing.has(url));
+      if (!removed.length) return [];
+      state.databaseUrls = state.databaseUrls.filter((url) => !missing.has(url));
+      for (const serviceState of Object.values(state.serviceUsage)) {
+        if (!state.databaseUrls.includes(serviceState.cursorUrl)) {
+          serviceState.cursorUrl = state.databaseUrls[0] || "";
+        }
       }
-      const { client, number } = result.value;
-      if (!number) continue;
-      const current = numbers.get(number);
-      numbers.set(number, { active: Boolean(client.active || (current && current.active)) });
-    }
-  }
+      await saveRotationState(state);
+      return removed;
+    })
+    : [];
 
-  const activeNumbers = [...numbers.values()].filter((number) => number.active).length;
   return {
-    databaseCount: databaseUrls.length,
+    databaseCount: databaseUrls.length - removedDatabases.length,
     scannedDatabases,
     failedDatabases,
-    clientCount: clients.length,
-    messageReadFailures,
-    messageFailuresByDatabase: [...messageFailuresByDatabase]
-      .map(([url, failures]) => ({ url, failures })),
-    totalNumbers: numbers.size,
-    activeNumbers,
-    offlineNumbers: numbers.size - activeNumbers
+    removedDatabases,
+    deviceCount,
+    activeDeviceCount,
+    offlineDeviceCount: deviceCount - activeDeviceCount
   };
+}
+
+async function runRotatingDeviceStatsJob(jobId) {
+  try {
+    const result = await readRotatingDeviceStats();
+    deviceStatsJob = {
+      id: jobId,
+      status: "completed",
+      result,
+      error: result.databaseCount > 0 && result.scannedDatabases === 0
+        ? "Could not read clients.json from any configured database."
+        : null,
+      finishedAt: Date.now()
+    };
+  } catch (error) {
+    console.error("Could not count devices across rotating databases:", error.message);
+    deviceStatsJob = {
+      id: jobId,
+      status: "failed",
+      result: null,
+      error: "Could not count devices across configured databases.",
+      finishedAt: Date.now()
+    };
+  }
 }
 
 async function reserveNumber(service, database, candidate, serviceState, rotationState) {
@@ -1656,7 +1701,9 @@ async function handleRequest(request, response) {
 
   const isLocalOtpApi = requestUrl.pathname === "/stubs/handler_api.php";
   const isApiRequest = requestUrl.pathname.startsWith("/api/") || isLocalOtpApi;
-  const requiresExplicitApiKey = isLocalOtpApi || requestUrl.pathname === "/api/otp-provider";
+  const requiresExplicitApiKey = isLocalOtpApi
+    || requestUrl.pathname === "/api/otp-provider"
+    || requestUrl.pathname === "/api/addDatabaseUrl";
   if (isApiRequest) {
     const authorized = requiresExplicitApiKey
       ? hasValidApiKey(requestUrl)
@@ -1732,25 +1779,71 @@ async function handleRequest(request, response) {
     }
     return;
   }
-  if (requestUrl.pathname === "/api/rotation/number-stats") {
-    if (request.method !== "GET") {
-      response.writeHead(405, { Allow: "GET" });
+  if (requestUrl.pathname === "/api/rotation/device-stats") {
+    if (request.method === "GET") {
+      sendJson(response, 200, deviceStatsJob || { status: "idle" });
+      return;
+    }
+    if (request.method === "POST") {
+      if (!deviceStatsJob || deviceStatsJob.status !== "running") {
+        const jobId = randomBytes(12).toString("hex");
+        deviceStatsJob = { id: jobId, status: "running", startedAt: Date.now() };
+        setImmediate(() => { void runRotatingDeviceStatsJob(jobId); });
+      }
+      sendJson(response, 202, deviceStatsJob);
+      return;
+    }
+    if (request.method !== "GET" && request.method !== "POST") {
+      response.writeHead(405, { Allow: "GET, POST" });
       response.end("Method Not Allowed");
       return;
     }
+    return;
+  }
+  if (requestUrl.pathname === "/api/addDatabaseUrl") {
+    if (request.method !== "POST") {
+      response.writeHead(405, { Allow: "POST" });
+      response.end("Method Not Allowed");
+      return;
+    }
+    let input;
     try {
-      const stats = await readRotatingNumberStats();
-      if (stats.databaseCount > 0 && stats.scannedDatabases === 0) {
-        sendJson(response, 502, {
-          ...stats,
-          error: "Could not read client records from any configured database."
-        });
+      input = await readJsonBody(request, 4096);
+    } catch (error) {
+      sendJson(response, error.statusCode || 400, { error: error.message });
+      return;
+    }
+    if (!input || typeof input.databaseUrl !== "string") {
+      sendJson(response, 400, { error: "Provide one Firebase databaseUrl." });
+      return;
+    }
+    try {
+      const database = input.databaseUrl.trim();
+      if (!database || database.length > 2048) {
+        throw new Error("The Firebase databaseUrl is empty or too long.");
+      }
+      const normalized = normalizeDatabaseUrl(database);
+      const ping = await pingDatabaseUrl(normalized);
+      if (!ping.ok) {
+        sendJson(response, 502, { error: ping.reason, databaseUrl: normalized });
         return;
       }
-      sendJson(response, 200, stats);
+      const result = await withRotationLock(async () => {
+        const state = await readRotationState();
+        const alreadyExists = state.databaseUrls.includes(normalized);
+        if (!alreadyExists) {
+          state.databaseUrls.push(normalized);
+          await saveRotationState(state);
+        }
+        return {
+          databaseUrl: normalized,
+          added: !alreadyExists,
+          databaseUrls: state.databaseUrls
+        };
+      });
+      sendJson(response, 200, result);
     } catch (error) {
-      console.error("Could not scan numbers across rotating databases:", error.message);
-      sendJson(response, 500, { error: "Could not scan numbers across configured databases." });
+      sendJson(response, 400, { error: error.message });
     }
     return;
   }

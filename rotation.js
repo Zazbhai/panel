@@ -1,32 +1,34 @@
 const rotationForm = document.getElementById("rotationForm");
 const databaseUrlsInput = document.getElementById("databaseUrls");
+const databaseCount = document.getElementById("databaseCount");
 const saveRotationButton = document.getElementById("saveRotationButton");
 const rotationStatus = document.getElementById("rotationStatus");
-const checkNumberStatsButton = document.getElementById("checkNumberStatsButton");
-const numberStatsStatus = document.getElementById("numberStatsStatus");
-const totalNumbers = document.getElementById("totalNumbers");
-const activeNumbers = document.getElementById("activeNumbers");
-const offlineNumbers = document.getElementById("offlineNumbers");
+const checkDeviceStatsButton = document.getElementById("checkDeviceStatsButton");
+const deviceStatsStatus = document.getElementById("deviceStatsStatus");
+const totalDevices = document.getElementById("totalDevices");
+const activeDevices = document.getElementById("activeDevices");
+const offlineDevices = document.getElementById("offlineDevices");
 let rotationReady = false;
 let rotationSaving = false;
 let rotationLoading = false;
-let numberStatsLoading = false;
+let deviceStatsLoading = false;
+let deviceStatsPollTimer = null;
 let rotationDirty = false;
 let lastSavedDatabaseUrls = "";
 
 function updateRotationControls() {
-  const busy = rotationLoading || rotationSaving || numberStatsLoading;
-  databaseUrlsInput.disabled = rotationSaving || numberStatsLoading;
+  const busy = rotationLoading || rotationSaving || deviceStatsLoading;
+  databaseUrlsInput.disabled = rotationSaving || deviceStatsLoading;
   saveRotationButton.disabled = !rotationReady || busy;
-  checkNumberStatsButton.disabled = !rotationReady || busy || rotationDirty;
+  checkDeviceStatsButton.disabled = !rotationReady || busy || rotationDirty;
 }
 
-function clearNumberStats() {
-  totalNumbers.textContent = "—";
-  activeNumbers.textContent = "—";
-  offlineNumbers.textContent = "—";
-  numberStatsStatus.textContent = "";
-  numberStatsStatus.classList.remove("error");
+function clearDeviceStats() {
+  totalDevices.textContent = "—";
+  activeDevices.textContent = "—";
+  offlineDevices.textContent = "—";
+  deviceStatsStatus.textContent = "";
+  deviceStatsStatus.classList.remove("error");
 }
 
 function setRotationStatus(message, isError = false) {
@@ -70,10 +72,87 @@ async function readRotationResponse(response) {
   return result;
 }
 
+function renderDeviceStats(result) {
+  const counts = [result.deviceCount, result.activeDeviceCount, result.offlineDeviceCount];
+  if (!counts.every((count) => Number.isSafeInteger(count) && count >= 0)
+    || result.activeDeviceCount + result.offlineDeviceCount !== result.deviceCount
+    || !Number.isSafeInteger(result.databaseCount) || result.databaseCount < 0
+    || !Number.isSafeInteger(result.scannedDatabases) || result.scannedDatabases < 0
+    || !Array.isArray(result.failedDatabases)) {
+    throw new Error("The server returned invalid device totals.");
+  }
+
+  totalDevices.textContent = String(result.deviceCount);
+  activeDevices.textContent = String(result.activeDeviceCount);
+  offlineDevices.textContent = String(result.offlineDeviceCount);
+  const failures = [];
+  const removedDatabases = Array.isArray(result.removedDatabases) ? result.removedDatabases : [];
+  if (removedDatabases.length) {
+    failures.push(`Removed ${removedDatabases.length} missing database${removedDatabases.length === 1 ? "" : "s"} from rotation.`);
+  }
+  if (result.failedDatabases.length) {
+    const databaseDetails = result.failedDatabases.slice(0, 3).map((item) => {
+      const url = typeof item.url === "string" ? item.url : "Database URL";
+      const displayUrl = url.length > 80 ? `${url.slice(0, 77)}...` : url;
+      return `${displayUrl}: ${item.reason}`;
+    });
+    if (result.failedDatabases.length > 3) {
+      databaseDetails.push(`and ${result.failedDatabases.length - 3} more`);
+    }
+    failures.push(`Database errors: ${databaseDetails.join("; ")}.`);
+  }
+  const summary = `Scanned ${result.scannedDatabases} of ${result.databaseCount} databases.`;
+  deviceStatsStatus.textContent = failures.length
+    ? `${summary} Results may be incomplete. ${failures.join(" ")}`
+    : result.deviceCount
+      ? `${summary} Found ${result.deviceCount} devices.`
+      : `${summary} No devices were found in clients.json.`;
+  deviceStatsStatus.classList.toggle("error", failures.length > 0);
+}
+
+function scheduleDeviceStatsPoll() {
+  if (deviceStatsPollTimer !== null) return;
+  deviceStatsPollTimer = window.setTimeout(() => {
+    deviceStatsPollTimer = null;
+    void loadDeviceStatsJob();
+  }, 1500);
+}
+
+async function loadDeviceStatsJob() {
+  try {
+    const response = await window.dashboardApiFetch("/api/rotation/device-stats");
+    const job = await readRotationResponse(response);
+    if (job.status === "running") {
+      deviceStatsLoading = true;
+      deviceStatsStatus.textContent = "Checking clients.json in the background. You can leave this page.";
+      deviceStatsStatus.classList.remove("error");
+      updateRotationControls();
+      scheduleDeviceStatsPoll();
+      return;
+    }
+    if (job.status === "completed" && job.result) {
+      renderDeviceStats(job.result);
+      if (job.error) {
+        deviceStatsStatus.textContent = `${deviceStatsStatus.textContent} ${job.error}`;
+        deviceStatsStatus.classList.add("error");
+      }
+    } else if (job.status === "failed") {
+      throw new Error(job.error || "The device totals scan failed.");
+    }
+    deviceStatsLoading = false;
+    updateRotationControls();
+  } catch (error) {
+    deviceStatsLoading = false;
+    deviceStatsStatus.textContent = `Could not check combined device totals: ${error.message}`;
+    deviceStatsStatus.classList.add("error");
+    updateRotationControls();
+  }
+}
+
 async function loadRotationSettings(isBackgroundRefresh = false) {
   if (rotationLoading) return;
   if (isBackgroundRefresh
-    && (rotationSaving || numberStatsLoading || rotationDirty || document.visibilityState !== "visible")) return;
+    && (rotationSaving || deviceStatsLoading || rotationDirty || document.visibilityState !== "visible")) return;
   rotationLoading = true;
   if (!isBackgroundRefresh) {
     rotationReady = false;
@@ -83,9 +162,9 @@ async function loadRotationSettings(isBackgroundRefresh = false) {
     const response = await window.dashboardApiFetch("/api/rotation");
     const result = await readRotationResponse(response);
     const savedUrls = result.databaseUrls.join("\n");
+    databaseCount.textContent = String(result.databaseUrls.length);
     const changed = savedUrls !== lastSavedDatabaseUrls;
     lastSavedDatabaseUrls = savedUrls;
-    if (changed) clearNumberStats();
     if (!rotationDirty) databaseUrlsInput.value = savedUrls;
     rotationReady = true;
     if (!isBackgroundRefresh) {
@@ -133,9 +212,9 @@ rotationForm.addEventListener("submit", async (event) => {
     });
     const result = await readRotationResponse(response);
     databaseUrlsInput.value = result.databaseUrls.join("\n");
+    databaseCount.textContent = String(result.databaseUrls.length);
     lastSavedDatabaseUrls = result.databaseUrls.join("\n");
     rotationDirty = false;
-    clearNumberStats();
     const removed = Array.isArray(result.removed) ? result.removed : [];
     const removalMessage = removed.length
       ? ` Removed ${removed.length}: ${removed.slice(0, 3).map((item) => {
@@ -153,69 +232,25 @@ rotationForm.addEventListener("submit", async (event) => {
   }
 });
 
-checkNumberStatsButton.addEventListener("click", async () => {
-  if (!rotationReady || rotationLoading || rotationSaving || rotationDirty || numberStatsLoading) return;
-  numberStatsLoading = true;
+checkDeviceStatsButton.addEventListener("click", async () => {
+  if (!rotationReady || rotationLoading || rotationSaving || rotationDirty || deviceStatsLoading) return;
+  deviceStatsLoading = true;
   updateRotationControls();
-  clearNumberStats();
-  numberStatsStatus.textContent = "Scanning saved databases and client messages. This may take a while.";
+  deviceStatsStatus.textContent = "Starting background device totals check...";
+  deviceStatsStatus.classList.remove("error");
   try {
-    const response = await window.dashboardApiFetch("/api/rotation/number-stats");
-    const result = await readRotationResponse(response);
-    const counts = [result.totalNumbers, result.activeNumbers, result.offlineNumbers];
-    if (!counts.every((count) => Number.isSafeInteger(count) && count >= 0)
-      || result.activeNumbers + result.offlineNumbers !== result.totalNumbers
-      || !Number.isSafeInteger(result.databaseCount)
-      || !Number.isSafeInteger(result.scannedDatabases)
-      || !Number.isSafeInteger(result.clientCount)
-      || !Number.isSafeInteger(result.messageReadFailures)
-      || !Array.isArray(result.messageFailuresByDatabase)
-      || !Array.isArray(result.failedDatabases)) {
-      throw new Error("The server returned invalid number totals.");
-    }
-
-    totalNumbers.textContent = String(result.totalNumbers);
-    activeNumbers.textContent = String(result.activeNumbers);
-    offlineNumbers.textContent = String(result.offlineNumbers);
-    const failures = [];
-    if (result.failedDatabases.length) {
-      const databaseDetails = result.failedDatabases.slice(0, 3).map((item) => {
-        const url = typeof item.url === "string" ? item.url : "Database URL";
-        const displayUrl = url.length > 80 ? `${url.slice(0, 77)}...` : url;
-        return `${displayUrl}: ${item.reason}`;
-      });
-      if (result.failedDatabases.length > 3) {
-        databaseDetails.push(`and ${result.failedDatabases.length - 3} more`);
-      }
-      failures.push(`Database errors: ${databaseDetails.join("; ")}.`);
-    }
-    if (result.messageReadFailures) {
-      const messageDetails = result.messageFailuresByDatabase.slice(0, 3).map((item) => {
-        const url = typeof item.url === "string" ? item.url : "Database URL";
-        const displayUrl = url.length > 80 ? `${url.slice(0, 77)}...` : url;
-        return `${displayUrl} (${item.failures})`;
-      });
-      if (result.messageFailuresByDatabase.length > 3) {
-        messageDetails.push(`and ${result.messageFailuresByDatabase.length - 3} more`);
-      }
-      failures.push(`${result.messageReadFailures} client message read${result.messageReadFailures === 1 ? "" : "s"} failed${messageDetails.length ? ` across ${messageDetails.join("; ")}` : ""}.`);
-    }
-    const summary = `Scanned ${result.scannedDatabases} of ${result.databaseCount} databases and ${result.clientCount} clients.`;
-    numberStatsStatus.textContent = failures.length
-      ? `${summary} Results may be incomplete. ${failures.join(" ")}`
-      : result.totalNumbers
-        ? summary
-        : `${summary} No phone numbers could be inferred from client messages.`;
-    numberStatsStatus.classList.toggle("error", failures.length > 0);
+    const response = await window.dashboardApiFetch("/api/rotation/device-stats", { method: "POST" });
+    await readRotationResponse(response);
+    await loadDeviceStatsJob();
   } catch (error) {
-    clearNumberStats();
-    numberStatsStatus.textContent = `Could not check combined number totals: ${error.message}`;
-    numberStatsStatus.classList.add("error");
-  } finally {
-    numberStatsLoading = false;
+    deviceStatsStatus.textContent = `Could not check combined device totals: ${error.message}`;
+    deviceStatsStatus.classList.add("error");
+    deviceStatsLoading = false;
     updateRotationControls();
+  } finally {
+    if (deviceStatsLoading) scheduleDeviceStatsPoll();
   }
 });
 
-loadRotationSettings();
+void loadRotationSettings().then(() => loadDeviceStatsJob());
 setInterval(() => loadRotationSettings(true), 5000);
