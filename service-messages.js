@@ -211,8 +211,8 @@ function renderServiceMessages() {
   if (matches.length === 0) {
     if (emptyReason === "no-services") messageList.append(makeEmpty("No enabled templates", "Enable a service and at least one template to see its messages.", true));
     else if (query) messageList.append(makeEmpty("No matching messages", "Try another search or service."));
-    else if (emptyReason === "no-devices") messageList.append(makeEmpty("No active devices", "Messages will appear when a device connects."));
-    else messageList.append(makeEmpty("No messages yet", selectedService ? `No messages match ${selectedService}.` : "Messages from active devices will appear when they match an enabled template."));
+    else if (emptyReason === "no-devices") messageList.append(makeEmpty("No devices found", "Messages will appear here after a device has been registered."));
+    else messageList.append(makeEmpty("No messages yet", selectedService ? `No messages match ${selectedService}.` : "Messages will appear here when they match an enabled template."));
   }
 }
 
@@ -256,10 +256,15 @@ async function loadServiceMessages(isBackgroundRefresh = false) {
     const clientsQuery = new URLSearchParams({ section: "clients", database });
     const clients = await readJson(`/api/data?${clientsQuery}`);
     if (clients !== null && (typeof clients !== "object" || Array.isArray(clients))) throw new Error("Device status could not be read. Try Refresh.");
-    const activeDevices = Object.entries(clients || {})
-      .filter(([, client]) => client && typeof client === "object" && client.status === true);
+    const devices = Object.entries(clients || {})
+      .filter(([deviceId, client]) => typeof deviceId === "string"
+        && deviceId.length > 0
+        && client
+        && typeof client === "object"
+        && !Array.isArray(client));
+    const activeDevices = devices.filter(([, client]) => client.status === true);
     activeDeviceCount = activeDevices.length;
-    const messageResults = await Promise.allSettled(activeDevices.map(async ([deviceId]) => {
+    const messageResults = await Promise.allSettled(devices.map(async ([deviceId]) => {
       const query = new URLSearchParams({ database, deviceId });
       return { deviceId, messages: await readJson(`/api/device-messages?${query}`) };
     }));
@@ -291,7 +296,7 @@ async function loadServiceMessages(isBackgroundRefresh = false) {
     });
 
     matchingMessages = matches;
-    emptyReason = activeDeviceCount ? "" : "no-devices";
+    emptyReason = devices.length ? "" : "no-devices";
     totalMessageCount.textContent = matches.length;
     deviceCount.textContent = activeDeviceCount;
     enabledServiceCount.textContent = services.length;
@@ -300,7 +305,7 @@ async function loadServiceMessages(isBackgroundRefresh = false) {
     renderServiceMessages();
     const failed = messageResults.filter((result) => result.status === "rejected").length;
     const loadWarning = failed ? `Messages unavailable for ${failed} device${failed === 1 ? "" : "s"}. Try Refresh.` : "";
-    if (failed && failed === activeDeviceCount && !matchingMessages.length) {
+    if (failed && failed === devices.length && !matchingMessages.length) {
       messageList.replaceChildren(makeEmpty("Could not load messages", "Use Refresh to try again."));
     }
     setStatus(loadWarning, Boolean(loadWarning));

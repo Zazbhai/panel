@@ -45,6 +45,14 @@ const flipkart = {
 };
 const flipkartText = "LOGIN to your Flipkart account using OTP 634435. DO NOT SHARE this code with anyone, including delivery agents. #634435";
 const genericText = "Your OTP is 989099.";
+const whatsapp = {
+  name: "WhatsApp",
+  minOtpLength: 6,
+  maxOtpLength: 6,
+  senderFilter: "",
+  templates: [{ text: "Your WhatsApp code: [OTP]", enabled: true }]
+};
+const whatsappText = "<#> Your WhatsApp account is being registered on a new device Do not share this code with anyone Your WhatsApp code: 661-572 4sgLq1p5sV6";
 
 assert.deepEqual(matchServiceMessage(jio, jioText, { sender: "VM-JIO" }), { code: "989099" });
 assert.equal(matchServiceMessage(swiggy, jioText, { sender: "VM-JIO" }), null);
@@ -54,4 +62,5 @@ assert.equal(matchServiceMessage(senderScoped, "Use code 989099 to continue.", {
 assert.deepEqual(matchServiceMessage(senderScoped, "Use code 989099 to continue.", { sender: "VM-SWIGGY" }), { code: "989099" });
 assert.equal(matchServiceMessage(jio, "98909 is your One time password (OTP) to login to MyJio. Don't share OTP with anyone.", {}), null);
 assert.deepEqual(matchServiceMessage(flipkart, flipkartText, { sender: "VA-FL-PKRT-S" }), { code: "634435" });
+assert.deepEqual(matchServiceMessage(whatsapp, whatsappText), { code: "661572" });
 console.log("PASS: service-scoped OTP matching rejects Jio/Swiggy cross-matches, generic OTPs, wrong senders and wrong code lengths.");

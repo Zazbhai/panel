@@ -11,7 +11,7 @@
     return templates.filter((template) => template
       && template.enabled !== false
       && typeof template.text === "string"
-      && template.text.includes("{{OTP}}"));
+      && /(?:\{\{OTP\}\}|\[OTP\])/i.test(template.text));
   }
 
   function escapeRegExp(value) {
@@ -24,15 +24,16 @@
   }
 
   function makeTemplatePattern(text, codePattern) {
-    const markerPattern = /\{\{OTP\}\}|\{\{ANY\}\}|\{\{DIGITS:(\d{1,2})\}\}/g;
+    const markerPattern = /\{\{OTP\}\}|\[OTP\]|\{\{ANY\}\}|\[ANY\]|\{\{DIGITS:(\d{1,2})\}\}|\[DIGITS:(\d{1,2})\]/gi;
     const parts = [];
     let lastIndex = 0;
     let marker;
     while ((marker = markerPattern.exec(text))) {
       parts.push(escapeTemplateText(text.slice(lastIndex, marker.index)));
-      if (marker[0] === "{{OTP}}") {
+      const markerName = marker[0].toUpperCase();
+      if (markerName === "{{OTP}}" || markerName === "[OTP]") {
         parts.push(codePattern);
-      } else if (marker[0] === "{{ANY}}") {
+      } else if (markerName === "{{ANY}}" || markerName === "[ANY]") {
         parts.push("\\S+?");
       } else {
         const digitCount = Number(marker[1]);
@@ -43,7 +44,7 @@
       lastIndex = markerPattern.lastIndex;
     }
     parts.push(escapeTemplateText(text.slice(lastIndex)));
-    return new RegExp(`^${parts.join("")}$`, "i");
+    return new RegExp(parts.join(""), "i");
   }
 
   function matches(service, text, message) {
@@ -59,7 +60,7 @@
       const maxOtpLength = Number.isInteger(service.maxOtpLength)
         ? service.maxOtpLength
         : 8;
-      const codePattern = String.raw`\d(?:[\s-]?\d){${minOtpLength - 1},${maxOtpLength - 1}}`;
+      const codePattern = String.raw`(?<!\d)\d(?:[\s-]?\d){${minOtpLength - 1},${maxOtpLength - 1}}(?!\d)`;
       matcher = {
         senderFilter,
         patterns: getEnabledTemplates(service).map((template) =>

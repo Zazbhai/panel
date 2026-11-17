@@ -67,11 +67,13 @@ class MessageFixture(checks.Fixture):
                 return
             if url.path == '/api/device-messages':
                 device = query['deviceId'][0]
-                assert device in ('fixture-phone-01', LONG_DEVICE), 'Messages fetched for an offline device'
+                assert device in ('fixture-phone-01', LONG_DEVICE, 'offline-phone'), 'Unexpected device message request'
                 if device in self.fail_devices:
                     route.fulfill(status=503, json={'error': 'Synthetic message failure'})
                     return
-                if device == 'fixture-phone-01':
+                if device == 'offline-phone':
+                    data = {}
+                elif device == 'fixture-phone-01':
                     data = {str(1794920000000-i*60000): {'message': f'Your Flipkart code is {123450+i}.', 'sender': 'VM-FLIPK', 'timestamp': 1794920000000-i*60000} for i in range(21)}
                     data['1794921000000'] = {'body': SECURITY_TEXT.replace('{{OTP}}','654321'), 'sender': 'TEST-SECURITY', 'timestamp': 1794921000000}
                     data['excluded'] = {'message': 'JOIN TELEGRAM Your Flipkart code is 123456.'}
@@ -121,12 +123,13 @@ def main():
         assert fixture.helper_requests == 0, 'Still depends on a matcher asset unavailable on older servers'
         assert page.locator('script[data-service-matching]').count() == 1
         assert sum(path == '/api/config' for path,_ in fixture.reads) == 1, 'Duplicate config request on connect'
+        assert ('/api/device-messages', 'offline-phone') in fixture.reads, 'Offline device messages were skipped'
         assert page.evaluate('typeof window.serviceMatching.getEnabledTemplates') == 'function'
         assert not page.locator('.message-body img, .message-body script').count()
         assert page.evaluate('window.injected !== true')
         expect(page.locator('.service-message .service-name').first).to_have_text('Security')
         assert not page.locator('.is-arriving').count(), 'Motion enabled despite reduced-motion preference'
-        print('PASS: matching works with the standalone helper unavailable; legacy and multiple enabled templates; sender/OTP rules; offline-device exclusion; escaped message text; newest-first sorting.')
+        print('PASS: matching works with the standalone helper unavailable; legacy and multiple enabled templates; sender/OTP rules; offline devices are still queried; escaped message text; newest-first sorting.')
 
         # Existing cards and keyboard focus survive polling; new messages animate once.
         first = page.locator('.service-message').first
@@ -201,14 +204,14 @@ def main():
         expect(page.locator('#status')).to_contain_text('Messages unavailable for 1 device')
         expect(page.locator('#totalMessageCount')).to_have_text('22')
         expect(page.locator('.service-message')).to_have_count(12)
-        fixture.fail_devices.add('fixture-phone-01')
+        fixture.fail_devices.update({'fixture-phone-01', 'offline-phone'})
         page.locator('#refreshButton').click()
         expect(page.locator('.message-empty')).to_contain_text('Could not load messages')
         expect(page.locator('#refreshButton')).to_be_enabled()
         fixture.fail_devices.clear()
         fixture.no_devices = True
         page.locator('#refreshButton').click()
-        expect(page.locator('.message-empty')).to_contain_text('No active devices')
+        expect(page.locator('.message-empty')).to_contain_text('No devices found')
         expect(page.locator('#activeDeviceCount')).to_have_text('0')
         fixture.no_devices = False
         fixture.services = []

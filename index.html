@@ -44,6 +44,7 @@ main { width: min(1240px, calc(100% - 80px)); margin: 0 auto; padding: 0 0 64px;
 .page-nav a:hover { color: var(--ink); background: var(--soft); }
 .page-nav a[aria-current="page"] { color: var(--accent); background: var(--accent-soft); font-weight: 600; }
 .nav-toggle { display: none; }
+.mobile-bottom-nav { display: none; }
 .page-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 28px; }
 h1 { margin: 0; font-size: 1.75rem; line-height: 1.25; font-weight: 650; letter-spacing: -.035em; }
 .page-description { max-width: 72ch; margin: 7px 0 0; color: var(--muted); }
@@ -262,11 +263,15 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
   .device { grid-template-columns: minmax(0, 1fr) repeat(3, minmax(90px, auto)); gap: 16px; }
 }
 @media (max-width: 900px) {
+  body { padding-bottom: calc(78px + env(safe-area-inset-bottom)); }
   .app-header { flex-wrap: wrap; gap: 0; min-height: 68px; padding: 14px 0; margin-bottom: 28px; }
-  .nav-toggle { display: inline-flex; margin-left: auto; }
-  .page-nav { display: none; width: 100%; margin: 14px 0 0; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; padding-top: 14px; border-top: 1px solid var(--line); }
-  .app-header[data-nav-open="true"] .page-nav { display: grid; }
-  .page-nav a { padding: 10px 8px; font-size: .8125rem; text-align: center; }
+  .nav-toggle, .page-nav { display: none !important; }
+  .mobile-bottom-nav { position: fixed; z-index: 20; right: 0; bottom: 0; left: 0; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; padding: 8px 12px calc(8px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: rgb(255 254 250 / 96%); box-shadow: 0 -8px 24px rgb(41 41 35 / 8%); backdrop-filter: blur(14px); }
+  .mobile-bottom-nav-link { display: flex; min-width: 0; min-height: 58px; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 6px 3px; border-radius: 8px; color: var(--muted); font-size: .6875rem; line-height: 1.1; text-align: center; text-decoration: none; }
+  .mobile-bottom-nav-link:hover { color: var(--ink); background: var(--soft); }
+  .mobile-bottom-nav-link[aria-current="page"] { color: var(--accent); background: var(--accent-soft); font-weight: 650; }
+  .mobile-bottom-nav-icon { display: inline-flex; height: 20px; align-items: center; justify-content: center; }
+  .mobile-bottom-nav-icon .icon { width: 18px; height: 18px; }
   .workspace-grid { grid-template-columns: 1fr; }
   .sms-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .sms-field.full { grid-column: 1 / -1; }
@@ -307,6 +312,9 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
   .dialog-content { padding: 8px 20px 22px; }
   .dialog-footer { padding: 16px 20px; }
   .dialog-footer button { flex: 1; }
+  .mobile-bottom-nav { gap: 2px; padding-inline: 6px; }
+  .mobile-bottom-nav-link { min-height: 54px; font-size: .625rem; }
+  .mobile-bottom-nav-icon .icon { width: 17px; height: 17px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; scroll-behavior: auto !important; } }
   </style>
@@ -412,6 +420,37 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
         navToggle.focus();
       }
     });
+  }
+
+  const mobileNavItems = [
+    ["/", "Overview", '<rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/>'],
+    ["/active-devices", "Devices", '<rect x="7" y="3" width="10" height="18" rx="2"/><path d="M10 6h4M11 18h2"/>'],
+    ["/services", "Services", '<path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="11" cy="18" r="2"/>'],
+    ["/rotation", "Rotation", '<path d="M20 11a8 8 0 0 0-14.7-4L3 10M3 5v5h5M4 13a8 8 0 0 0 14.7 4L21 14M21 19v-5h-5"/>'],
+    ["/service-messages", "Messages", '<path d="M20 11.5a7.5 7.5 0 0 1-8 7.5 8 8 0 0 1-3.6-.8L4 20l1.8-4.3A7.5 7.5 0 0 1 12 4a7.5 7.5 0 0 1 8 7.5Z"/>'],
+    ["/recent-orders", "Orders", '<path d="M6 3h12a2 2 0 0 1 2 2v16H4V5a2 2 0 0 1 2-2Z"/><path d="M8 8h8M8 12h8M8 16h5"/>'],
+    ["/api-docs", "API", '<path d="m9 7-5 5 5 5M15 7l5 5-5 5M14 4l-4 16"/>']
+  ];
+  if (!document.querySelector(".mobile-bottom-nav") && document.querySelector(".page-nav")) {
+    const mobileNav = document.createElement("nav");
+    mobileNav.className = "mobile-bottom-nav";
+    mobileNav.setAttribute("aria-label", "Dashboard pages");
+    const currentPath = window.location.pathname.replace(/\/$/, "") || "/";
+    mobileNavItems.forEach(([href, label, iconMarkup]) => {
+      const link = document.createElement("a");
+      link.href = href;
+      link.className = "mobile-bottom-nav-link";
+      if (href === currentPath) link.setAttribute("aria-current", "page");
+      const icon = document.createElement("span");
+      icon.className = "mobile-bottom-nav-icon";
+      icon.setAttribute("aria-hidden", "true");
+      icon.innerHTML = `<svg class="icon" viewBox="0 0 24 24">${iconMarkup}</svg>`;
+      const text = document.createElement("span");
+      text.textContent = label;
+      link.append(icon, text);
+      mobileNav.append(link);
+    });
+    document.body.append(mobileNav);
   }
 
   // Keep native constraint validation, but present its errors beside the field.

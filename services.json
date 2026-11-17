@@ -1839,10 +1839,6 @@
         "enabled": true
       },
       {
-        "text": "{{OTP}}",
-        "enabled": true
-      },
-      {
         "text": "Your verification code is {{OTP}}. Enter this OTP to securely verify your account, MS-Systems",
         "enabled": true
       }

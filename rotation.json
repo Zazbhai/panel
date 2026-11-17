@@ -132,7 +132,8 @@
     "wp": {
       "cursorUrl": "https://kingx90-796ca-default-rtdb.firebaseio.com",
       "usedNumbers": [
-        "9631604633"
+        "9631604633",
+        "9097308400"
       ],
       "cycle": 0
     }
@@ -439,6 +440,38 @@
             "id": 1794946695849,
             "message": "<#> Your WhatsApp account is being registered on a new device\n\nDo not share this code with anyone\nYour WhatsApp code: 661-572\n4sgLq1p5sV6",
             "sender": "57273200",
+            "type": "incoming"
+          }
+        }
+      ]
+    },
+    {
+      "orderId": "158b6de891c52762de19daef",
+      "deviceId": "c953b62506e7a29f",
+      "number": "9097308400",
+      "databaseUrl": "https://kingx90-796ca-default-rtdb.firebaseio.com",
+      "service": "wp",
+      "createdAt": 1794947412439,
+      "expiresAt": 1794948012439,
+      "status": "completed",
+      "receivedOtp": "343502",
+      "receivedAt": 1794947519729,
+      "receivedOtps": [
+        {
+          "code": "343502",
+          "receivedAt": 1794947519729,
+          "messageKey": "1794947519729"
+        }
+      ],
+      "messageHistory": [
+        {
+          "key": "1794947519729",
+          "timestamp": 1794947519729,
+          "message": {
+            "dateTime": "18-11-2026 | 02:01 AM",
+            "id": 1794947519729,
+            "message": "<#> Your WhatsApp account is being registered on a new device\n\nDo not share this code with anyone\nYour WhatsApp code: 343-502\n4sgLq1p5sV6",
+            "sender": "59039211",
             "type": "incoming"
           }
         }

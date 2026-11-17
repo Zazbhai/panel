@@ -48,7 +48,8 @@
 .order-card-meta time { overflow-wrap: anywhere; }
 .order-lock { color: var(--muted); }
 .order-details-trigger { justify-content: space-between; width: 100%; margin-top: auto; border: 0; border-top: 1px solid var(--line); border-radius: 0; padding: 12px 0 0; background: transparent; color: var(--ink); font-size: .75rem; font-weight: 500; }
-.order-details-trigger:hover { border-color: var(--line); background: transparent; color: var(--accent); }
+.order-details-trigger:hover:not(:disabled), .order-details-trigger:focus-visible { border-color: var(--line); background: var(--soft); color: var(--accent); }
+.order-details-trigger:active:not(:disabled) { border-color: var(--line); background: var(--soft); color: var(--accent); }
 .order-details-trigger .icon { width: 15px; height: 15px; color: var(--muted); }
 .order-dialog { width: min(760px, calc(100% - 32px)); max-height: min(820px, calc(100dvh - 32px)); margin: auto; padding: 0; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--ink); box-shadow: 0 24px 80px -20px #29292366; }
 .order-dialog::backdrop { background: rgb(33 33 28 / 48%); }

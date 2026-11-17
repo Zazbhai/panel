@@ -272,7 +272,7 @@ function validateServiceList(services) {
     if (service.templates.some((template) => !template
       || typeof template !== "object" || Array.isArray(template)
       || typeof template.text !== "string" || !template.text.trim()
-      || template.text.length > 5000 || !template.text.includes("{{OTP}}")
+      || template.text.length > 5000 || !/(?:\{\{OTP\}\}|\[OTP\])/i.test(template.text)
       || typeof template.enabled !== "boolean")) {
       return "Each template needs message text, an OTP placeholder, and an enabled state.";
     }

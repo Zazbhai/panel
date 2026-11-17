@@ -44,6 +44,7 @@ main { width: min(1240px, calc(100% - 80px)); margin: 0 auto; padding: 0 0 64px;
 .page-nav a:hover { color: var(--ink); background: var(--soft); }
 .page-nav a[aria-current="page"] { color: var(--accent); background: var(--accent-soft); font-weight: 600; }
 .nav-toggle { display: none; }
+.mobile-bottom-nav { display: none; }
 .page-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 28px; }
 h1 { margin: 0; font-size: 1.75rem; line-height: 1.25; font-weight: 650; letter-spacing: -.035em; }
 .page-description { max-width: 72ch; margin: 7px 0 0; color: var(--muted); }
@@ -262,11 +263,15 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
   .device { grid-template-columns: minmax(0, 1fr) repeat(3, minmax(90px, auto)); gap: 16px; }
 }
 @media (max-width: 900px) {
+  body { padding-bottom: calc(78px + env(safe-area-inset-bottom)); }
   .app-header { flex-wrap: wrap; gap: 0; min-height: 68px; padding: 14px 0; margin-bottom: 28px; }
-  .nav-toggle { display: inline-flex; margin-left: auto; }
-  .page-nav { display: none; width: 100%; margin: 14px 0 0; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; padding-top: 14px; border-top: 1px solid var(--line); }
-  .app-header[data-nav-open="true"] .page-nav { display: grid; }
-  .page-nav a { padding: 10px 8px; font-size: .8125rem; text-align: center; }
+  .nav-toggle, .page-nav { display: none !important; }
+  .mobile-bottom-nav { position: fixed; z-index: 20; right: 0; bottom: 0; left: 0; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; padding: 8px 12px calc(8px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: rgb(255 254 250 / 96%); box-shadow: 0 -8px 24px rgb(41 41 35 / 8%); backdrop-filter: blur(14px); }
+  .mobile-bottom-nav-link { display: flex; min-width: 0; min-height: 58px; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 6px 3px; border-radius: 8px; color: var(--muted); font-size: .6875rem; line-height: 1.1; text-align: center; text-decoration: none; }
+  .mobile-bottom-nav-link:hover { color: var(--ink); background: var(--soft); }
+  .mobile-bottom-nav-link[aria-current="page"] { color: var(--accent); background: var(--accent-soft); font-weight: 650; }
+  .mobile-bottom-nav-icon { display: inline-flex; height: 20px; align-items: center; justify-content: center; }
+  .mobile-bottom-nav-icon .icon { width: 18px; height: 18px; }
   .workspace-grid { grid-template-columns: 1fr; }
   .sms-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .sms-field.full { grid-column: 1 / -1; }
@@ -307,6 +312,9 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
   .dialog-content { padding: 8px 20px 22px; }
   .dialog-footer { padding: 16px 20px; }
   .dialog-footer button { flex: 1; }
+  .mobile-bottom-nav { gap: 2px; padding-inline: 6px; }
+  .mobile-bottom-nav-link { min-height: 54px; font-size: .625rem; }
+  .mobile-bottom-nav-icon .icon { width: 17px; height: 17px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; scroll-behavior: auto !important; } }
 
@@ -368,6 +376,59 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
   .configured-services-panel .service-title { align-items: flex-start; flex-direction: column; }
   .configured-services-panel .service-title .enabled-control { align-self: flex-start; }
 }
+
+/* Services directory and editor dialog */
+.services-page .configured-services-panel { padding: 24px; }
+.service-heading-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 10px; }
+.service-heading-actions a { color: var(--accent); font-size: .75rem; }
+.service-heading-actions button { min-height: 36px; padding: 7px 12px; }
+.service-heading-actions button .icon { width: 14px; height: 14px; }
+.service-directory-toolbar { display: flex; align-items: end; gap: 16px; margin: 18px 0 20px; padding-bottom: 18px; border-bottom: 1px solid var(--line); }
+.service-directory-toolbar .field { flex: 1 1 320px; max-width: 520px; }
+.service-directory-toolbar > .count { padding-bottom: 10px; color: var(--muted); font-size: .75rem; }
+.configured-services-panel .service-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.configured-services-panel .service-card { display: flex; min-width: 0; flex-direction: column; gap: 14px; padding: 18px; border: 1px solid #d0cfc3; border-radius: 10px; background: var(--surface); transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease; }
+.configured-services-panel .service-card:hover { border-color: #b5a897; box-shadow: 0 8px 20px #2929230d; transform: translateY(-1px); }
+.configured-services-panel .service-title { align-items: flex-start; margin: 0; }
+.configured-services-panel .service-title strong { font-size: .9375rem; }
+.configured-services-panel .enabled-control { flex-shrink: 0; }
+.service-pattern-summary { display: grid; gap: 8px; min-width: 0; }
+.service-template-count { color: var(--muted); font-size: .6875rem; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.service-template-preview { display: -webkit-box; min-height: 44px; margin: 0; overflow: hidden; padding: 11px 12px; border: 1px solid var(--line); border-radius: 7px; background: var(--soft); color: var(--ink); font-size: .75rem; line-height: 1.5; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.configured-services-panel .service-settings-summary { margin: auto 0 0; }
+.configured-services-panel .service-actions { margin-top: 2px; }
+.configured-services-panel .service-actions .secondary { flex: 1; }
+.service-list-footer { display: flex; justify-content: center; margin-top: 22px; }
+.service-list-footer:has(> [hidden]) { display: none; }
+.service-empty { grid-column: 1 / -1; }
+.service-dialog { width: min(760px, calc(100% - 32px)); max-height: min(840px, calc(100dvh - 32px)); margin: auto; padding: 0; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--ink); box-shadow: 0 24px 80px -20px #29292366; }
+.service-dialog::backdrop { background: rgb(33 33 28 / 48%); }
+.service-dialog form { display: flex; max-height: min(840px, calc(100dvh - 32px)); flex-direction: column; }
+.service-dialog-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 22px 24px 12px; border-bottom: 1px solid var(--line); }
+.service-dialog-header h2 { margin: 0; font-size: 1.1rem; }
+.service-dialog-header .panel-note { margin: 5px 0 0; }
+.service-dialog-header .icon-button { margin: -7px -8px 0 0; }
+.service-dialog-content { overflow-y: auto; padding: 20px 24px 24px; }
+.service-dialog-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 24px; border-top: 1px solid var(--line); }
+.service-dialog-footer .status { min-width: 0; margin: 0; }
+.service-dialog-footer .form-actions { flex-shrink: 0; margin: 0; }
+@media (max-width: 760px) {
+  .configured-services-panel .service-list { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 600px) {
+  .services-page .configured-services-panel { padding: 18px; }
+  .service-heading-actions { width: 100%; justify-content: space-between; }
+  .service-directory-toolbar { display: grid; align-items: end; gap: 8px; }
+  .service-directory-toolbar .field { max-width: none; }
+  .service-directory-toolbar > .count { padding: 0; }
+  .service-dialog { width: calc(100% - 20px); max-height: calc(100dvh - 20px); }
+  .service-dialog form { max-height: calc(100dvh - 20px); }
+  .service-dialog-header { padding: 18px 18px 12px; }
+  .service-dialog-content { padding: 18px; }
+  .service-dialog-footer { align-items: stretch; flex-direction: column; padding: 14px 18px 18px; }
+  .service-dialog-footer .form-actions { width: 100%; }
+  .service-dialog-footer .form-actions button { flex: 1; }
+}
   </style>
 </head>
 <body>
@@ -390,45 +451,24 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
       <div><h1>Services</h1><p class="page-description">Manage the message patterns used for matching.</p></div>
       
     </div>
-    <div class="workspace-grid services-layout">
-      <section class="panel service-editor-panel" aria-labelledby="editorHeading">
-        <div class="service-editor-heading"><h2 id="editorHeading">Add a service</h2><span class="count">Configuration</span></div>
-        <p class="panel-note">Add sample messages and mark the code in each one.</p>
-        <form id="serviceForm" class="form-grid">
+    <section class="panel configured-services-panel" aria-labelledby="serviceListHeading">
+      <div class="panel-heading"><div class="configured-heading"><h2 id="serviceListHeading">Configured services</h2><span id="configuredServiceCount" class="count"></span></div><div class="service-heading-actions"><a href="/service-messages">View messages</a><button id="addServiceButton" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Add service</button></div></div>
+      <div class="service-directory-toolbar"><label class="field" for="serviceSearch">Search services<input id="serviceSearch" type="search" placeholder="Name, template or sender" autocomplete="off"></label><span id="serviceResultCount" class="count" role="status" aria-live="polite"></span></div>
+      <div id="serviceList" class="service-list"></div>
+      <div class="service-list-footer"><button id="showMoreServices" class="secondary" type="button" hidden>Show more<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button></div>
+    </section>
+    <dialog id="serviceEditorDialog" class="service-dialog" aria-labelledby="editorHeading">
+      <form id="serviceForm" class="form-grid">
+        <div class="service-dialog-header"><div><h2 id="editorHeading">Add a service</h2><p class="panel-note">Define the message patterns used for matching.</p></div><button id="cancelEditButton" class="quiet icon-button" type="button" aria-label="Close service editor"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
+        <div class="service-dialog-content">
           <input id="serviceId" type="hidden">
-          <label class="field" for="serviceName">Service name
-            <input id="serviceName" type="text" maxlength="60" required placeholder="e.g. Flipkart">
-          </label>
-          <div class="field templates-field">
-            <div class="template-list-heading"><span>Message templates</span><span id="templateCount" class="count">1</span></div>
-            <div id="templateList" class="template-list"></div>
-            <button id="addTemplateButton" class="secondary add-template-button" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Add template</button>
-          </div>
-          <div class="service-settings-grid">
-            <label class="field" for="minOtpLength">Minimum OTP digits
-              <input id="minOtpLength" type="number" min="1" max="32" value="4" required>
-            </label>
-            <label class="field" for="maxOtpLength">Maximum OTP digits
-              <input id="maxOtpLength" type="number" min="1" max="32" value="8" required>
-            </label>
-            <div class="field">
-              <label for="senderFilter">SMS sender contains (optional)</label>
-              <input id="senderFilter" type="text" maxlength="100" placeholder="e.g. Flipkart">
-              <span class="hint">Case-insensitive; leave blank to match any sender.</span>
-            </div>
-          </div>
-          <div class="form-actions">
-            <button id="saveServiceButton" type="submit">Save service</button>
-            <button id="cancelEditButton" class="quiet" type="button" hidden>Cancel</button>
-          </div>
-        </form>
-        <p id="serviceStatus" class="status" role="status" aria-live="polite"></p>
-      </section>
-      <section class="panel configured-services-panel" aria-labelledby="serviceListHeading">
-        <div class="panel-heading"><div class="configured-heading"><h2 id="serviceListHeading">Configured services</h2><span id="configuredServiceCount" class="count"></span></div><a href="/service-messages">View messages</a></div>
-        <div id="serviceList" class="service-list"></div>
-      </section>
-    </div>
+          <label class="field" for="serviceName">Service name<input id="serviceName" type="text" maxlength="60" required placeholder="e.g. Flipkart"></label>
+          <div class="field templates-field"><div class="template-list-heading"><span>Message templates</span><span id="templateCount" class="count">1</span></div><div id="templateList" class="template-list"></div><button id="addTemplateButton" class="secondary add-template-button" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Add template</button></div>
+          <div class="service-settings-grid"><label class="field" for="minOtpLength">Minimum OTP digits<input id="minOtpLength" type="number" min="1" max="32" value="4" required></label><label class="field" for="maxOtpLength">Maximum OTP digits<input id="maxOtpLength" type="number" min="1" max="32" value="8" required></label><div class="field"><label for="senderFilter">SMS sender contains (optional)</label><input id="senderFilter" type="text" maxlength="100" placeholder="e.g. Flipkart"><span class="hint">Case-insensitive; leave blank to match any sender.</span></div></div>
+        </div>
+        <div class="service-dialog-footer"><p id="serviceStatus" class="status" role="status" aria-live="polite"></p><div class="form-actions"><button id="saveServiceButton" type="submit">Save service</button><button id="cancelEditTextButton" class="secondary" type="button">Cancel</button></div></div>
+      </form>
+    </dialog>
   </main>
   <script data-dashboard-ui>
 (() => {
@@ -449,6 +489,37 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
         navToggle.focus();
       }
     });
+  }
+
+  const mobileNavItems = [
+    ["/", "Overview", '<rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/>'],
+    ["/active-devices", "Devices", '<rect x="7" y="3" width="10" height="18" rx="2"/><path d="M10 6h4M11 18h2"/>'],
+    ["/services", "Services", '<path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="11" cy="18" r="2"/>'],
+    ["/rotation", "Rotation", '<path d="M20 11a8 8 0 0 0-14.7-4L3 10M3 5v5h5M4 13a8 8 0 0 0 14.7 4L21 14M21 19v-5h-5"/>'],
+    ["/service-messages", "Messages", '<path d="M20 11.5a7.5 7.5 0 0 1-8 7.5 8 8 0 0 1-3.6-.8L4 20l1.8-4.3A7.5 7.5 0 0 1 12 4a7.5 7.5 0 0 1 8 7.5Z"/>'],
+    ["/recent-orders", "Orders", '<path d="M6 3h12a2 2 0 0 1 2 2v16H4V5a2 2 0 0 1 2-2Z"/><path d="M8 8h8M8 12h8M8 16h5"/>'],
+    ["/api-docs", "API", '<path d="m9 7-5 5 5 5M15 7l5 5-5 5M14 4l-4 16"/>']
+  ];
+  if (!document.querySelector(".mobile-bottom-nav") && document.querySelector(".page-nav")) {
+    const mobileNav = document.createElement("nav");
+    mobileNav.className = "mobile-bottom-nav";
+    mobileNav.setAttribute("aria-label", "Dashboard pages");
+    const currentPath = window.location.pathname.replace(/\/$/, "") || "/";
+    mobileNavItems.forEach(([href, label, iconMarkup]) => {
+      const link = document.createElement("a");
+      link.href = href;
+      link.className = "mobile-bottom-nav-link";
+      if (href === currentPath) link.setAttribute("aria-current", "page");
+      const icon = document.createElement("span");
+      icon.className = "mobile-bottom-nav-icon";
+      icon.setAttribute("aria-hidden", "true");
+      icon.innerHTML = `<svg class="icon" viewBox="0 0 24 24">${iconMarkup}</svg>`;
+      const text = document.createElement("span");
+      text.textContent = label;
+      link.append(icon, text);
+      mobileNav.append(link);
+    });
+    document.body.append(mobileNav);
   }
 
   // Keep native constraint validation, but present its errors beside the field.

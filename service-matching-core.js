@@ -10,7 +10,7 @@ function getEnabledTemplates(service) {
   return templates.filter((template) => template
     && template.enabled !== false
     && typeof template.text === "string"
-    && template.text.includes("{{OTP}}"));
+      && /(?:\{\{OTP\}\}|\[OTP\])/i.test(template.text));
 }
 
 function escapeRegExp(value) {
@@ -23,17 +23,18 @@ function escapeTemplateText(value) {
 }
 
 function makeTemplatePattern(text, codePattern) {
-  const markerPattern = /\{\{OTP\}\}|\{\{ANY\}\}|\{\{DIGITS:(\d{1,2})\}\}/g;
+  const markerPattern = /\{\{OTP\}\}|\[OTP\]|\{\{ANY\}\}|\[ANY\]|\{\{DIGITS:(\d{1,2})\}\}|\[DIGITS:(\d{1,2})\]/gi;
   const parts = [];
   let lastIndex = 0;
   let marker;
   let capturedOtp = false;
   while ((marker = markerPattern.exec(text))) {
     parts.push(escapeTemplateText(text.slice(lastIndex, marker.index)));
-    if (marker[0] === "{{OTP}}") {
+    const markerName = marker[0].toUpperCase();
+    if (markerName === "{{OTP}}" || markerName === "[OTP]") {
       parts.push(capturedOtp ? `(?:${codePattern})` : `(${codePattern})`);
       capturedOtp = true;
-    } else if (marker[0] === "{{ANY}}") {
+    } else if (markerName === "{{ANY}}" || markerName === "[ANY]") {
       parts.push("\\S+?");
     } else {
       const digitCount = Number(marker[1]);
@@ -44,14 +45,14 @@ function makeTemplatePattern(text, codePattern) {
     lastIndex = markerPattern.lastIndex;
   }
   parts.push(escapeTemplateText(text.slice(lastIndex)));
-  return new RegExp(`^${parts.join("")}$`, "i");
+  return new RegExp(parts.join(""), "i");
 }
 
 function getMatchers(service) {
   const minOtpLength = Number.isInteger(service?.minOtpLength) ? service.minOtpLength : 4;
   const maxOtpLength = Number.isInteger(service?.maxOtpLength) ? service.maxOtpLength : 8;
   if (minOtpLength < 1 || maxOtpLength < minOtpLength || maxOtpLength > 32) return [];
-  const codePattern = String.raw`\d(?:[\s-]?\d){${minOtpLength - 1},${maxOtpLength - 1}}`;
+  const codePattern = String.raw`(?<!\d)\d(?:[\s-]?\d){${minOtpLength - 1},${maxOtpLength - 1}}(?!\d)`;
   return getEnabledTemplates(service).map((template) => makeTemplatePattern(template.text, codePattern));
 }
 

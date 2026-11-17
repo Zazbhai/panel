@@ -11,9 +11,17 @@ const maxOtpLengthInput = document.getElementById("maxOtpLength");
 const senderFilterInput = document.getElementById("senderFilter");
 const serviceList = document.getElementById("serviceList");
 const serviceStatus = document.getElementById("serviceStatus");
+const serviceSearch = document.getElementById("serviceSearch");
+const serviceResultCount = document.getElementById("serviceResultCount");
+const showMoreServices = document.getElementById("showMoreServices");
+const addServiceButton = document.getElementById("addServiceButton");
+const serviceEditorDialog = document.getElementById("serviceEditorDialog");
 const cancelEditButton = document.getElementById("cancelEditButton");
+const cancelEditTextButton = document.getElementById("cancelEditTextButton");
 const saveServiceButton = document.getElementById("saveServiceButton");
+const SERVICE_BATCH_SIZE = 6;
 let templateEditorSequence = 0;
+let visibleServiceLimit = SERVICE_BATCH_SIZE;
 
 function setStatus(message, isError) {
   serviceStatus.textContent = message;
@@ -199,6 +207,34 @@ function resetForm() {
   saveServiceButton.textContent = "Save service";
   cancelEditButton.hidden = true;
   document.getElementById("editorHeading").textContent = "Add a service";
+  if (serviceEditorDialog.open) serviceEditorDialog.close();
+}
+
+function openEditor(service = null) {
+  if (service) {
+    serviceIdInput.value = service.id;
+    serviceNameInput.value = service.name;
+    renderTemplateEditors(service.templates);
+    minOtpLengthInput.value = String(service.minOtpLength);
+    maxOtpLengthInput.value = String(service.maxOtpLength);
+    senderFilterInput.value = service.senderFilter;
+    saveServiceButton.textContent = "Update service";
+    cancelEditButton.hidden = false;
+    document.getElementById("editorHeading").textContent = `Edit ${service.name}`;
+  } else {
+    serviceIdInput.value = "";
+    serviceNameInput.value = "";
+    minOtpLengthInput.value = "4";
+    maxOtpLengthInput.value = "8";
+    senderFilterInput.value = "";
+    renderTemplateEditors([{ text: "", enabled: true }]);
+    saveServiceButton.textContent = "Save service";
+    cancelEditButton.hidden = false;
+    document.getElementById("editorHeading").textContent = "Add a service";
+  }
+  setStatus("", false);
+  serviceEditorDialog.showModal();
+  (service ? templateList.querySelector("textarea") : serviceNameInput).focus();
 }
 
 function makeServiceCard(service) {
@@ -256,10 +292,22 @@ function makeServiceCard(service) {
     label.textContent = `Template ${index + 1} · ${item.enabled ? "Enabled" : "Disabled"}`;
     const text = document.createElement("p");
     text.className = "service-template";
-    text.textContent = item.text.replace(/\{\{OTP\}\}/g, "[OTP]");
+    text.textContent = item.text.replace(/\{\{OTP\}\}|\[OTP\]/gi, "[OTP]");
     template.append(label, text);
     templates.append(template);
   });
+  const summary = document.createElement("div");
+  summary.className = "service-pattern-summary";
+  const templateCountLabel = document.createElement("span");
+  templateCountLabel.className = "service-template-count";
+  templateCountLabel.textContent = `${service.templates.length} pattern${service.templates.length === 1 ? "" : "s"}`;
+  const preview = document.createElement("p");
+  preview.className = "service-template-preview";
+  const firstTemplate = service.templates.find((item) => item.enabled !== false) || service.templates[0];
+  preview.textContent = firstTemplate
+    ? firstTemplate.text.replace(/\{\{OTP\}\}|\[OTP\]/gi, "[OTP]")
+    : "No message pattern configured";
+  summary.append(templateCountLabel, preview);
   const settings = document.createElement("p");
   settings.className = "service-settings-summary";
   settings.textContent = `OTP length: ${service.minOtpLength}–${service.maxOtpLength} digits${service.senderFilter ? ` · Sender contains: ${service.senderFilter}` : ""}`;
@@ -271,18 +319,7 @@ function makeServiceCard(service) {
   edit.className = "secondary";
   edit.dataset.serviceAction = "edit";
   edit.textContent = "Edit";
-  edit.addEventListener("click", () => {
-    serviceIdInput.value = service.id;
-    serviceNameInput.value = service.name;
-    renderTemplateEditors(service.templates);
-    minOtpLengthInput.value = String(service.minOtpLength);
-    maxOtpLengthInput.value = String(service.maxOtpLength);
-    senderFilterInput.value = service.senderFilter;
-    saveServiceButton.textContent = "Update service";
-    cancelEditButton.hidden = false;
-    document.getElementById("editorHeading").textContent = `Edit ${service.name}`;
-    templateList.querySelector("textarea")?.focus();
-  });
+  edit.addEventListener("click", () => openEditor(service));
   const remove = document.createElement("button");
   remove.type = "button";
   remove.className = "danger";
@@ -304,20 +341,38 @@ function makeServiceCard(service) {
     }
   });
   actions.append(edit, remove);
-  card.append(heading, templateToggle, templates, settings, actions);
+  card.append(heading, summary, settings, actions);
   return card;
 }
 
 function renderServices() {
-  configuredServiceCount.textContent = `${services.length} service${services.length === 1 ? "" : "s"}`;
+  const query = serviceSearch.value.trim().toLocaleLowerCase();
+  const filtered = services.filter((service) => [service.name, service.senderFilter, ...service.templates.map((template) => template.text)]
+    .join(" ").toLocaleLowerCase().includes(query));
+  const visible = filtered.slice(0, visibleServiceLimit);
+  configuredServiceCount.textContent = query
+    ? `${filtered.length} of ${services.length} services`
+    : `${services.length} service${services.length === 1 ? "" : "s"}`;
+  serviceResultCount.textContent = query
+    ? `${filtered.length} match${filtered.length === 1 ? "" : "es"}`
+    : `${filtered.length} available`;
   if (services.length === 0) {
     const empty = document.createElement("p");
     empty.className = "hint";
     empty.textContent = "No services yet. Add a template, then enable it to monitor messages.";
     serviceList.replaceChildren(empty);
+    showMoreServices.hidden = true;
     return;
   }
-  serviceList.replaceChildren(...services.map(makeServiceCard));
+  if (!filtered.length) {
+    const empty = document.createElement("p");
+    empty.className = "hint service-empty";
+    empty.textContent = "No services match that search.";
+    serviceList.replaceChildren(empty);
+  } else {
+    serviceList.replaceChildren(...visible.map(makeServiceCard));
+  }
+  showMoreServices.hidden = visible.length >= filtered.length;
 }
 
 function addTemplateEditor(template = { text: "", enabled: true }) {
@@ -410,7 +465,7 @@ function markSelectedOtp(messageTemplateInput) {
     setStatus("Select only a numeric sample code containing 1 to 32 digits.", true);
     return;
   }
-  if (current.includes("{{OTP}}")) {
+  if (/(?:\{\{OTP\}\}|\[OTP\])/i.test(current)) {
     setStatus("A template can contain only one OTP placeholder.", true);
     return;
   }
@@ -463,7 +518,7 @@ serviceForm.addEventListener("submit", async (event) => {
     text: row.querySelector("textarea").value.trim(),
     enabled: row.querySelector("[data-template-enabled]").checked
   }));
-  if (templates.some((template) => !template.text.includes("{{OTP}}"))) {
+  if (templates.some((template) => !/(?:\{\{OTP\}\}|\[OTP\])/i.test(template.text))) {
     setStatus("Mark a sample code as an OTP placeholder in each template.", true);
     return;
   }
@@ -505,7 +560,20 @@ serviceForm.addEventListener("submit", async (event) => {
   }
 });
 
+addServiceButton.addEventListener("click", () => openEditor());
+serviceSearch.addEventListener("input", () => { visibleServiceLimit = SERVICE_BATCH_SIZE; renderServices(); });
+showMoreServices.addEventListener("click", () => {
+  const previousVisible = serviceList.querySelectorAll(".service-card").length;
+  visibleServiceLimit += SERVICE_BATCH_SIZE;
+  renderServices();
+  const nextCard = serviceList.querySelectorAll(".service-card")[previousVisible];
+  if (nextCard) { nextCard.tabIndex = -1; nextCard.focus(); }
+});
+serviceEditorDialog.addEventListener("click", (event) => {
+  if (event.target === serviceEditorDialog) resetForm();
+});
 cancelEditButton.addEventListener("click", resetForm);
+cancelEditTextButton.addEventListener("click", resetForm);
 renderTemplateEditors([{ text: "", enabled: true }]);
 renderServices();
 initializeServices();
