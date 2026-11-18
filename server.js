@@ -771,7 +771,7 @@ async function fetchDatabaseJson(endpoint) {
   }
 }
 
-async function readActiveNumbers(database) {
+async function readActiveNumbers(database, isAvailable = () => true) {
   const clients = await fetchDatabaseJson(`${database}/clients.json`);
   if (!clients || typeof clients !== "object" || Array.isArray(clients)) {
     return { numbers: [], messageReadFailures: 0 };
@@ -790,18 +790,32 @@ async function readActiveNumbers(database) {
   let messageReadFailures = 0;
   for (let index = 0; index < candidates.length; index += 8) {
     const batch = candidates.slice(index, index + 8);
-    const results = await Promise.allSettled(batch.map(async ([deviceId]) => ({
+    const reads = batch.map(async ([deviceId]) => ({
       deviceId,
       number: getLatestCarrierNumber(await fetchDatabaseJson(
-        `${database}/messages/${encodeURIComponent(deviceId)}.json`
+        database + "/messages/" + encodeURIComponent(deviceId) + ".json"
       ))
-    })));
+    }));
+    try {
+      const available = await Promise.any(reads.map(async (read) => {
+        const candidate = await read;
+        if (candidate.number && isAvailable({ ...candidate, database })) return candidate;
+        throw new Error("No eligible number in this device record.");
+      }));
+      return { numbers: [available], messageReadFailures };
+    } catch {
+      // No eligible number in this batch; inspect its results for recycling and errors.
+    }
+    const results = await Promise.allSettled(reads);
     for (const result of results) {
       if (result.status === "rejected") {
         messageReadFailures += 1;
       } else if (result.value.number && !numbers.has(result.value.number)) {
         numbers.set(result.value.number, result.value);
       }
+    }
+    if ([...numbers.values()].some(isAvailable)) {
+      return { numbers: [...numbers.values()], messageReadFailures };
     }
   }
   return { numbers: [...numbers.values()], messageReadFailures };
@@ -947,20 +961,34 @@ async function reserveNumber(service, database, candidate, serviceState, rotatio
   return reservation;
 }
 
-async function readActiveNumberInventories(rotationState) {
+async function readActiveNumberInventories(service, rotationState) {
   const configuredUrls = rotationState.databaseUrls;
+  const serviceState = Object.hasOwn(rotationState.serviceUsage, service) ? rotationState.serviceUsage[service] : {
+    cursorUrl: configuredUrls[0], usedNumbers: [], cycle: 0
+  };
+  const startIndex = Math.max(0, configuredUrls.indexOf(serviceState.cursorUrl));
+  const orderedUrls = configuredUrls.map((_, index) => configuredUrls[(startIndex + index) % configuredUrls.length]);
+  const usedNumbers = new Set(serviceState.usedNumbers);
+  const lockedNumbers = new Set(rotationState.orders
+    .filter((order) => order.service === service && order.receivedOtp !== null)
+    .map((order) => order.number));
+  const isAvailable = (candidate) => !usedNumbers.has(candidate.number)
+    && !lockedNumbers.has(candidate.number)
+    && !reservedNumbers.has(candidate.number);
   const inventories = [];
-  for (let index = 0; index < configuredUrls.length; index += databasePingConcurrency) {
-    const batch = configuredUrls.slice(index, index + databasePingConcurrency);
-    inventories.push(...await Promise.all(batch.map(async (database) => ({
-      database,
-      ...await readActiveNumbers(database)
-    }))));
+  for (const database of orderedUrls) {
+    const inventory = { database, ...await readActiveNumbers(database, isAvailable) };
+    inventories.push(inventory);
+    const available = inventory.numbers.some(isAvailable);
+    if (available) break;
+    if (inventory.messageReadFailures > 0) {
+      throw new Error("Could not read every active client in database " + database + ".");
+    }
   }
-  return inventories;
+  return { inventories, complete: inventories.length === orderedUrls.length };
 }
 
-function findAvailableNumberCandidate(service, rotationState, inventories) {
+function findAvailableNumberCandidate(service, rotationState, inventories, allowRecycle = true) {
   const configuredUrls = rotationState.databaseUrls;
   const serviceState = Object.hasOwn(rotationState.serviceUsage, service) ? rotationState.serviceUsage[service] : {
     cursorUrl: configuredUrls[0], usedNumbers: [], cycle: 0
@@ -990,6 +1018,7 @@ function findAvailableNumberCandidate(service, rotationState, inventories) {
 
   const allNumbers = new Set(orderedInventories.flatMap((inventory) =>
     inventory.numbers.map((candidate) => candidate.number)));
+  if (!allowRecycle) return null;
   const recyclableNumbers = [...allNumbers].filter((number) => !lockedNumbers.has(number));
   if (recyclableNumbers.length === 0) return null;
   if (recyclableNumbers.some((number) => !usedNumbers.has(number))) return null;
@@ -1022,7 +1051,7 @@ async function findAvailableActiveNumber(service) {
       return state;
     });
     const snapshotUsage = JSON.stringify(snapshot.serviceUsage[service] || null);
-    const inventories = await readActiveNumberInventories(snapshot);
+    const inventoryScan = await readActiveNumberInventories(service, snapshot);
     const result = await withRotationLock(async () => {
       const state = await readRotationState();
       if (synchronizeNumberReservations(state)) await saveRotationState(state);
@@ -1031,8 +1060,9 @@ async function findAvailableActiveNumber(service) {
         return { retry: true };
       }
       const previousUsage = JSON.stringify(state.serviceUsage[service] || null);
-      const candidate = findAvailableNumberCandidate(service, state, inventories);
+      const candidate = findAvailableNumberCandidate(service, state, inventoryScan.inventories, inventoryScan.complete);
       if (!candidate) {
+        if (!inventoryScan.complete) return { retry: true };
         if (JSON.stringify(state.serviceUsage[service] || null) !== previousUsage) await saveRotationState(state);
         return { reservation: null };
       }

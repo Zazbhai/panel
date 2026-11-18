@@ -84,7 +84,7 @@ function completedOrder() {
   {
     const f = serverFixture();
     f.setRotation({
-      databaseUrls: ["https://fixture.firebaseio.com"],
+      databaseUrls: ["https://fixture.firebaseio.com", "https://unreachable.firebaseio.com"],
       serviceUsage: {},
       orders: []
     });
@@ -92,10 +92,15 @@ function completedOrder() {
     const scanBlocked = new Promise((resolve) => { releaseScan = resolve; });
     f.fetch = async (url) => {
       if (url.endsWith("/clients.json")) {
+        if (url.startsWith("https://unreachable.")) {
+          throw new Error("The second database must not be scanned after a usable number is found");
+        }
         await scanBlocked;
         return { ok: true, status: 200, json: async () => ({ "device-1": { status: true } }) };
       }
-      return { ok: true, status: 200, json: async () => ({}) };
+      return { ok: true, status: 200, json: async () => ({
+        message1: { message: "Jio number 9000000001" }
+      }) };
     };
     const allocation = f.context.findAvailableActiveNumber("fixture");
     await new Promise(setImmediate);
@@ -106,7 +111,9 @@ function completedOrder() {
     assert(recentOrders && recentOrders.status === 200,
       "A slow number scan must not block the recent-orders endpoint");
     releaseScan();
-    await allocation;
+    const reservation = await allocation;
+    assert.equal(reservation?.number, "9000000001",
+      "Allocation must reserve a usable number without scanning later databases");
   }
   console.log("PASS: expiry, missing clients cleanup, permission failures, history limits, out-of-order OTPs and saved-only feed.");
 })().catch((error) => { console.error(error); process.exitCode = 1; });
