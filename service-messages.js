@@ -328,6 +328,6 @@ showMoreButton.addEventListener("click", () => {
 });
 setInterval(() => {
   if (autoRefresh.checked && !refreshButton.disabled && document.visibilityState === "visible") loadServiceMessages(true);
-}, 5000);
+}, 8000);
 refreshButton.disabled = false;
 loadServiceMessages();

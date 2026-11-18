@@ -15,6 +15,8 @@ const serviceSearch = document.getElementById("serviceSearch");
 const serviceResultCount = document.getElementById("serviceResultCount");
 const showMoreServices = document.getElementById("showMoreServices");
 const addServiceButton = document.getElementById("addServiceButton");
+const importSmsFormatsButton = document.getElementById("importSmsFormatsButton");
+const serviceImportStatus = document.getElementById("serviceImportStatus");
 const serviceEditorDialog = document.getElementById("serviceEditorDialog");
 const cancelEditButton = document.getElementById("cancelEditButton");
 const cancelEditTextButton = document.getElementById("cancelEditTextButton");
@@ -22,6 +24,7 @@ const saveServiceButton = document.getElementById("saveServiceButton");
 const SERVICE_BATCH_SIZE = 6;
 let templateEditorSequence = 0;
 let visibleServiceLimit = SERVICE_BATCH_SIZE;
+let servicesImporting = false;
 
 function setStatus(message, isError) {
   serviceStatus.textContent = message;
@@ -89,6 +92,7 @@ async function writeServicesToServer(nextServices) {
 
 async function saveServices(nextServices) {
   if (!servicesReady) throw new Error("Services are still loading. Try again shortly.");
+  if (servicesImporting) throw new Error("SMS formats are being imported. Try again shortly.");
   const focusedControl = document.activeElement;
   const focusedServiceId = focusedControl.closest(".service-card")?.dataset.serviceId;
   const focusedAction = focusedControl.dataset.serviceAction;
@@ -121,7 +125,7 @@ async function saveServices(nextServices) {
 }
 
 async function initializeServices() {
-  if (servicesSyncing || servicesSaving) return;
+  if (servicesSyncing || servicesSaving || servicesImporting) return;
   servicesSyncing = true;
   servicesReady = false;
   try {
@@ -158,7 +162,7 @@ async function initializeServices() {
 }
 
 async function refreshServicesFromServer() {
-  if (servicesSyncing || servicesSaving || document.visibilityState !== "visible") return;
+  if (servicesSyncing || servicesSaving || servicesImporting || document.visibilityState !== "visible") return;
   if (!servicesReady) {
     await initializeServices();
     return;
@@ -561,6 +565,64 @@ serviceForm.addEventListener("submit", async (event) => {
 });
 
 addServiceButton.addEventListener("click", () => openEditor());
+importSmsFormatsButton.addEventListener("click", async () => {
+  if (!servicesReady || servicesSyncing || servicesSaving || servicesImporting) {
+    serviceImportStatus.textContent = "Services are still syncing. Try importing again shortly.";
+    serviceImportStatus.classList.add("error");
+    return;
+  }
+
+  servicesImporting = true;
+  importSmsFormatsButton.disabled = true;
+  addServiceButton.disabled = true;
+  serviceForm.setAttribute("aria-busy", "true");
+  serviceList.setAttribute("aria-busy", "true");
+  serviceForm.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+  serviceList.querySelectorAll("button, input").forEach((control) => { control.disabled = true; });
+  serviceImportStatus.textContent = "Importing services and templates...";
+  serviceImportStatus.classList.remove("error");
+  try {
+    const response = await window.dashboardApiFetch("/api/services/import-sms-formats", { method: "POST" });
+    let result;
+    try {
+      result = await response.json();
+    } catch {
+      throw new Error(`The server returned invalid import data (HTTP ${response.status}).`);
+    }
+    if (!response.ok) {
+      throw new Error(result && result.error
+        ? result.error
+        : `Could not import SMS formats (HTTP ${response.status}).`);
+    }
+    if (!result || !Array.isArray(result.services)) {
+      throw new Error("The server returned invalid imported services.");
+    }
+
+    services = result.services.map(normalizeService);
+    visibleServiceLimit = SERVICE_BATCH_SIZE;
+    renderServices();
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(services));
+    } catch (error) {
+      // The server save succeeded even if private browsing blocks the cache.
+    }
+    serviceImportStatus.textContent = result.addedServices || result.addedTemplates
+      ? `Imported ${result.addedServices} service${result.addedServices === 1 ? "" : "s"} and ${result.addedTemplates} template${result.addedTemplates === 1 ? "" : "s"}. Skipped ${result.skippedTemplates} duplicate or unsupported templates and ${result.skippedServices} services without usable templates.`
+      : "No new services or templates; duplicates and formats without an OTP placeholder were skipped.";
+    serviceImportStatus.classList.remove("error");
+  } catch (error) {
+    serviceImportStatus.textContent = `Could not import SMS formats: ${error.message}`;
+    serviceImportStatus.classList.add("error");
+  } finally {
+    servicesImporting = false;
+    serviceForm.removeAttribute("aria-busy");
+    serviceList.removeAttribute("aria-busy");
+    serviceForm.querySelectorAll("button").forEach((button) => { button.disabled = false; });
+    serviceList.querySelectorAll("button, input").forEach((control) => { control.disabled = false; });
+    addServiceButton.disabled = false;
+    importSmsFormatsButton.disabled = false;
+  }
+});
 serviceSearch.addEventListener("input", () => { visibleServiceLimit = SERVICE_BATCH_SIZE; renderServices(); });
 showMoreServices.addEventListener("click", () => {
   const previousVisible = serviceList.querySelectorAll(".service-card").length;
@@ -577,4 +639,4 @@ cancelEditTextButton.addEventListener("click", resetForm);
 renderTemplateEditors([{ text: "", enabled: true }]);
 renderServices();
 initializeServices();
-setInterval(refreshServicesFromServer, 5000);
+setInterval(refreshServicesFromServer, 10000);

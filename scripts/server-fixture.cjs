@@ -16,15 +16,18 @@ module.exports = function serverFixture() {
     [path.join(path.dirname(serverPath), "rotation.json"), JSON.stringify({
       databaseUrls: ["https://fixture.firebaseio.com"], serviceUsage: {}, orders: []
     })],
-    [path.join(path.dirname(serverPath), "services.json"), "[]"]
+    [path.join(path.dirname(serverPath), "services.json"), "[]"],
+    [path.join(path.dirname(serverPath), "service-sms-formats.json"), "[]"]
   ]);
   const requests = [];
-  const fixture = { apiKey, files, requests, fetch: null };
+  const readCounts = new Map();
+  const fixture = { apiKey, files, requests, readCounts, fetch: null };
   const context = vm.createContext({
     require(name) {
       if (name === "dotenv") return { config: () => ({}) };
       if (name === "node:fs/promises") return {
         async readFile(file) {
+          readCounts.set(file, (readCounts.get(file) || 0) + 1);
           if (!files.has(file)) throw Object.assign(new Error("Missing fixture file"), { code: "ENOENT" });
           return files.get(file);
         },
@@ -36,7 +39,7 @@ module.exports = function serverFixture() {
     },
     __dirname: path.dirname(serverPath),
     process: { env: { DASHBOARD_API_KEY: apiKey, DASHBOARD_ADMIN_KEY: "synthetic-admin-key-".repeat(3) } },
-    Buffer, URL, AbortSignal, console, setImmediate,
+    Buffer, URL, AbortSignal, AbortController, console, setImmediate,
     setTimeout: () => ({ unref() {} }), clearTimeout() {},
     fetch: async (url, options) => {
       requests.push(url);

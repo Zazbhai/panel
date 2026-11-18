@@ -7,7 +7,9 @@ const {
   timingSafeEqual
 } = require("node:crypto");
 const { readFile, writeFile, rename, unlink } = require("node:fs/promises");
+const { gzipSync } = require("node:zlib");
 const { getEnabledTemplates, matchServiceMessage } = require("./service-matching-core");
+const { mergeSmsFormats } = require("./service-sms-format-import");
 const path = require("node:path");
 
 const envFileResult = require("dotenv").config({ path: path.join(__dirname, ".env") });
@@ -32,9 +34,12 @@ const serviceMatchingScriptPath = path.join(__dirname, "service-matching.js");
 const recentOrdersPath = path.join(__dirname, "recent-orders.html");
 const recentOrdersScriptPath = path.join(__dirname, "recent-orders.js");
 const servicesDataPath = path.join(__dirname, "services.json");
+const smsFormatsDataPath = path.join(__dirname, "service-sms-formats.json");
 const rotationDataPath = path.join(__dirname, "rotation.json");
+const maximumServicesRequestBytes = 16 * 1024 * 1024;
 const maximumRotationRequestBytes = 1024 * 1024;
 const databasePingConcurrency = 8;
+const recentOtpScanConcurrency = 6;
 const apiDocsPath = path.join(__dirname, "api-docs.html");
 const apiClientScriptPath = path.join(__dirname, "api-client.js");
 const dashboardApiKey = process.env.DASHBOARD_API_KEY;
@@ -47,8 +52,23 @@ const numberReservationDurationMs = 10 * 60 * 1000;
 const reservedNumbers = new Map();
 const orderExpirationTimers = new Map();
 const recentOrderOtpChecks = new Map();
-const recentOrderOtpScanIntervalMs = 4000;
+const recentOrderOtpScanIntervalMs = 8000;
+const activeNumberCacheTtlMs = 30000;
+const numberFetchTimeoutMs = 5000;
+const slowDatabaseCooldownMs = 30000;
+const recentOrdersCacheTtlMs = 3000;
+const servicesCacheTtlMs = 5000;
+const rotationStateCacheTtlMs = 250;
 const failedLoginAttempts = new Map();
+const activeNumberCache = new Map();
+const slowDatabases = new Map();
+const clientStatusCache = new Map();
+let recentOrdersCache = null;
+let configuredServicesCache = null;
+let lastRuntimeCachePruneAt = 0;
+const compressedStaticAssets = new Map();
+let rotationSettingsCache = null;
+let rotationStateCache = null;
 let rotationOperation = Promise.resolve();
 let recentOrderOtpScanPromise = null;
 let deviceStatsJob = null;
@@ -105,6 +125,16 @@ function sendText(response, statusCode, text) {
     "Cache-Control": "no-store"
   });
   response.end(text);
+}
+
+function getCompressedStaticAsset(assetPath, content) {
+  const contentHash = createHash("sha256").update(content).digest("hex");
+  let cached = compressedStaticAssets.get(assetPath);
+  if (!cached || cached.contentHash !== contentHash) {
+    cached = { contentHash, body: gzipSync(content) };
+    compressedStaticAssets.set(assetPath, cached);
+  }
+  return cached.body;
 }
 
 function hasValidApiKey(requestUrl) {
@@ -288,11 +318,18 @@ function validateServiceList(services) {
 }
 
 async function readConfiguredServices() {
+  if (configuredServicesCache && configuredServicesCache.expiresAt > Date.now()) {
+    return configuredServicesCache.value;
+  }
   let contents;
   try {
     contents = await readFile(servicesDataPath, "utf8");
   } catch (error) {
-    if (error.code === "ENOENT") return { initialized: false, services: [] };
+    if (error.code === "ENOENT") {
+      const value = { initialized: false, services: [] };
+      configuredServicesCache = { value, expiresAt: Date.now() + servicesCacheTtlMs };
+      return value;
+    }
     throw error;
   }
 
@@ -304,11 +341,14 @@ async function readConfiguredServices() {
   }
   const validationError = validateServiceList(services);
   if (validationError) throw new Error(validationError);
-  return { initialized: true, services };
+  const value = { initialized: true, services };
+  configuredServicesCache = { value, expiresAt: Date.now() + servicesCacheTtlMs };
+  return value;
 }
 
 async function saveConfiguredServices(services) {
   await writeJsonAtomically(servicesDataPath, services);
+  configuredServicesCache = null;
 }
 
 async function writeJsonAtomically(filePath, value) {
@@ -474,12 +514,17 @@ function normalizeOrderMessageHistory(order) {
 }
 
 async function readRotationState() {
+  if (rotationStateCache && rotationStateCache.expiresAt > Date.now()) {
+    return cloneRotationState(rotationStateCache.value);
+  }
   let contents;
   try {
     contents = await readFile(rotationDataPath, "utf8");
   } catch (error) {
     if (error.code === "ENOENT") {
-      return { initialized: false, databaseUrls: [databaseUrl], serviceUsage: Object.create(null), orders: [] };
+      const state = { initialized: false, databaseUrls: [databaseUrl], serviceUsage: Object.create(null), orders: [] };
+      rotationStateCache = { value: cloneRotationState(state), expiresAt: Date.now() + rotationStateCacheTtlMs };
+      return state;
     }
     throw error;
   }
@@ -587,7 +632,27 @@ async function readRotationState() {
       numberActive
     });
   }
-  return { initialized: true, databaseUrls, serviceUsage, orders };
+  const state = { initialized: true, databaseUrls, serviceUsage, orders };
+  rotationStateCache = { value: cloneRotationState(state), expiresAt: Date.now() + rotationStateCacheTtlMs };
+  return state;
+}
+
+function cloneRotationState(state) {
+  return {
+    initialized: state.initialized,
+    databaseUrls: [...state.databaseUrls],
+    serviceUsage: Object.assign(Object.create(null), Object.fromEntries(
+      Object.entries(state.serviceUsage).map(([service, usage]) => [service, {
+        ...usage,
+        usedNumbers: [...usage.usedNumbers]
+      }])
+    )),
+    orders: state.orders.map((order) => ({
+      ...order,
+      receivedOtps: order.receivedOtps.map((otp) => ({ ...otp })),
+      messageHistory: order.messageHistory.map((entry) => ({ ...entry }))
+    }))
+  };
 }
 
 async function saveRotationState(state) {
@@ -596,6 +661,9 @@ async function saveRotationState(state) {
     serviceUsage: state.serviceUsage,
     orders: state.orders
   });
+  recentOrdersCache = null;
+  rotationSettingsCache = null;
+  rotationStateCache = { value: cloneRotationState({ ...state, initialized: true }), expiresAt: Date.now() + rotationStateCacheTtlMs };
 }
 
 async function withRotationLock(operation) {
@@ -757,22 +825,50 @@ async function initializeOrderExpirationTimers() {
   });
 }
 
-async function fetchDatabaseJson(endpoint) {
-  const response = await fetch(endpoint, { signal: AbortSignal.timeout(15000) });
-  if (!response.ok) {
-    const error = new Error("Firebase request failed.");
-    error.status = response.status;
-    throw error;
+async function fetchDatabaseJson(endpoint, timeoutMs = 15000, parentSignal = null) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const abortForParent = () => controller.abort();
+  if (parentSignal) {
+    if (parentSignal.aborted) controller.abort();
+    else parentSignal.addEventListener("abort", abortForParent, { once: true });
   }
   try {
-    return await response.json();
-  } catch {
-    throw new Error("Firebase returned invalid JSON.");
+    const response = await fetch(endpoint, { signal: controller.signal });
+    if (!response.ok) {
+      const error = new Error("Firebase request failed.");
+      error.status = response.status;
+      throw error;
+    }
+    try {
+      return await response.json();
+    } catch {
+      throw new Error("Firebase returned invalid JSON.");
+    }
+  } finally {
+    clearTimeout(timeout);
+    if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
   }
 }
 
-async function readActiveNumbers(database, isAvailable = () => true) {
-  const clients = await fetchDatabaseJson(`${database}/clients.json`);
+function cacheActiveNumber(database, candidate) {
+  const key = `${database}|${candidate.deviceId}`;
+  activeNumberCache.set(key, {
+    number: candidate.number,
+    expiresAt: Date.now() + activeNumberCacheTtlMs
+  });
+  if (activeNumberCache.size > 5000) {
+    const iterator = activeNumberCache.keys();
+    while (activeNumberCache.size > 4000) {
+      const next = iterator.next();
+      if (next.done) break;
+      activeNumberCache.delete(next.value);
+    }
+  }
+}
+
+async function readActiveNumbers(database, isAvailable = () => true, parentSignal = null) {
+  const clients = await fetchDatabaseJson(`${database}/clients.json`, numberFetchTimeoutMs, parentSignal);
   if (!clients || typeof clients !== "object" || Array.isArray(clients)) {
     return { numbers: [], messageReadFailures: 0 };
   }
@@ -784,22 +880,54 @@ async function readActiveNumbers(database, isAvailable = () => true) {
       && client.status === true);
   if (activeClients.length === 0) return { numbers: [], messageReadFailures: 0 };
 
-  const offset = randomInt(activeClients.length);
-  const candidates = activeClients.map((_, index) => activeClients[(offset + index) % activeClients.length]);
   const numbers = new Map();
   let messageReadFailures = 0;
+  const batchController = new AbortController();
+  const abortForParent = () => batchController.abort();
+  if (parentSignal) {
+    if (parentSignal.aborted) batchController.abort();
+    else parentSignal.addEventListener("abort", abortForParent, { once: true });
+  }
+  const now = Date.now();
+  const uncachedClients = [];
+  for (const [deviceId] of activeClients) {
+    const key = `${database}|${deviceId}`;
+    const cached = activeNumberCache.get(key);
+    if (cached && cached.expiresAt > now) {
+      if (cached.number) {
+        const candidate = { deviceId, number: cached.number };
+        numbers.set(cached.number, candidate);
+        if (isAvailable({ ...candidate, database })) {
+          if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
+          return { numbers: [candidate], messageReadFailures };
+        }
+      }
+      continue;
+    }
+    uncachedClients.push([deviceId]);
+  }
+  const offset = randomInt(Math.max(1, uncachedClients.length));
+  const candidates = uncachedClients.length
+    ? uncachedClients.map((_, index) => uncachedClients[(offset + index) % uncachedClients.length])
+    : [];
   for (let index = 0; index < candidates.length; index += 8) {
     const batch = candidates.slice(index, index + 8);
     const reads = batch.map(async ([deviceId]) => ({
       deviceId,
       number: getLatestCarrierNumber(await fetchDatabaseJson(
-        database + "/messages/" + encodeURIComponent(deviceId) + ".json"
+        database + "/messages/" + encodeURIComponent(deviceId) + ".json",
+        numberFetchTimeoutMs,
+        batchController.signal
       ))
     }));
     try {
       const available = await Promise.any(reads.map(async (read) => {
         const candidate = await read;
-        if (candidate.number && isAvailable({ ...candidate, database })) return candidate;
+        cacheActiveNumber(database, candidate);
+        if (candidate.number && isAvailable({ ...candidate, database })) {
+          batchController.abort();
+          return candidate;
+        }
         throw new Error("No eligible number in this device record.");
       }));
       return { numbers: [available], messageReadFailures };
@@ -811,14 +939,30 @@ async function readActiveNumbers(database, isAvailable = () => true) {
       if (result.status === "rejected") {
         messageReadFailures += 1;
       } else if (result.value.number && !numbers.has(result.value.number)) {
+        cacheActiveNumber(database, result.value);
         numbers.set(result.value.number, result.value);
+      } else if (result.status === "fulfilled") {
+        cacheActiveNumber(database, result.value);
       }
     }
+    if (parentSignal?.aborted) {
+      if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
+      return { numbers: [...numbers.values()], messageReadFailures };
+    }
     if ([...numbers.values()].some(isAvailable)) {
+      if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
       return { numbers: [...numbers.values()], messageReadFailures };
     }
   }
+  if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
   return { numbers: [...numbers.values()], messageReadFailures };
+}
+
+function recordSlowDatabase(database, error) {
+  const message = error?.name === "TimeoutError" || error?.name === "AbortError"
+    ? "Database timed out"
+    : "Database request failed";
+  slowDatabases.set(database, { expiresAt: Date.now() + slowDatabaseCooldownMs, message });
 }
 
 async function readRotatingDeviceStats() {
@@ -975,17 +1119,55 @@ async function readActiveNumberInventories(service, rotationState) {
   const isAvailable = (candidate) => !usedNumbers.has(candidate.number)
     && !lockedNumbers.has(candidate.number)
     && !reservedNumbers.has(candidate.number);
+  const now = Date.now();
+  const healthyUrls = orderedUrls.filter((database) => (slowDatabases.get(database)?.expiresAt || 0) <= now);
+  const scanUrls = healthyUrls.length
+    ? healthyUrls
+    : orderedUrls.slice().sort((left, right) =>
+      (slowDatabases.get(left)?.expiresAt || 0) - (slowDatabases.get(right)?.expiresAt || 0)).slice(0, 1);
   const inventories = [];
-  for (const database of orderedUrls) {
-    const inventory = { database, ...await readActiveNumbers(database, isAvailable) };
-    inventories.push(inventory);
-    const available = inventory.numbers.some(isAvailable);
-    if (available) break;
-    if (inventory.messageReadFailures > 0) {
-      throw new Error("Could not read every active client in database " + database + ".");
+  const failures = [];
+  let complete = scanUrls.length === orderedUrls.length;
+  let stoppedEarly = false;
+  const controller = new AbortController();
+  let nextIndex = 0;
+  let foundAvailable = false;
+  const scanDatabase = async () => {
+    while (!controller.signal.aborted) {
+      const index = nextIndex++;
+      if (index >= scanUrls.length) return;
+      const database = scanUrls[index];
+      try {
+        const inventory = { database, ...await readActiveNumbers(database, isAvailable, controller.signal) };
+        if (controller.signal.aborted) return;
+        inventories.push(inventory);
+        if (inventory.numbers.some(isAvailable)) {
+          foundAvailable = true;
+          stoppedEarly = true;
+          complete = false;
+          controller.abort();
+          return;
+        }
+        if (inventory.messageReadFailures > 0) {
+          const error = new Error("Some device message reads failed.");
+          recordSlowDatabase(database, error);
+          failures.push({ database, error });
+          complete = false;
+        }
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        recordSlowDatabase(database, error);
+        failures.push({ database, error });
+        complete = false;
+      }
     }
-  }
-  return { inventories, complete: inventories.length === orderedUrls.length };
+  };
+  await Promise.all(Array.from(
+    { length: Math.min(databasePingConcurrency, scanUrls.length) },
+    scanDatabase
+  ));
+  if (foundAvailable) complete = false;
+  return { inventories, complete, stoppedEarly, failures };
 }
 
 function findAvailableNumberCandidate(service, rotationState, inventories, allowRecycle = true) {
@@ -1011,9 +1193,11 @@ function findAvailableNumberCandidate(service, rotationState, inventories, allow
     if (available.length > 0) {
       return { database, candidate: available[randomInt(available.length)], serviceState };
     }
-    if (inventory.messageReadFailures > 0) {
-      throw new Error(`Could not read every active client in database ${database}.`);
-    }
+  }
+
+  const failedInventory = orderedInventories.find((inventory) => inventory.messageReadFailures > 0);
+  if (failedInventory) {
+    throw new Error(`Could not read every active client in database ${failedInventory.database}.`);
   }
 
   const allNumbers = new Set(orderedInventories.flatMap((inventory) =>
@@ -1060,9 +1244,11 @@ async function findAvailableActiveNumber(service) {
         return { retry: true };
       }
       const previousUsage = JSON.stringify(state.serviceUsage[service] || null);
-      const candidate = findAvailableNumberCandidate(service, state, inventoryScan.inventories, inventoryScan.complete);
+      const candidate = findAvailableNumberCandidate(
+        service, state, inventoryScan.inventories, inventoryScan.complete
+      );
       if (!candidate) {
-        if (!inventoryScan.complete) return { retry: true };
+        if (inventoryScan.stoppedEarly) return { retry: true };
         if (JSON.stringify(state.serviceUsage[service] || null) !== previousUsage) await saveRotationState(state);
         return { reservation: null };
       }
@@ -1160,6 +1346,23 @@ async function synchronizeRecentOrderOtps() {
       console.error("Could not prepare recent order OTP scan:", error.message);
       return;
     }
+    const cacheNow = Date.now();
+    if (cacheNow - lastRuntimeCachePruneAt > 60000) {
+      for (const [key, entry] of clientStatusCache) {
+        if (entry.expiresAt <= cacheNow) clientStatusCache.delete(key);
+      }
+      for (const [key, entry] of activeNumberCache) {
+        if (entry.expiresAt <= cacheNow) activeNumberCache.delete(key);
+      }
+      for (const [key, entry] of slowDatabases) {
+        if (entry.expiresAt <= cacheNow) slowDatabases.delete(key);
+      }
+      lastRuntimeCachePruneAt = cacheNow;
+    }
+    const activeOrderIds = new Set(snapshot.map((order) => order.orderId));
+    for (const orderId of recentOrderOtpChecks.keys()) {
+      if (!activeOrderIds.has(orderId)) recentOrderOtpChecks.delete(orderId);
+    }
     if (!snapshot.length) return;
 
     let configuredServices;
@@ -1181,42 +1384,71 @@ async function synchronizeRecentOrderOtps() {
 
     const matches = [];
     const numberStatusUpdates = [];
-    await Promise.all(candidates.map(async (order) => {
-      recentOrderOtpChecks.set(order.orderId, now);
-      try {
-        const client = await fetchDatabaseJson(
-          `${order.databaseUrl}/clients/${encodeURIComponent(order.deviceId)}.json`
-        );
-        numberStatusUpdates.push({ orderId: order.orderId, numberActive: client?.status === true });
-      } catch (error) {
-        console.error(`Could not check active status for recent order ${order.orderId}:`, error.message);
+    const groups = new Map();
+    for (const order of candidates) {
+      const key = JSON.stringify([order.databaseUrl, order.deviceId]);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(order);
+    }
+    const scanDevice = async ([groupKey, orders]) => {
+      for (const order of orders) recentOrderOtpChecks.set(order.orderId, now);
+      const [databaseUrl, deviceId] = JSON.parse(groupKey);
+      const clientStatusKey = groupKey;
+      const cachedStatus = clientStatusCache.get(clientStatusKey);
+      let numberActive;
+      if (cachedStatus && cachedStatus.expiresAt > Date.now()) {
+        numberActive = cachedStatus.numberActive;
+      } else {
+        try {
+          const client = await fetchDatabaseJson(
+            `${databaseUrl}/clients/${encodeURIComponent(deviceId)}.json`,
+            8000
+          );
+          numberActive = client?.status === true;
+          clientStatusCache.set(clientStatusKey, { numberActive, expiresAt: Date.now() + recentOrderOtpScanIntervalMs });
+        } catch (error) {
+          console.error(`Could not check active status for recent order ${orders[0].orderId}:`, error.message);
+        }
       }
-      const service = services.get(order.service.trim().toLowerCase());
-      if (!service) return;
+      if (numberActive !== undefined) {
+        for (const order of orders) numberStatusUpdates.push({ orderId: order.orderId, numberActive });
+      }
+      const matchingOrders = orders.map((order) => ({
+        order,
+        service: services.get(order.service.trim().toLowerCase())
+      })).filter((entry) => entry.service);
+      if (!matchingOrders.length) return;
       try {
         const messages = await fetchDatabaseJson(
-          `${order.databaseUrl}/messages/${encodeURIComponent(order.deviceId)}.json`
+          `${databaseUrl}/messages/${encodeURIComponent(deviceId)}.json`,
+          8000
         );
-        const knownMessageKeys = new Set((order.messageHistory || [])
-          .map((entry) => entry.key));
-        const knownKeys = new Set((order.receivedOtps || [])
-          .map((entry) => entry.messageKey)
-          .filter(Boolean));
-        const knownFallbacks = new Set((order.receivedOtps || [])
-          .filter((entry) => !entry.messageKey)
-          .map((entry) => `${entry.code}:${entry.receivedAt}`));
-        const untilTimestamp = Math.min(Date.now(), order.expiresAt);
-        for (const message of findMatchingMessages(messages, order.createdAt, service, untilTimestamp)) {
-          if (knownMessageKeys.has(message.key)) continue;
-          if (!knownKeys.has(message.key)
-            && !knownFallbacks.has(`${message.code}:${message.timestamp}`)) {
-            matches.push({ orderId: order.orderId, message });
+        for (const { order, service } of matchingOrders) {
+          const knownMessageKeys = new Set((order.messageHistory || [])
+            .map((entry) => entry.key));
+          const knownKeys = new Set((order.receivedOtps || [])
+            .map((entry) => entry.messageKey)
+            .filter(Boolean));
+          const knownFallbacks = new Set((order.receivedOtps || [])
+            .filter((entry) => !entry.messageKey)
+            .map((entry) => `${entry.code}:${entry.receivedAt}`));
+          const untilTimestamp = Math.min(Date.now(), order.expiresAt);
+          for (const message of findMatchingMessages(messages, order.createdAt, service, untilTimestamp)) {
+            if (knownMessageKeys.has(message.key)) continue;
+            if (!knownKeys.has(message.key)
+              && !knownFallbacks.has(`${message.code}:${message.timestamp}`)) {
+              matches.push({ orderId: order.orderId, message });
+            }
           }
         }
       } catch (error) {
-        console.error(`Could not scan messages for recent order ${order.orderId}:`, error.message);
+        console.error(`Could not scan messages for recent order ${orders[0].orderId}:`, error.message);
       }
-    }));
+    };
+    const deviceGroups = [...groups.entries()];
+    for (let index = 0; index < deviceGroups.length; index += recentOtpScanConcurrency) {
+      await Promise.all(deviceGroups.slice(index, index + recentOtpScanConcurrency).map(scanDevice));
+    }
     if (!matches.length && !numberStatusUpdates.length) return;
 
     await withRotationLock(async () => {
@@ -1872,6 +2104,10 @@ async function handleRequest(request, response) {
         console.error("Recent order OTP scan failed:", error.message);
       });
     }
+    if (recentOrdersCache && recentOrdersCache.expiresAt > Date.now()) {
+      sendJson(response, 200, recentOrdersCache.value);
+      return;
+    }
     try {
       const orders = await withRotationLock(async () => {
         const state = await readRotationState();
@@ -1884,7 +2120,9 @@ async function handleRequest(request, response) {
             locked: order.receivedOtp !== null
           }));
       });
-      sendJson(response, 200, { orders });
+      const value = { orders };
+      recentOrdersCache = { value, expiresAt: Date.now() + recentOrdersCacheTtlMs };
+      sendJson(response, 200, value);
     } catch (error) {
       console.error("Could not read recent orders:", error.message);
       sendJson(response, 500, { error: "Could not read recent orders." });
@@ -1962,12 +2200,18 @@ async function handleRequest(request, response) {
   }
   if (requestUrl.pathname === "/api/rotation") {
     if (request.method === "GET") {
+      if (rotationSettingsCache && rotationSettingsCache.expiresAt > Date.now()) {
+        sendJson(response, 200, rotationSettingsCache.value);
+        return;
+      }
       try {
         const state = await withRotationLock(readRotationState);
-        sendJson(response, 200, {
+        const value = {
           initialized: state.initialized,
           databaseUrls: state.databaseUrls
-        });
+        };
+        rotationSettingsCache = { value, expiresAt: Date.now() + recentOrdersCacheTtlMs };
+        sendJson(response, 200, value);
       } catch (error) {
         console.error("Could not read database rotation settings:", error.message);
         sendJson(response, 500, { error: "Could not read database rotation settings." });
@@ -2036,7 +2280,7 @@ async function handleRequest(request, response) {
     if (request.method === "PUT") {
       let input;
       try {
-        input = await readJsonBody(request, 65536);
+        input = await readJsonBody(request, maximumServicesRequestBytes);
       } catch (error) {
         sendJson(response, error.statusCode || 400, { error: error.message });
         return;
@@ -2062,6 +2306,32 @@ async function handleRequest(request, response) {
     }
     response.writeHead(405, { Allow: "GET, PUT" });
     response.end("Method Not Allowed");
+    return;
+  }
+  if (requestUrl.pathname === "/api/services/import-sms-formats") {
+    if (request.method !== "POST") {
+      response.writeHead(405, { Allow: "POST" });
+      response.end("Method Not Allowed");
+      return;
+    }
+    try {
+      const configured = await readConfiguredServices();
+      const source = JSON.parse(await readFile(smsFormatsDataPath, "utf8"));
+      if (!Array.isArray(source)) throw new Error("The SMS formats file must contain an array.");
+      const imported = mergeSmsFormats(configured.services, source);
+      const validationError = validateServiceList(imported.services);
+      if (validationError) throw new Error(`Imported services are invalid: ${validationError}`);
+      if (imported.addedServices > 0 || imported.addedTemplates > 0) {
+        await saveConfiguredServices(imported.services);
+      }
+      sendJson(response, 200, {
+        initialized: true,
+        ...imported
+      });
+    } catch (error) {
+      console.error("Could not import SMS formats:", error.message);
+      sendJson(response, 500, { error: "Could not import SMS formats." });
+    }
     return;
   }
   if (request.method === "POST" && requestUrl.pathname === "/api/send-sms") {
@@ -2108,11 +2378,23 @@ async function handleRequest(request, response) {
   if (asset) {
     try {
       const content = await readFile(asset.path);
+      const acceptsGzip = /(?:^|,|\s)gzip(?:\s|,|$)/i.test(request.headers["accept-encoding"] || "");
+      if (!acceptsGzip) {
+        response.writeHead(200, {
+          "Content-Type": asset.contentType,
+          "Cache-Control": "no-store"
+        });
+        response.end(content);
+        return;
+      }
+      const compressed = getCompressedStaticAsset(asset.path, content);
       response.writeHead(200, {
         "Content-Type": asset.contentType,
+        "Content-Encoding": "gzip",
+        "Vary": "Accept-Encoding",
         "Cache-Control": "no-store"
       });
-      response.end(content);
+      response.end(compressed);
     } catch (error) {
       console.error("Could not read dashboard asset:", error.message);
       sendJson(response, 500, { error: "Could not load a dashboard asset." });

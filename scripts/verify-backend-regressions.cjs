@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const { gunzipSync } = require("node:zlib");
 const serverFixture = require("./server-fixture.cjs");
 
 function completedOrder() {
@@ -13,6 +14,103 @@ function completedOrder() {
 }
 
 (async () => {
+  {
+    const f = serverFixture();
+    const first = await f.context.readRotationState();
+    first.databaseUrls.push("https://mutation.invalid");
+    const second = await f.context.readRotationState();
+    assert.equal(second.databaseUrls.includes("https://mutation.invalid"), false,
+      "Cached rotation state must not expose mutable internal data");
+    assert.equal([...f.readCounts].filter(([file]) => file.endsWith("rotation.json")).length, 1);
+    assert.equal([...f.readCounts].find(([file]) => file.endsWith("rotation.json"))[1], 1,
+      "Repeated rotation reads should use the short-lived normalized-state cache");
+    second.databaseUrls = [];
+    await f.context.saveRotationState(second);
+    second.databaseUrls.push("https://mutation.invalid");
+    assert.equal((await f.context.readRotationState()).databaseUrls.length, 0,
+      "Saving rotation must replace the cached state and isolate later caller mutations");
+
+    const candidate = f.context.findAvailableNumberCandidate("fixture", {
+      databaseUrls: ["https://failed.firebaseio.com", "https://working.firebaseio.com"],
+      serviceUsage: {}, orders: []
+    }, [
+      { database: "https://failed.firebaseio.com", numbers: [], messageReadFailures: 1 },
+      { database: "https://working.firebaseio.com", numbers: [{ deviceId: "fast", number: "9000000001" }], messageReadFailures: 0 }
+    ], false);
+    assert.equal(candidate.database, "https://working.firebaseio.com",
+      "A failed earlier inventory must not hide a usable candidate from another database");
+
+    const path = "/fixture-asset.js";
+    const original = Buffer.from("window.fixture = 'old';");
+    const updated = Buffer.from("window.fixture = 'new';");
+    const oldCompressed = f.context.getCompressedStaticAsset(path, original);
+    const newCompressed = f.context.getCompressedStaticAsset(path, updated);
+    assert.equal(gunzipSync(oldCompressed).toString(), original.toString());
+    assert.equal(gunzipSync(newCompressed).toString(), updated.toString(),
+      "Compressed asset cache must invalidate when the underlying content changes");
+  }
+  {
+    const f = serverFixture();
+    const now = Date.now();
+    const baseOrder = completedOrder();
+    const orders = ["b".repeat(24), "c".repeat(24)].map((orderId, index) => ({
+      ...baseOrder,
+      orderId,
+      number: `900000000${index + 1}`,
+      status: "active", receivedOtp: null, receivedAt: null, receivedOtps: [],
+      createdAt: now - 60000, expiresAt: now + 600000,
+      service: "fixture"
+    }));
+    f.setRotation({ databaseUrls: ["https://fixture.firebaseio.com"], serviceUsage: {}, orders });
+    f.files.set([...f.files.keys()].find((name) => name.endsWith("services.json")), JSON.stringify([
+      { id: "fixture", name: "fixture", enabled: true, template: "Code [OTP]" }
+    ]));
+    let messageReads = 0;
+    f.fetch = async (url) => {
+      if (url.endsWith("/messages/device-1.json")) {
+        messageReads += 1;
+        return { ok: true, status: 200, json: async () => ({
+          message1: { message: "Fixture code 654321", timestamp: now - 1000 }
+        }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ status: true }) };
+    };
+    await f.context.synchronizeRecentOrderOtps();
+    assert.equal(messageReads, 1,
+      "Orders sharing one device must reuse a single messages read per scan");
+    const updated = f.rotation().orders;
+    assert.equal(updated.filter((order) => order.receivedOtp === "654321").length, 2,
+      "Both orders must receive the matched OTP from the shared read");
+  }
+  {
+    const f = serverFixture();
+    let slowReadAborted = false;
+    f.fetch = async (url, { signal }) => {
+      if (url.endsWith("/clients.json")) {
+        return { ok: true, status: 200, json: async () => ({
+          fast: { status: true }, slow: { status: true }
+        }) };
+      }
+      if (url.endsWith("/messages/fast.json")) {
+        return { ok: true, status: 200, json: async () => ({
+          message1: { message: "Jio number 9000000001" }
+        }) };
+      }
+      return new Promise((resolve, reject) => {
+        signal.addEventListener("abort", () => {
+          slowReadAborted = true;
+          reject(Object.assign(new Error("Request aborted"), { name: "AbortError" }));
+        }, { once: true });
+      });
+    };
+    const result = await f.context.readActiveNumbers(
+      "https://fixture.firebaseio.com",
+      (candidate) => candidate.number === "9000000001"
+    );
+    assert.equal(result.numbers[0]?.deviceId, "fast");
+    assert.equal(slowReadAborted, true,
+      "A winning device read should cancel other pending message requests");
+  }
   {
     const f = serverFixture();
     f.setRotation({ databaseUrls: ["https://fixture.firebaseio.com"], serviceUsage: {}, orders: [completedOrder()] });

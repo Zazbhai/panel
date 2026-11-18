@@ -249,4 +249,4 @@ checkDeviceStatsButton.addEventListener("click", async () => {
 });
 
 void loadRotationSettings().then(() => loadDeviceStatsJob());
-setInterval(() => loadRotationSettings(true), 5000);
+setInterval(() => loadRotationSettings(true), 10000);

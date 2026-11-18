@@ -683,5 +683,5 @@ showMoreButton.addEventListener("click", () => {
   }
 });
 refreshButton.addEventListener("click", loadDatabases);
-setInterval(() => loadDevices(true), 30000);
+setInterval(() => loadDevices(true), 45000);
 loadDatabases();
