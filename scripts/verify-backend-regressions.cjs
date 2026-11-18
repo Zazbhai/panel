@@ -16,6 +16,163 @@ function completedOrder() {
 (async () => {
   {
     const f = serverFixture();
+    let proxyBodyCancelled = false;
+    const proxyBody = {
+      body: { getReader: () => ({
+        async read() { return { done: false, value: Buffer.from("oversized") }; },
+        async cancel() { proxyBodyCancelled = true; },
+        releaseLock() {}
+      }) },
+      headers: { get: () => null }
+    };
+    await assert.rejects(
+      f.context.readUpstreamText(proxyBody, 4),
+      (error) => error.code === "RESPONSE_TOO_LARGE"
+    );
+    assert.equal(proxyBodyCancelled, true, "Oversized proxy streams should be cancelled immediately");
+  }
+  {
+    const f = serverFixture();
+    f.fetch = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: (name) => name === "content-length" ? String(5 * 1024 * 1024) : null },
+      body: { getReader() { throw new Error("Oversized response body must not be read"); } }
+    });
+    const response = await f.request(
+      "/api/data?section=large&database=https%3A%2F%2Ffixture.firebaseio.com",
+      { admin: true }
+    );
+    assert.equal(response.status, 502);
+    assert.equal(JSON.parse(response.body).code, "UPSTREAM_RESPONSE_TOO_LARGE");
+  }
+  {
+    const f = serverFixture();
+    let activeReads = 0;
+    let peakReads = 0;
+    f.fetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => {
+        activeReads += 1;
+        peakReads = Math.max(peakReads, activeReads);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        activeReads -= 1;
+        return { ok: true };
+      }
+    });
+    const readLimit = 6;
+    await Promise.all(Array.from({ length: 24 }, (_, index) =>
+      f.context.fetchDatabaseJson(`https://fixture.firebaseio.com/clients/${index}.json`)
+    ));
+    assert(peakReads <= readLimit, "Firebase JSON reads must respect the process-wide concurrency limit");
+  }
+  {
+    const f = serverFixture();
+    let sharedReads = 0;
+    f.fetch = async () => {
+      sharedReads += 1;
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      return { ok: true, status: 200, json: async () => ({ shared: true }) };
+    };
+    const sharedEndpoint = "https://fixture.firebaseio.com/clients/shared.json";
+    const [sharedFirst, sharedSecond] = await Promise.all([
+      f.context.fetchSharedDatabaseJson(sharedEndpoint, 1000, 1000),
+      f.context.fetchSharedDatabaseJson(sharedEndpoint, 1000, 1000)
+    ]);
+    assert.deepEqual(sharedFirst, { shared: true });
+    assert.deepEqual(sharedSecond, { shared: true });
+    assert.equal(sharedReads, 1,
+      "Concurrent identical Firebase reads must share one upstream request");
+    await f.context.fetchSharedDatabaseJson(sharedEndpoint, 1000, 1000);
+    assert.equal(sharedReads, 1, "Short-lived Firebase read cache should prevent repeat requests");
+  }
+  {
+    const f = serverFixture();
+    let oversizedBodyRead = false;
+    f.fetch = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: (name) => name === "content-length" ? String(9 * 1024 * 1024) : null },
+      body: { getReader() { oversizedBodyRead = true; throw new Error("Body should not be read"); } }
+    });
+    await assert.rejects(
+      f.context.fetchDatabaseJson("https://fixture.firebaseio.com/messages/large.json"),
+      (error) => error.code === "RESPONSE_TOO_LARGE"
+    );
+    assert.equal(oversizedBodyRead, false,
+      "Oversized Firebase responses should be rejected from Content-Length before buffering");
+  }
+  {
+    const f = serverFixture();
+    let throttledReads = 0;
+    f.fetch = async () => {
+      throttledReads += 1;
+      return {
+        ok: false,
+        status: 429,
+        headers: { get: (name) => name === "retry-after" ? "2" : null }
+      };
+    };
+    const throttledEndpoint = "https://fixture.firebaseio.com/clients/throttled.json";
+    const results = await Promise.allSettled([
+      f.context.fetchSharedDatabaseJson(throttledEndpoint, 1000, 1000),
+      f.context.fetchSharedDatabaseJson(throttledEndpoint, 1000, 1000)
+    ]);
+    assert.equal(throttledReads, 1, "Concurrent throttled reads should share one failed upstream request");
+    assert.equal(results[0].reason.status, 429);
+    assert.equal(results[0].reason.retryAfterMs, 2000);
+  }
+  {
+    const f = serverFixture();
+    f.setRotation({ databaseUrls: ["https://fixture.firebaseio.com"], serviceUsage: {}, orders: [] });
+    const servicesPath = [...f.files.keys()].find((name) => name.endsWith("services.json"));
+    f.files.set(servicesPath, JSON.stringify([{
+      id: "fixture-service", name: "fixture", enabled: true,
+      templates: [{ text: "Code {{OTP}}", enabled: true }],
+      minOtpLength: 4, maxOtpLength: 8, senderFilter: ""
+    }]));
+    f.fetch = async () => ({
+      ok: false,
+      status: 429,
+      headers: { get: (name) => name === "retry-after" ? "2" : null }
+    });
+    const response = await f.request(`/stubs/handler_api.php?action=getNumber&service=fixture&api_key=${f.apiKey}`);
+    assert.equal(response.status, 503,
+      "Firebase rate limiting must be reported as a retryable dependency failure, not NO_NUMBERS");
+    assert.equal(response.headers["Retry-After"], "2");
+    assert.equal(JSON.parse(response.body).code, "UPSTREAM_UNAVAILABLE");
+  }
+  {
+    const f = serverFixture();
+    const largeBody = Buffer.from(JSON.stringify({ value: "x".repeat(1024 * 1024) }));
+    let largeReads = 0;
+    f.fetch = async () => {
+      largeReads += 1;
+      let read = false;
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (name) => name === "content-length" ? String(largeBody.length) : null },
+        body: { getReader: () => ({
+          async read() {
+            if (read) return { done: true };
+            read = true;
+            return { done: false, value: largeBody };
+          },
+          async cancel() {},
+          releaseLock() {}
+        }) }
+      };
+    };
+    const largeEndpoint = "https://fixture.firebaseio.com/messages/large.json";
+    await f.context.fetchSharedDatabaseJson(largeEndpoint, 1000, 1000);
+    await f.context.fetchSharedDatabaseJson(largeEndpoint, 1000, 1000);
+    assert.equal(largeReads, 2,
+      "Large Firebase payloads should be processed but excluded from the shared object cache");
+  }
+  {
+    const f = serverFixture();
     const first = await f.context.readRotationState();
     first.databaseUrls.push("https://mutation.invalid");
     const second = await f.context.readRotationState();
@@ -109,7 +266,7 @@ function completedOrder() {
     );
     assert.equal(result.numbers[0]?.deviceId, "fast");
     assert.equal(slowReadAborted, true,
-      "A winning device read should cancel other pending message requests");
+      "A winning device read should cancel unused shared message requests");
   }
   {
     const f = serverFixture();

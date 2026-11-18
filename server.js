@@ -55,6 +55,15 @@ const recentOrderOtpChecks = new Map();
 const recentOrderOtpScanIntervalMs = 8000;
 const activeNumberCacheTtlMs = 30000;
 const numberFetchTimeoutMs = 5000;
+const activeClientsCacheTtlMs = 3000;
+const numberMessagesCacheTtlMs = 500;
+const sharedDatabaseErrorTtlMs = 750;
+const maximumDatabaseJsonBytes = 4 * 1024 * 1024;
+const maximumProviderResponseBytes = 1024 * 1024;
+const maximumSharedDatabaseJsonEntryBytes = 1024 * 1024;
+const maximumSharedDatabaseJsonCacheBytes = 8 * 1024 * 1024;
+const sharedDatabaseJsonCacheLimit = 256;
+const maximumConcurrentDatabaseReads = 6;
 const slowDatabaseCooldownMs = 30000;
 const recentOrdersCacheTtlMs = 3000;
 const servicesCacheTtlMs = 5000;
@@ -67,6 +76,12 @@ let recentOrdersCache = null;
 let configuredServicesCache = null;
 let lastRuntimeCachePruneAt = 0;
 const compressedStaticAssets = new Map();
+const sharedDatabaseJsonCache = new Map();
+const sharedDatabaseJsonInflight = new Map();
+const sharedDatabaseJsonErrors = new Map();
+let sharedDatabaseJsonCacheBytes = 0;
+let activeDatabaseReads = 0;
+const queuedDatabaseReads = [];
 let rotationSettingsCache = null;
 let rotationStateCache = null;
 let rotationOperation = Promise.resolve();
@@ -422,18 +437,18 @@ async function validateAndPingRotatingDatabases(values) {
     const batch = databaseUrls.slice(index, index + databasePingConcurrency);
     const batchChecks = await Promise.all(batch.map(async (url) => {
       try {
-        const response = await fetch(`${url}/clients.json?shallow=true`, {
-          signal: AbortSignal.timeout(6000)
+        return await withDatabaseReadSlot(async () => {
+          const response = await fetch(`${url}/clients.json?shallow=true`, {
+            signal: AbortSignal.timeout(6000)
+          });
+          if (!response.ok) return { url, reason: `Firebase returned HTTP ${response.status}` };
+          try {
+            await readUpstreamJson(response, 1024 * 1024);
+          } catch {
+            return { url, reason: "Firebase returned invalid or oversized JSON" };
+          }
+          return { url, working: true };
         });
-        if (!response.ok) {
-          return { url, reason: `Firebase returned HTTP ${response.status}` };
-        }
-        try {
-          await response.json();
-        } catch {
-          return { url, reason: "Firebase returned invalid JSON" };
-        }
-        return { url, working: true };
       } catch (error) {
         return {
           url,
@@ -456,13 +471,20 @@ async function validateAndPingRotatingDatabases(values) {
 
 async function pingDatabaseUrl(url) {
   try {
-    const response = await fetch(`${url}/clients.json?shallow=true`, {
-      signal: AbortSignal.timeout(6000)
+    return await withDatabaseReadSlot(async () => {
+      const response = await fetch(`${url}/clients.json?shallow=true`, {
+        signal: AbortSignal.timeout(6000)
+      });
+      if (response.status !== 200) {
+        return { ok: false, reason: `Firebase returned HTTP ${response.status}; only HTTP 200 URLs are accepted.` };
+      }
+      try {
+        await readUpstreamJson(response, 1024 * 1024);
+      } catch {
+        return { ok: false, reason: "Firebase returned invalid or oversized JSON." };
+      }
+      return { ok: true };
     });
-    if (response.status !== 200) {
-      return { ok: false, reason: `Firebase returned HTTP ${response.status}; only HTTP 200 URLs are accepted.` };
-    }
-    return { ok: true };
   } catch (error) {
     return {
       ok: false,
@@ -827,30 +849,253 @@ async function initializeOrderExpirationTimers() {
   });
 }
 
-async function fetchDatabaseJson(endpoint, timeoutMs = 15000, parentSignal = null) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  const abortForParent = () => controller.abort();
-  if (parentSignal) {
-    if (parentSignal.aborted) controller.abort();
-    else parentSignal.addEventListener("abort", abortForParent, { once: true });
-  }
-  try {
-    const response = await fetch(endpoint, { signal: controller.signal });
-    if (!response.ok) {
-      const error = new Error("Firebase request failed.");
-      error.status = response.status;
+async function withDatabaseReadSlot(operation) {
+  if (activeDatabaseReads >= maximumConcurrentDatabaseReads || queuedDatabaseReads.length > 0) {
+    if (queuedDatabaseReads.length >= 256) {
+      const error = new Error("Firebase request capacity is full.");
+      error.status = 503;
+      error.retryAfterMs = 1000;
       throw error;
     }
-    try {
-      return await response.json();
-    } catch {
-      throw new Error("Firebase returned invalid JSON.");
+    await new Promise((resolve) => queuedDatabaseReads.push(resolve));
+  }
+  activeDatabaseReads += 1;
+  try {
+    return await operation();
+  } finally {
+    activeDatabaseReads = Math.max(0, activeDatabaseReads - 1);
+    queuedDatabaseReads.shift()?.();
+  }
+}
+
+async function readUpstreamText(response, maximumBytes) {
+  const contentLengthHeader = response.headers && typeof response.headers.get === "function"
+    ? response.headers.get("content-length")
+    : null;
+  const contentLength = Number(contentLengthHeader);
+  if (Number.isFinite(contentLength) && contentLength > maximumBytes) {
+    const error = new Error("Upstream response exceeded the configured size limit.");
+    error.code = "RESPONSE_TOO_LARGE";
+    throw error;
+  }
+  if (!response.body?.getReader) {
+    const text = await response.text();
+    if (Buffer.byteLength(text, "utf8") > maximumBytes) {
+      const error = new Error("Upstream response exceeded the configured size limit.");
+      error.code = "RESPONSE_TOO_LARGE";
+      throw error;
+    }
+    return text;
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      const buffer = Buffer.from(chunk.value);
+      totalBytes += buffer.length;
+      if (totalBytes > maximumBytes) {
+        await reader.cancel();
+        const error = new Error("Upstream response exceeded the configured size limit.");
+        error.code = "RESPONSE_TOO_LARGE";
+        throw error;
+      }
+      chunks.push(buffer);
     }
   } finally {
-    clearTimeout(timeout);
-    if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
+    reader.releaseLock();
   }
+  return Buffer.concat(chunks, totalBytes).toString("utf8");
+}
+
+async function readUpstreamJson(response, maximumBytes) {
+  const text = await readUpstreamText(response, maximumBytes);
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error("Upstream returned invalid JSON.");
+  }
+}
+
+async function fetchDatabaseJson(endpoint, timeoutMs = 15000, parentSignal = null, onResponseBytes = null) {
+  return withDatabaseReadSlot(async () => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const abortForParent = () => controller.abort();
+    if (parentSignal) {
+      if (parentSignal.aborted) controller.abort();
+      else parentSignal.addEventListener("abort", abortForParent, { once: true });
+    }
+    try {
+      const response = await fetch(endpoint, { signal: controller.signal });
+      if (!response.ok) {
+        const error = new Error("Firebase request failed.");
+        error.status = response.status;
+        const retryAfter = response.headers && typeof response.headers.get === "function"
+          ? response.headers.get("retry-after")
+          : null;
+        if (retryAfter) {
+          const retryAfterSeconds = Number(retryAfter);
+          error.retryAfterMs = Number.isFinite(retryAfterSeconds)
+            ? Math.max(0, retryAfterSeconds * 1000)
+            : Math.max(0, Date.parse(retryAfter) - Date.now());
+        }
+        throw error;
+      }
+      try {
+        const contentLengthHeader = response.headers && typeof response.headers.get === "function"
+          ? response.headers.get("content-length")
+          : null;
+        const contentLength = Number(contentLengthHeader);
+        if (Number.isFinite(contentLength) && contentLength > maximumDatabaseJsonBytes) {
+          const error = new Error("Firebase response exceeded the configured size limit.");
+          error.code = "RESPONSE_TOO_LARGE";
+          throw error;
+        }
+        if (!response.body?.getReader) {
+          onResponseBytes?.(Number.isFinite(contentLength) ? contentLength : 0);
+          return await response.json();
+        }
+        const reader = response.body.getReader();
+        const chunks = [];
+        let totalBytes = 0;
+        try {
+          while (true) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            const buffer = Buffer.from(chunk.value);
+            totalBytes += buffer.length;
+            if (totalBytes > maximumDatabaseJsonBytes) {
+              await reader.cancel();
+              const error = new Error("Firebase response exceeded the configured size limit.");
+              error.code = "RESPONSE_TOO_LARGE";
+              throw error;
+            }
+            chunks.push(buffer);
+          }
+        } finally {
+          reader.releaseLock();
+        }
+        onResponseBytes?.(totalBytes);
+        return JSON.parse(Buffer.concat(chunks, totalBytes).toString("utf8"));
+      } catch (error) {
+        if (error.code === "RESPONSE_TOO_LARGE") throw error;
+        throw new Error("Firebase returned invalid JSON.");
+      }
+    } finally {
+      clearTimeout(timeout);
+      if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
+    }
+  });
+}
+
+function deleteSharedDatabaseCacheEntry(key) {
+  const cached = sharedDatabaseJsonCache.get(key);
+  if (!cached) return;
+  sharedDatabaseJsonCacheBytes = Math.max(0, sharedDatabaseJsonCacheBytes - cached.bytes);
+  sharedDatabaseJsonCache.delete(key);
+}
+
+function pruneSharedDatabaseJsonCache(now = Date.now()) {
+  for (const [key, entry] of sharedDatabaseJsonCache) {
+    if (entry.expiresAt <= now) deleteSharedDatabaseCacheEntry(key);
+  }
+  for (const [key, entry] of sharedDatabaseJsonErrors) {
+    if (entry.expiresAt <= now) sharedDatabaseJsonErrors.delete(key);
+  }
+  while (sharedDatabaseJsonCache.size > sharedDatabaseJsonCacheLimit
+    || sharedDatabaseJsonCacheBytes > maximumSharedDatabaseJsonCacheBytes) {
+    const first = sharedDatabaseJsonCache.keys().next();
+    if (first.done) break;
+    deleteSharedDatabaseCacheEntry(first.value);
+  }
+  while (sharedDatabaseJsonErrors.size > sharedDatabaseJsonCacheLimit) {
+    const first = sharedDatabaseJsonErrors.keys().next();
+    if (first.done) break;
+    sharedDatabaseJsonErrors.delete(first.value);
+  }
+}
+
+function subscribeToSharedDatabaseRead(entry, parentSignal) {
+  entry.subscribers += 1;
+  let abortListener = null;
+  const subscriberAbort = parentSignal && new Promise((resolve, reject) => {
+    abortListener = () => {
+      const error = new Error("Database read was cancelled.");
+      error.name = "AbortError";
+      reject(error);
+    };
+    if (parentSignal.aborted) abortListener();
+    else parentSignal.addEventListener("abort", abortListener, { once: true });
+  });
+  const result = subscriberAbort
+    ? Promise.race([entry.promise, subscriberAbort])
+    : entry.promise;
+  return result.finally(() => {
+    if (parentSignal && abortListener) {
+      parentSignal.removeEventListener("abort", abortListener);
+    }
+    entry.subscribers = Math.max(0, entry.subscribers - 1);
+    if (!entry.settled && entry.subscribers === 0) entry.controller.abort();
+  });
+}
+
+async function fetchSharedDatabaseJson(endpoint, timeoutMs, ttlMs, parentSignal = null) {
+  const now = Date.now();
+  const cached = sharedDatabaseJsonCache.get(endpoint);
+  if (cached && cached.expiresAt > now) return cached.value;
+  if (cached) deleteSharedDatabaseCacheEntry(endpoint);
+
+  const recentError = sharedDatabaseJsonErrors.get(endpoint);
+  if (recentError && recentError.expiresAt > now) throw recentError.error;
+  if (recentError) sharedDatabaseJsonErrors.delete(endpoint);
+
+  const pending = sharedDatabaseJsonInflight.get(endpoint);
+  if (pending) return subscribeToSharedDatabaseRead(pending, parentSignal);
+
+  let responseBytes = 0;
+  const entry = { controller: new AbortController(), subscribers: 0, settled: false, promise: null };
+  entry.promise = fetchDatabaseJson(endpoint, timeoutMs, entry.controller.signal, (bytes) => {
+    responseBytes = bytes;
+  })
+    .then((value) => {
+      sharedDatabaseJsonErrors.delete(endpoint);
+      if (responseBytes <= maximumSharedDatabaseJsonEntryBytes) {
+        deleteSharedDatabaseCacheEntry(endpoint);
+        sharedDatabaseJsonCache.set(endpoint, {
+          value,
+          bytes: responseBytes,
+          expiresAt: Date.now() + ttlMs
+        });
+        sharedDatabaseJsonCacheBytes += responseBytes;
+        pruneSharedDatabaseJsonCache();
+      }
+      return value;
+    })
+    .catch((error) => {
+      if (entry.controller.signal.aborted) throw error;
+      const cooldownMs = Math.max(
+        sharedDatabaseErrorTtlMs,
+        Math.min(error.retryAfterMs || 0, 10000)
+      );
+      sharedDatabaseJsonErrors.set(endpoint, {
+        error,
+        expiresAt: Date.now() + cooldownMs
+      });
+      pruneSharedDatabaseJsonCache();
+      throw error;
+    })
+    .finally(() => {
+      entry.settled = true;
+      if (sharedDatabaseJsonInflight.get(endpoint) === entry) {
+        sharedDatabaseJsonInflight.delete(endpoint);
+      }
+    });
+  const request = entry.promise;
+  sharedDatabaseJsonInflight.set(endpoint, entry);
+  return subscribeToSharedDatabaseRead(entry, parentSignal);
 }
 
 function cacheActiveNumber(database, candidate) {
@@ -870,7 +1115,12 @@ function cacheActiveNumber(database, candidate) {
 }
 
 async function readActiveNumbers(database, isAvailable = () => true, parentSignal = null) {
-  const clients = await fetchDatabaseJson(`${database}/clients.json`, numberFetchTimeoutMs, parentSignal);
+  const clients = await fetchSharedDatabaseJson(
+    `${database}/clients.json`,
+    numberFetchTimeoutMs,
+    activeClientsCacheTtlMs
+  );
+  if (parentSignal?.aborted) return { numbers: [], messageReadFailures: 0 };
   if (!clients || typeof clients !== "object" || Array.isArray(clients)) {
     return { numbers: [], messageReadFailures: 0 };
   }
@@ -884,6 +1134,7 @@ async function readActiveNumbers(database, isAvailable = () => true, parentSigna
 
   const numbers = new Map();
   let messageReadFailures = 0;
+  let upstreamError = null;
   const batchController = new AbortController();
   const abortForParent = () => batchController.abort();
   if (parentSignal) {
@@ -916,9 +1167,10 @@ async function readActiveNumbers(database, isAvailable = () => true, parentSigna
     const batch = candidates.slice(index, index + 8);
     const reads = batch.map(async ([deviceId]) => ({
       deviceId,
-      number: getLatestCarrierNumber(await fetchDatabaseJson(
+      number: getLatestCarrierNumber(await fetchSharedDatabaseJson(
         database + "/messages/" + encodeURIComponent(deviceId) + ".json",
         numberFetchTimeoutMs,
+        numberMessagesCacheTtlMs,
         batchController.signal
       ))
     }));
@@ -940,6 +1192,9 @@ async function readActiveNumbers(database, isAvailable = () => true, parentSigna
     for (const result of results) {
       if (result.status === "rejected") {
         messageReadFailures += 1;
+        if (!upstreamError && (result.reason?.status || result.reason?.code)) {
+          upstreamError = result.reason;
+        }
       } else if (result.value.number && !numbers.has(result.value.number)) {
         cacheActiveNumber(database, result.value);
         numbers.set(result.value.number, result.value);
@@ -949,7 +1204,7 @@ async function readActiveNumbers(database, isAvailable = () => true, parentSigna
     }
     if (parentSignal?.aborted) {
       if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
-      return { numbers: [...numbers.values()], messageReadFailures };
+      return { numbers: [...numbers.values()], messageReadFailures, upstreamError };
     }
     if ([...numbers.values()].some(isAvailable)) {
       if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
@@ -957,7 +1212,7 @@ async function readActiveNumbers(database, isAvailable = () => true, parentSigna
     }
   }
   if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
-  return { numbers: [...numbers.values()], messageReadFailures };
+  return { numbers: [...numbers.values()], messageReadFailures, upstreamError };
 }
 
 function recordSlowDatabase(database, error) {
@@ -1199,7 +1454,11 @@ function findAvailableNumberCandidate(service, rotationState, inventories, allow
 
   const failedInventory = orderedInventories.find((inventory) => inventory.messageReadFailures > 0);
   if (failedInventory) {
-    throw new Error(`Could not read every active client in database ${failedInventory.database}.`);
+    const error = new Error(`Could not read every active client in database ${failedInventory.database}.`);
+    error.status = failedInventory.upstreamError?.status;
+    error.retryAfterMs = failedInventory.upstreamError?.retryAfterMs;
+    error.code = failedInventory.upstreamError?.code;
+    throw error;
   }
 
   const allNumbers = new Set(orderedInventories.flatMap((inventory) =>
@@ -1251,6 +1510,14 @@ async function findAvailableActiveNumber(service) {
       );
       if (!candidate) {
         if (inventoryScan.stoppedEarly) return { retry: true };
+        if (inventoryScan.failures.length > 0) {
+          const upstreamError = inventoryScan.failures[0].error;
+          const error = new Error("One or more Firebase databases could not be read.");
+          error.status = upstreamError?.status;
+          error.retryAfterMs = upstreamError?.retryAfterMs;
+          error.code = upstreamError?.code;
+          throw error;
+        }
         if (JSON.stringify(state.serviceUsage[service] || null) !== previousUsage) await saveRotationState(state);
         return { reservation: null };
       }
@@ -1402,9 +1669,10 @@ async function synchronizeRecentOrderOtps() {
         numberActive = cachedStatus.numberActive;
       } else {
         try {
-          const client = await fetchDatabaseJson(
+      const client = await fetchSharedDatabaseJson(
             `${databaseUrl}/clients/${encodeURIComponent(deviceId)}.json`,
-            8000
+            8000,
+            1000
           );
           numberActive = client?.status === true;
           clientStatusCache.set(clientStatusKey, { numberActive, expiresAt: Date.now() + recentOrderOtpScanIntervalMs });
@@ -1421,9 +1689,10 @@ async function synchronizeRecentOrderOtps() {
       })).filter((entry) => entry.service);
       if (!matchingOrders.length) return;
       try {
-        const messages = await fetchDatabaseJson(
+        const messages = await fetchSharedDatabaseJson(
           `${databaseUrl}/messages/${encodeURIComponent(deviceId)}.json`,
-          8000
+          8000,
+          numberMessagesCacheTtlMs
         );
         for (const { order, service } of matchingOrders) {
           const knownMessageKeys = new Set((order.messageHistory || [])
@@ -1531,7 +1800,21 @@ async function handleLocalOtpRequest(requestUrl, response) {
       reservation = await findAvailableActiveNumber(service);
     } catch (error) {
       console.error("Could not select an active client number:", error.message);
-      sendJson(response, 502, { error: "Could not select an active-client number from the configured databases." });
+      const temporarilyUnavailable = [429, 500, 502, 503, 504].includes(error.status)
+        || error.name === "AbortError" || error.name === "TimeoutError";
+      const headers = error.retryAfterMs > 0
+        ? { "Retry-After": String(Math.ceil(error.retryAfterMs / 1000)) }
+        : {};
+      sendJson(response, temporarilyUnavailable ? 503 : 502, {
+        error: error.code === "RESPONSE_TOO_LARGE"
+          ? "Firebase response exceeded the 4 MB safety limit."
+          : temporarilyUnavailable
+            ? "The configured databases are temporarily unavailable. Retry shortly."
+            : "Could not select an active-client number from the configured databases.",
+        code: error.code === "RESPONSE_TOO_LARGE"
+          ? "UPSTREAM_RESPONSE_TOO_LARGE"
+          : "UPSTREAM_UNAVAILABLE"
+      }, headers);
       return;
     }
     if (!reservation) {
@@ -1621,8 +1904,10 @@ async function handleLocalOtpRequest(requestUrl, response) {
   if (action === "getStatus") {
     let messages;
     try {
-      messages = await fetchDatabaseJson(
-        `${reservation.databaseUrl}/messages/${encodeURIComponent(reservation.deviceId)}.json`
+      messages = await fetchSharedDatabaseJson(
+        `${reservation.databaseUrl}/messages/${encodeURIComponent(reservation.deviceId)}.json`,
+        5000,
+        numberMessagesCacheTtlMs
       );
     } catch (error) {
       console.error("Could not read messages for a number order:", error.message);
@@ -1630,7 +1915,21 @@ async function handleLocalOtpRequest(requestUrl, response) {
         sendText(response, 200, `STATUS_OK:${reservation.receivedOtp}`);
         return;
       }
-      sendJson(response, 502, { error: "Could not read SMS messages from the active client." });
+      const temporarilyUnavailable = [429, 500, 502, 503, 504].includes(error.status)
+        || error.name === "AbortError" || error.name === "TimeoutError";
+      const headers = error.retryAfterMs > 0
+        ? { "Retry-After": String(Math.ceil(error.retryAfterMs / 1000)) }
+        : {};
+      sendJson(response, temporarilyUnavailable ? 503 : 502, {
+        error: error.code === "RESPONSE_TOO_LARGE"
+          ? "Firebase message data exceeded the 4 MB safety limit."
+          : temporarilyUnavailable
+            ? "The active client database is temporarily unavailable. Retry shortly."
+            : "Could not read SMS messages from the active client.",
+        code: error.code === "RESPONSE_TOO_LARGE"
+          ? "UPSTREAM_RESPONSE_TOO_LARGE"
+          : "UPSTREAM_UNAVAILABLE"
+      }, headers);
       return;
     }
     let configuredServices;
@@ -1754,27 +2053,28 @@ async function queueSms(request, response) {
   }
 
   const signal = AbortSignal.timeout(15000);
-  let deviceResponse;
-  try {
-    deviceResponse = await fetch(
-      `${requestedDatabase}/devices/${encodeURIComponent(deviceId)}.json`,
-      { signal }
-    );
-  } catch (error) {
-    console.error("Could not verify SMS sender:", error.message);
-    sendJson(response, 502, { error: "Could not verify the sender device in Firebase." });
-    return;
-  }
-  if (!deviceResponse.ok) {
-    sendJson(response, 502, { error: `Could not verify the sender device (Firebase HTTP ${deviceResponse.status}).` });
-    return;
-  }
-
   let device;
   try {
-    device = await deviceResponse.json();
-  } catch {
-    sendJson(response, 502, { error: "Firebase returned invalid device data." });
+    device = await withDatabaseReadSlot(async () => {
+      const upstream = await fetch(
+        `${requestedDatabase}/devices/${encodeURIComponent(deviceId)}.json`,
+        { signal }
+      );
+      if (!upstream.ok) {
+        const error = new Error(`Could not verify the sender device (Firebase HTTP ${upstream.status}).`);
+        error.status = upstream.status;
+        throw error;
+      }
+      return readUpstreamJson(upstream, 1024 * 1024);
+    });
+  } catch (error) {
+    console.error("Could not verify SMS sender:", error.message);
+    sendJson(response, error.status === 429 ? 503 : 502, {
+      error: error.status === 429
+        ? "Firebase is temporarily rate limiting requests. Retry shortly."
+        : "Could not verify the sender device in Firebase.",
+      ...(error.status === 429 ? { code: "UPSTREAM_UNAVAILABLE" } : {})
+    }, error.status === 429 ? { "Retry-After": "1" } : {});
     return;
   }
   if (!device || typeof device !== "object" || Array.isArray(device)) {
@@ -1825,16 +2125,21 @@ async function queueSms(request, response) {
   const taskUrl = `${requestedDatabase}/sendSms/${encodeURIComponent(deviceId)}/${encodeURIComponent(id)}.json`;
 
   try {
-    const existingResponse = await fetch(taskUrl, {
-      headers: { "X-Firebase-ETag": "true" },
-      signal
+    const { existing, etag } = await withDatabaseReadSlot(async () => {
+      const upstream = await fetch(taskUrl, {
+        headers: { "X-Firebase-ETag": "true" },
+        signal
+      });
+      if (!upstream.ok) {
+        const error = new Error(`Could not check the new SMS task key (Firebase HTTP ${upstream.status}).`);
+        error.status = upstream.status;
+        throw error;
+      }
+      return {
+        existing: await readUpstreamJson(upstream, 65536),
+        etag: upstream.headers.get("etag")
+      };
     });
-    if (!existingResponse.ok) {
-      sendJson(response, 502, { error: `Could not check the new SMS task key (Firebase HTTP ${existingResponse.status}).` });
-      return;
-    }
-    const existing = await existingResponse.json();
-    const etag = existingResponse.headers.get("etag");
     if (existing !== null) {
       sendJson(response, 409, { error: "The generated SMS task ID already exists; nothing was overwritten. Please submit again." });
       return;
@@ -1844,29 +2149,43 @@ async function queueSms(request, response) {
       return;
     }
 
-    const writeResponse = await fetch(taskUrl, {
-      method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-        "If-Match": etag
-      },
-      body: JSON.stringify(task),
-      signal
+    const writeResponse = await withDatabaseReadSlot(async () => {
+      const upstream = await fetch(taskUrl, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "If-Match": etag
+        },
+        body: JSON.stringify(task),
+        signal
+      });
+      const detail = await readUpstreamText(upstream, 65536);
+      return { status: upstream.status, ok: upstream.ok, detail };
     });
     if (writeResponse.status === 412) {
       sendJson(response, 409, { error: "The SMS task key changed before writing; nothing was overwritten." });
       return;
     }
     if (!writeResponse.ok) {
-      const detail = await writeResponse.text();
-      console.error(`Firebase SMS queue write failed (HTTP ${writeResponse.status}):`, detail.slice(0, 500));
-      sendJson(response, writeResponse.status, { error: `Firebase rejected the SMS task (HTTP ${writeResponse.status}).` });
+      console.error(`Firebase SMS queue write failed (HTTP ${writeResponse.status}):`, writeResponse.detail.slice(0, 500));
+      const throttled = writeResponse.status === 429;
+      sendJson(response, throttled ? 503 : writeResponse.status, {
+        error: throttled ? "Firebase is temporarily rate limiting requests. Retry shortly."
+          : `Firebase rejected the SMS task (HTTP ${writeResponse.status}).`,
+        ...(throttled ? { code: "UPSTREAM_UNAVAILABLE" } : {})
+      }, throttled ? { "Retry-After": "1" } : {});
       return;
     }
     sendJson(response, 201, { id, deviceId, status: "pending" });
   } catch (error) {
     console.error("Could not queue SMS task:", error.message);
-    sendJson(response, 502, { error: "Could not confirm the SMS task write. Check Send SMS records before retrying." });
+    const temporarilyUnavailable = error.status === 429 || error.status === 503;
+    sendJson(response, temporarilyUnavailable ? 503 : 502, {
+      error: temporarilyUnavailable
+        ? "Firebase is temporarily busy. Retry shortly."
+        : "Could not confirm the SMS task write. Check Send SMS records before retrying.",
+      ...(temporarilyUnavailable ? { code: "UPSTREAM_UNAVAILABLE" } : {})
+    }, temporarilyUnavailable ? { "Retry-After": String(Math.ceil((error.retryAfterMs || 1000) / 1000)) } : {});
   }
 }
 
@@ -1935,34 +2254,55 @@ async function proxyOtpProvider(request, response) {
   const endpoint = new URL("https://otpsell.com/stubs/handler_api.php");
   endpoint.search = parameters.toString();
   try {
-    const upstream = await fetch(endpoint, {
-      redirect: "error",
-      signal: AbortSignal.timeout(15000)
+    const result = await withDatabaseReadSlot(async () => {
+      const upstream = await fetch(endpoint, {
+        redirect: "error",
+        signal: AbortSignal.timeout(15000)
+      });
+      return {
+        status: upstream.status,
+        contentType: upstream.headers.get("content-type") || "text/plain; charset=utf-8",
+        body: await readUpstreamText(upstream, maximumProviderResponseBytes)
+      };
     });
-    const body = await upstream.text();
-    response.writeHead(upstream.status, {
-      "Content-Type": upstream.headers.get("content-type") || "text/plain; charset=utf-8",
+    response.writeHead(result.status, {
+      "Content-Type": result.contentType,
       "Cache-Control": "no-store"
     });
-    response.end(body);
-  } catch {
+    response.end(result.body);
+  } catch (error) {
     console.error("OTP provider request failed.");
-    sendJson(response, 502, { error: "Could not reach the OTP provider." });
+    sendJson(response, error.status === 503 ? 503 : 502, {
+      error: error.status === 503 ? "The request queue is temporarily full. Retry shortly."
+        : "Could not reach the OTP provider.",
+      ...(error.status === 503 ? { code: "UPSTREAM_UNAVAILABLE" } : {})
+    }, error.status === 503 ? { "Retry-After": "1" } : {});
   }
 }
 
 async function proxyFirebase(response, endpoint) {
   try {
-    const upstream = await fetch(endpoint, { signal: AbortSignal.timeout(15000) });
-    const body = await upstream.text();
-    response.writeHead(upstream.status, {
+    const result = await withDatabaseReadSlot(async () => {
+      const upstream = await fetch(endpoint, { signal: AbortSignal.timeout(15000) });
+      return { status: upstream.status, body: await readUpstreamText(upstream, maximumDatabaseJsonBytes) };
+    });
+    response.writeHead(result.status, {
       "Content-Type": "application/json; charset=utf-8",
       "Cache-Control": "no-store"
     });
-    response.end(body);
+    response.end(result.body);
   } catch (error) {
     console.error("Firebase request failed:", error.message);
-    sendJson(response, 502, { error: "Could not reach the Firebase database." });
+    const tooLarge = error.code === "RESPONSE_TOO_LARGE";
+    const busy = error.status === 503;
+    sendJson(response, busy ? 503 : 502, {
+      error: tooLarge
+        ? "Firebase response exceeded the 4 MB limit. Request a smaller data section."
+        : busy ? "Firebase request capacity is temporarily full. Retry shortly."
+          : "Could not reach the Firebase database.",
+      ...(tooLarge ? { code: "UPSTREAM_RESPONSE_TOO_LARGE" }
+        : busy ? { code: "UPSTREAM_UNAVAILABLE" } : {})
+    }, busy ? { "Retry-After": "1" } : {});
   }
 }
 
