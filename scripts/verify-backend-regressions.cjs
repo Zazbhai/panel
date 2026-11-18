@@ -106,6 +106,38 @@ function completedOrder() {
   }
   {
     const f = serverFixture();
+    f.context.setTimeout = (callback) => setTimeout(callback, 1);
+    f.fetch = async (_url, { signal }) => new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => {
+        reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" }));
+      }, { once: true });
+    });
+    await assert.rejects(
+      f.context.fetchDatabaseJson("https://fixture.firebaseio.com/messages/device-1.json", 1000),
+      (error) => error.name === "TimeoutError" && error.code === "UPSTREAM_TIMEOUT"
+    );
+  }
+  {
+    const f = serverFixture();
+    const order = completedOrder();
+    order.status = "active";
+    order.receivedOtp = null;
+    order.receivedAt = null;
+    order.receivedOtps = [];
+    order.createdAt = Date.now() - 1000;
+    order.expiresAt = Date.now() + 600000;
+    f.setRotation({ databaseUrls: ["https://fixture.firebaseio.com"], serviceUsage: {}, orders: [order] });
+    f.context.fetchSharedDatabaseJson = async () => {
+      throw Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
+    };
+    const logs = [];
+    f.context.console = { error: (...args) => logs.push(args) };
+    const result = await f.request("/stubs/handler_api.php?action=getStatus&id=" + order.orderId + "&api_key=" + f.apiKey);
+    assert.equal(result.status, 503, "An aborted Firebase read should remain a temporary API failure");
+    assert.equal(logs.length, 0, "Expected aborted reads must not flood the server error log");
+  }
+  {
+    const f = serverFixture();
     let sharedReads = 0;
     f.fetch = async () => {
       sharedReads += 1;

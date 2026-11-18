@@ -937,7 +937,11 @@ async function readUpstreamJson(response, maximumBytes) {
 async function fetchDatabaseJson(endpoint, timeoutMs = 15000, parentSignal = null, onResponseBytes = null) {
   return withDatabaseReadSlot(async () => {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
     const abortForParent = () => controller.abort();
     if (parentSignal) {
       if (parentSignal.aborted) controller.abort();
@@ -997,8 +1001,17 @@ async function fetchDatabaseJson(endpoint, timeoutMs = 15000, parentSignal = nul
         return JSON.parse(Buffer.concat(chunks, totalBytes).toString("utf8"));
       } catch (error) {
         if (error.code === "RESPONSE_TOO_LARGE") throw error;
+        if (error.name === "AbortError" || error.name === "TimeoutError") throw error;
         throw new Error("Firebase returned invalid JSON.");
       }
+    } catch (error) {
+      if (timedOut) {
+        const timeoutError = new Error("Firebase request timed out.");
+        timeoutError.name = "TimeoutError";
+        timeoutError.code = "UPSTREAM_TIMEOUT";
+        throw timeoutError;
+      }
+      throw error;
     } finally {
       clearTimeout(timeout);
       if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
@@ -1949,13 +1962,15 @@ async function handleLocalOtpRequest(requestUrl, response) {
         numberMessagesCacheTtlMs
       );
     } catch (error) {
-      console.error("Could not read messages for a number order:", error.message);
+      const temporarilyUnavailable = [429, 500, 502, 503, 504].includes(error.status)
+        || error.name === "AbortError" || error.name === "TimeoutError";
+      if (!temporarilyUnavailable) {
+        console.error("Could not read messages for a number order:", error.message);
+      }
       if (reservation.receivedOtp !== null) {
         sendText(response, 200, `STATUS_OK:${reservation.receivedOtp}`);
         return;
       }
-      const temporarilyUnavailable = [429, 500, 502, 503, 504].includes(error.status)
-        || error.name === "AbortError" || error.name === "TimeoutError";
       const headers = error.retryAfterMs > 0
         ? { "Retry-After": String(Math.ceil(error.retryAfterMs / 1000)) }
         : {};

@@ -36,7 +36,9 @@ class Fixture(checks.Fixture):
         if url.netloc == 'panel.test' and request.method == 'GET':
             if url.path == '/api/recent-orders': route.fulfill(json={'orders': self.orders}); return
             if url.path == '/api/services': route.fulfill(json={'initialized': True, 'services': self.services}); return
-            if url.path == '/api/device-messages': self.reads.append(query.get('deviceId',[''])[0]); route.fulfill(json={}); return
+            if url.path == '/api/device-messages':
+                self.reads.append((query.get('database',[''])[0], query.get('deviceId',[''])[0]))
+                route.fulfill(json=checks.MESSAGES); return
         return super().handle(route)
 
 def main():
@@ -72,10 +74,12 @@ def main():
         page.locator('[data-range="all"]').click(); page.locator('#orderStatusFilter').select_option('active'); expect(page.locator('.order-card')).to_have_count(4)
         page.locator('#orderStatusFilter').select_option('number-active'); expect(page.locator('.order-card')).to_have_count(4)
         page.locator('#orderStatusFilter').select_option(''); page.locator('#orderSearch').fill('order-0'); expect(page.locator('.order-card')).to_have_count(1); page.locator('#orderSearch').fill('')
-        page.locator('[data-range="all"]').click(); page.locator('#showMoreOrders').click(); reads_before = len(fixture.reads); order_zero = page.locator('.order-card[data-order-id="order-0"]'); trigger = order_zero.locator('.order-details-trigger'); trigger.click(); expect(order_zero.locator('.order-dialog[open]')).to_be_visible(); expect(order_zero.locator('.order-detail-panel')).to_be_visible(); expect(order_zero.locator('.order-message-status')).to_be_visible(); expect(order_zero.locator('.message-body')).to_contain_text('123456'); assert len(fixture.reads) == reads_before; page.keyboard.press('Escape'); expect(order_zero.locator('.order-dialog[open]')).to_have_count(0); expect(trigger).to_be_focused()
+        page.locator('[data-range="all"]').click(); page.locator('#showMoreOrders').click(); reads_before = len(fixture.reads); order_zero = page.locator('.order-card[data-order-id="order-0"]'); trigger = order_zero.locator('.order-details-trigger'); trigger.click(); expect(order_zero.locator('.order-dialog[open]')).to_be_visible(); expect(order_zero.locator('.order-detail-panel')).to_be_visible(); expect(order_zero.locator('.order-message-status')).to_be_visible(); expect(order_zero.locator('.order-dialog .message-body')).to_contain_text('123456'); assert len(fixture.reads) == reads_before
+        order_zero.locator('.order-all-messages-trigger').click(); expect(page.locator('#deviceMessagesDialog[open]')).to_be_visible(); expect(page.locator('#deviceMessagesContext')).to_contain_text('device-0'); expect(page.locator('#deviceMessagesList .message-body')).to_contain_text('123456'); assert fixture.reads[-1] == (DATABASE, 'device-0')
+        page.keyboard.press('Escape'); expect(page.locator('#deviceMessagesDialog[open]')).to_have_count(0); page.keyboard.press('Escape'); expect(order_zero.locator('.order-dialog[open]')).to_have_count(0); expect(trigger).to_be_focused()
         for width in (1440,1024,768,390,320): page.set_viewport_size({'width':width,'height':1000 if width>600 else 844}); checks.check_layout(page)
         checks.ready(page, '/services'); expect(page.locator('.service-card')).to_have_count(6); expect(page.locator('#showMoreServices')).to_be_visible(); page.locator('#showMoreServices').click(); expect(page.locator('.service-card')).to_have_count(10); page.locator('#serviceSearch').fill('Fixture service 7'); expect(page.locator('.service-card')).to_have_count(1); page.locator('#serviceSearch').fill(''); expect(page.locator('.template-editor')).to_have_count(1); page.locator('#addServiceButton').click(); expect(page.locator('#serviceEditorDialog[open]')).to_be_visible(); page.locator('#addTemplateButton').click(); page.locator('#addTemplateButton').click(); expect(page.locator('.template-editor')).to_have_count(3); expect(page.locator('#templateCount')).to_have_text('3')
         for width in (1440,1024,768,390,320): page.set_viewport_size({'width':width,'height':1000 if width>600 else 844}); checks.check_layout(page)
-        assert not errors, errors; assert not fixture.blocked, fixture.blocked; print('PASS: order cards, date presets, custom range, search/status filters, lazy details and responsive layouts; compact multi-template service editor and responsive layouts.')
+        assert not errors, errors; assert not fixture.blocked, fixture.blocked; print('PASS: order cards, date presets, custom range, search/status filters, saved messages, click-to-load all device messages and responsive layouts; compact multi-template service editor and responsive layouts.')
         context.close(); browser.close()
 if __name__ == '__main__': main()

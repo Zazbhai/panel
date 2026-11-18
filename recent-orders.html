@@ -384,11 +384,20 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
 .order-detail-panel .data-field { min-width: 0; }
 .order-detail-panel dt { color: var(--muted); font-size: .6875rem; }
 .order-detail-panel dd { margin: 3px 0 0; color: var(--ink); font-size: .75rem; overflow-wrap: anywhere; }
+.order-all-messages-trigger { min-height: 38px; margin: 0 0 20px; font-size: .75rem; }
 .order-detail-panel .message-list { display: grid; }
 .order-detail-panel .message { padding: 12px 0; border-bottom: 1px solid var(--line); }
 .order-detail-panel .message:last-child { border-bottom: 0; }
 .order-detail-panel .message-meta { display: flex; flex-wrap: wrap; gap: 5px 9px; margin-bottom: 6px; color: var(--muted); font-size: .6875rem; }
 .order-detail-panel .message-body { margin: 0; color: var(--ink); font-size: .75rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.device-messages-dialog { width: min(820px, calc(100% - 32px)); }
+.device-messages-context { margin: 0; padding: 12px 24px 0; color: var(--muted); font-size: .75rem; overflow-wrap: anywhere; }
+.device-messages-status { margin: 12px 24px 0; }
+.device-message-list { display: grid; max-height: min(62dvh, 640px); overflow-y: auto; padding: 4px 24px 24px; }
+.device-message-list .message { padding: 14px 0; border-bottom: 1px solid var(--line); }
+.device-message-list .message:last-child { border-bottom: 0; }
+.device-message-list .message-meta { display: flex; flex-wrap: wrap; gap: 5px 9px; margin-bottom: 6px; color: var(--muted); font-size: .6875rem; }
+.device-message-list .message-body { margin: 0; color: var(--ink); font-size: .8125rem; white-space: pre-wrap; overflow-wrap: anywhere; }
 .order-list-footer { display: flex; justify-content: center; margin-top: 24px; }
 .order-list-footer:has(> [hidden]) { display: none; }
 #showMoreOrders { min-width: 152px; }
@@ -422,6 +431,9 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
   .order-dialog form { max-height: calc(100dvh - 20px); }
   .order-dialog-header { padding: 18px; }
   .order-dialog-content { padding: 0 18px 18px; }
+  .device-messages-context { padding-inline: 18px; }
+  .device-messages-status { margin-inline: 18px; }
+  .device-message-list { padding-inline: 18px; }
 }
   </style>
 </head>
@@ -478,6 +490,17 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
       <p class="order-scope-note">Filters apply to loaded recent orders.</p>
     </section>
   </main>
+  <dialog id="deviceMessagesDialog" class="order-dialog device-messages-dialog" aria-labelledby="deviceMessagesTitle">
+    <form method="dialog">
+      <div class="order-dialog-header">
+        <h2 id="deviceMessagesTitle">All device messages</h2>
+        <button class="quiet icon-button" value="cancel" type="submit" aria-label="Close device messages"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+      </div>
+      <p id="deviceMessagesContext" class="device-messages-context"></p>
+      <p id="deviceMessagesStatus" class="status device-messages-status" role="status" aria-live="polite"></p>
+      <div id="deviceMessagesList" class="device-message-list"></div>
+    </form>
+  </dialog>
   <script data-dashboard-ui>
 (() => {
   "use strict";

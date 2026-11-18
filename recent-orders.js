@@ -12,6 +12,10 @@ const orderCount = document.getElementById("orderCount");
 const showMoreOrders = document.getElementById("showMoreOrders");
 const ordersRefreshStatus = document.getElementById("ordersRefreshStatus");
 const activeNumberCount = document.getElementById("activeNumberCount");
+const deviceMessagesDialog = document.getElementById("deviceMessagesDialog");
+const deviceMessagesContext = document.getElementById("deviceMessagesContext");
+const deviceMessagesStatus = document.getElementById("deviceMessagesStatus");
+const deviceMessagesList = document.getElementById("deviceMessagesList");
 const orderCards = new Map();
 const ORDER_BATCH_SIZE = 6;
 const ORDER_REFRESH_INTERVAL = 6000;
@@ -26,6 +30,8 @@ let displayedOrders = [];
 let serviceTemplatesPromise = null;
 const orderMessageStates = new Map();
 const orderMessagePanels = new Map();
+let deviceMessagesRequestId = 0;
+let deviceMessagesReturnFocus = null;
 
 async function readJson(url) {
   const response = await window.dashboardApiFetch(url);
@@ -193,14 +199,71 @@ function makeOrderDetails(order, container) {
   }
   const messagesHeading = document.createElement("h3");
   messagesHeading.textContent = "Messages for this order";
+  const allMessagesButton = document.createElement("button");
+  allMessagesButton.className = "secondary order-all-messages-trigger";
+  allMessagesButton.type = "button";
+  allMessagesButton.textContent = "View all device messages";
+  allMessagesButton.setAttribute("aria-haspopup", "dialog");
+  allMessagesButton.addEventListener("click", () => loadAllDeviceMessages(order, allMessagesButton));
   const messageStatus = document.createElement("p");
   messageStatus.className = "status order-message-status";
   const messageList = document.createElement("div");
   messageList.className = "message-list";
-  panel.append(heading, details, messagesHeading, messageStatus, messageList);
+  panel.append(heading, details, allMessagesButton, messagesHeading, messageStatus, messageList);
   container.append(panel);
   orderMessagePanels.set(order.orderId, { messageStatus, messageList });
   renderOrderMessages(order);
+}
+
+function getAllDeviceMessageEntries(messages) {
+  if (!messages || typeof messages !== "object" || Array.isArray(messages)) return [];
+  return Object.entries(messages)
+    .filter(([, message]) => message && typeof message === "object" && !Array.isArray(message))
+    .sort(([leftKey, left], [rightKey, right]) => {
+      const leftTime = getMessageTimestamp(leftKey, left);
+      const rightTime = getMessageTimestamp(rightKey, right);
+      if (leftTime && rightTime) return rightTime.getTime() - leftTime.getTime();
+      if (leftTime) return -1;
+      if (rightTime) return 1;
+      return String(rightKey).localeCompare(String(leftKey), undefined, { numeric: true });
+    });
+}
+
+async function loadAllDeviceMessages(order, trigger) {
+  if (!order.databaseUrl || !order.deviceId) {
+    deviceMessagesReturnFocus = trigger;
+    deviceMessagesContext.textContent = `Order ${order.orderId}`;
+    deviceMessagesStatus.textContent = "This order has no database or device ID.";
+    deviceMessagesStatus.classList.add("error");
+    deviceMessagesList.replaceChildren();
+    deviceMessagesDialog.showModal();
+    return;
+  }
+
+  deviceMessagesReturnFocus = trigger;
+  const requestId = ++deviceMessagesRequestId;
+  deviceMessagesContext.textContent = `Order ${order.orderId} · Device ${order.deviceId} · ${order.databaseUrl}`;
+  deviceMessagesStatus.classList.remove("error");
+  deviceMessagesStatus.textContent = "Loading device messages…";
+  deviceMessagesStatus.setAttribute("aria-busy", "true");
+  deviceMessagesList.replaceChildren();
+  deviceMessagesDialog.showModal();
+  try {
+    const query = new URLSearchParams({ database: order.databaseUrl, deviceId: order.deviceId });
+    const messages = await readJson(`/api/device-messages?${query}`);
+    if (requestId !== deviceMessagesRequestId) return;
+    const entries = getAllDeviceMessageEntries(messages);
+    deviceMessagesStatus.textContent = entries.length
+      ? `Showing ${entries.length} message${entries.length === 1 ? "" : "s"} from this device.`
+      : "No messages were found for this device.";
+    deviceMessagesList.replaceChildren(...entries.map((entry) => makeOrderMessageRow(order, entry)));
+  } catch (error) {
+    if (requestId !== deviceMessagesRequestId) return;
+    deviceMessagesStatus.textContent = `Could not load device messages: ${error.message}`;
+    deviceMessagesStatus.classList.add("error");
+  } finally {
+    if (requestId === deviceMessagesRequestId) deviceMessagesStatus.removeAttribute("aria-busy");
+  }
 }
 
 function renderOrderMessages(order) {
@@ -284,6 +347,16 @@ function makeOrderCard(order) {
   });
   return card;
 }
+
+deviceMessagesDialog.addEventListener("click", (event) => {
+  if (event.target === deviceMessagesDialog) deviceMessagesDialog.close();
+});
+deviceMessagesDialog.addEventListener("close", () => {
+  deviceMessagesRequestId++;
+  deviceMessagesStatus.removeAttribute("aria-busy");
+  if (deviceMessagesReturnFocus && deviceMessagesReturnFocus.isConnected) deviceMessagesReturnFocus.focus();
+  deviceMessagesReturnFocus = null;
+});
 
 function updateOrderCard(card, order) {
   const statusLabels = {
