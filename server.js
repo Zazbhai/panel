@@ -69,8 +69,12 @@ const slowDatabaseCooldownMs = 30000;
 const recentOrdersCacheTtlMs = 3000;
 const servicesCacheTtlMs = 5000;
 const rotationStateCacheTtlMs = 250;
+const numberPoolSize = readPositiveIntegerEnv("NUMBER_POOL_SIZE", 32, 1, 500);
+const numberPoolRefillThreshold = Math.max(1, Math.floor(numberPoolSize / 4));
+const numberPoolTtlMs = 15000;
 const failedLoginAttempts = new Map();
 const activeNumberCache = new Map();
+const numberPools = new Map();
 const slowDatabases = new Map();
 const clientStatusCache = new Map();
 const serviceAllocationOperations = new Map();
@@ -90,6 +94,12 @@ let rotationStateCache = null;
 let rotationOperation = Promise.resolve();
 let recentOrderOtpScanPromise = null;
 let deviceStatsJob = null;
+
+function readPositiveIntegerEnv(name, fallback, minimum, maximum) {
+  const value = Number(process.env[name]);
+  if (!Number.isInteger(value) || value < minimum || value > maximum) return fallback;
+  return value;
+}
 
 if (typeof dashboardApiKey !== "string" || dashboardApiKey.length < 32 || /\s/.test(dashboardApiKey)) {
   throw new Error("Set DASHBOARD_API_KEY to a secret of at least 32 non-whitespace characters.");
