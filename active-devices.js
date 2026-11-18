@@ -628,13 +628,14 @@ async function loadDatabases() {
     const [config, rotation] = await Promise.allSettled([readJson("/api/config"), readJson("/api/rotation")]);
     const candidates = rotation.status === "fulfilled" && Array.isArray(rotation.value.databaseUrls) ? rotation.value.databaseUrls : [];
     const defaultUrl = config.status === "fulfilled" ? config.value.databaseUrl : null;
-    const configured = candidates.length ? candidates : [defaultUrl];
+    const hasSavedRotation = rotation.status === "fulfilled" && Array.isArray(rotation.value.databaseUrls);
+    const configured = hasSavedRotation ? candidates : [defaultUrl];
     const urls = [];
     for (const value of configured) {
       try { const url = normalizeDatabaseUrl(value); if (!urls.includes(url)) urls.push(url); }
       catch { /* Invalid saved entries cannot become selectable database URLs. */ }
     }
-    if (!urls.length && defaultUrl) {
+    if (!hasSavedRotation && !urls.length && defaultUrl) {
       try { urls.push(normalizeDatabaseUrl(defaultUrl)); } catch { /* The error below provides the recovery action. */ }
     }
     if (!urls.length) throw new Error(config.status === "rejected" && rotation.status === "rejected" ? "Could not load database settings. Try Refresh." : "No valid databases configured. Add a database on the Rotation page.");

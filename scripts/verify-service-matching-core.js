@@ -63,4 +63,21 @@ assert.deepEqual(matchServiceMessage(senderScoped, "Use code 989099 to continue.
 assert.equal(matchServiceMessage(jio, "98909 is your One time password (OTP) to login to MyJio. Don't share OTP with anyone.", {}), null);
 assert.deepEqual(matchServiceMessage(flipkart, flipkartText, { sender: "VA-FL-PKRT-S" }), { code: "634435" });
 assert.deepEqual(matchServiceMessage(whatsapp, whatsappText), { code: "661572" });
+const digitMarkerService = { templates: [{ text: "Account [DIGITS:3] code [OTP]", enabled: true }] };
+assert.deepEqual(matchServiceMessage(digitMarkerService, "Account 123 code 654321"), { code: "654321" });
+assert.equal(matchServiceMessage(digitMarkerService, "Account 12 code 654321"), null);
+assert.equal(matchServiceMessage(flipkart, flipkartText.replace("#634435", "#999999")), null);
+const fs = require("node:fs");
+const vm = require("node:vm");
+const path = require("node:path");
+const browser = { window: {} };
+vm.runInNewContext(fs.readFileSync(path.join(__dirname, "..", "service-matching.js"), "utf8"), browser);
+for (const [service, text] of [
+  [digitMarkerService, "Account 123 code 654321"],
+  [digitMarkerService, "Account 12 code 654321"],
+  [flipkart, flipkartText], [flipkart, flipkartText.replace("#634435", "#999999")],
+  [swiggy, jioText], [whatsapp, whatsappText]
+]) {
+  assert.equal(browser.window.serviceMatching.matches(service, text), Boolean(matchServiceMessage(service, text)));
+}
 console.log("PASS: service-scoped OTP matching rejects Jio/Swiggy cross-matches, generic OTPs, wrong senders and wrong code lengths.");

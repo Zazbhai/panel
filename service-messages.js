@@ -63,7 +63,6 @@ async function getEnabledServices() {
     throw new Error("The server returned invalid configured services.");
   }
   return result.services.filter((service) => service
-    && service.enabled === true
     && typeof service.name === "string");
 }
 
@@ -99,7 +98,7 @@ function getLatestOtpMessages(orders, services) {
   for (const order of orders) {
     if (!order || typeof order !== "object") continue;
     for (const otp of getOrderOtps(order)) {
-      if (!otp || typeof otp.code !== "string" || !/^\d{4,8}$/.test(otp.code)) continue;
+      if (!otp || typeof otp.code !== "string" || !/^\d{1,32}$/.test(otp.code)) continue;
       const timestamp = Number.isFinite(otp.receivedAt) ? otp.receivedAt : order.createdAt;
       items.push({
         id: JSON.stringify([order.orderId, otp.messageKey || null, otp.code, timestamp]),
@@ -282,31 +281,20 @@ async function loadServiceMessages(isBackgroundRefresh = false) {
   }
 
   try {
-    const services = await getEnabledServices();
-    updateServiceFilter(services);
-    if (services.length === 0) {
-      matchingMessages = [];
-      activeDeviceCount = 0;
-      emptyReason = "no-services";
-      totalMessageCount.textContent = "0";
-      deviceCount.textContent = "—";
-      enabledServiceCount.textContent = "0";
-      hasLoaded = true;
-      messageSearch.disabled = true;
-      renderServiceMessages();
-      setStatus("", false);
-      return;
-    }
-
-    const result = await readJson("/api/recent-orders");
+    const [result, services] = await Promise.all([
+      readJson("/api/recent-orders?source=saved"),
+      getEnabledServices().catch(() => [])
+    ]);
     if (!result || !Array.isArray(result.orders)) throw new Error("The server returned invalid recent orders.");
     const orders = result.orders;
     matchingMessages = getLatestOtpMessages(orders, services);
+    updateServiceFilter([...new Set(matchingMessages.map((item) => item.service))]
+      .map((name) => ({ name })));
     emptyReason = orders.length ? "" : "no-orders";
     activeDeviceCount = new Set(matchingMessages.map((item) => item.orderId)).size;
     totalMessageCount.textContent = matchingMessages.length;
     deviceCount.textContent = activeDeviceCount;
-    enabledServiceCount.textContent = services.length;
+    enabledServiceCount.textContent = new Set(matchingMessages.map((item) => item.service)).size;
     hasLoaded = true;
     messageSearch.disabled = false;
     renderServiceMessages();

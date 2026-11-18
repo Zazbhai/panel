@@ -54,6 +54,9 @@ class Fixture:
             if path == self.failure:
                 route.fulfill(status=503, json={'error': 'Preview request failed. Try again.'})
                 return
+            if path == '/api/rotation/device-stats':
+                route.fulfill(json={'status': 'idle'})
+                return
             if request.method in ('POST', 'PUT'):
                 body = request.post_data_json
                 self.writes.append({'path': path, 'body': body})
@@ -61,6 +64,7 @@ class Fixture:
                 if path == '/api/rotation': self.rotation = body['databaseUrls']
             section = parse_qs(url.query).get('section', [''])[0]
             if path == '/api/config': data = {'databaseUrl': DATABASE}
+            elif path == '/api/health': data = {'status': 'ok'}
             elif path == '/api/services': data = {'initialized': True, 'services': [] if self.empty else self.services}
             elif path == '/api/rotation': data = {'initialized': True, 'databaseUrls': self.rotation}
             elif path == '/api/sections': data = {'devices': True, 'clients': True}
@@ -112,12 +116,10 @@ def main():
                 check_layout(page)
                 if width in (1440,390): snapshot(page, name+f'-{width}')
                 if width <= 768:
-                    toggle = page.locator('.nav-toggle')
-                    toggle.click()
-                    expect(toggle).to_have_attribute('aria-expanded', 'true')
-                    expect(page.locator('.page-nav')).to_be_visible()
-                    page.keyboard.press('Escape')
-                    expect(toggle).to_be_focused()
+                    expect(page.locator('.mobile-bottom-nav')).to_be_visible()
+                    expect(page.locator('.mobile-bottom-nav a')).to_have_count(7)
+                    expect(page.locator('.mobile-bottom-nav a[aria-current="page"]')).to_have_count(1)
+                    expect(page.locator('.nav-toggle')).not_to_be_visible()
                     expect(page.locator('.page-nav')).not_to_be_visible()
         print('PASS: all seven pages at 1440, 1024, 768, 390 and 320px; mobile navigation.')
 

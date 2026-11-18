@@ -72,14 +72,7 @@ strong { font-weight: 600; }
 .workspace-grid > .panel { margin: 0; }
 .services-layout { grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); }
 .rotation-panel { max-width: 900px; }
-.rotation-panel .panel-heading { flex-wrap: wrap; }
 .rotation-panel .hint { margin: 12px 0 22px; max-width: 75ch; }
-.database-count { display: inline-flex; align-items: baseline; gap: 8px; margin: 0; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft); color: var(--muted); font-size: .75rem; white-space: nowrap; }
-.database-count strong { color: var(--ink); font-size: 1.1rem; font-variant-numeric: tabular-nums; }
-.device-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 20px 0 0; }
-.device-stat { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft); }
-.device-stat dt { color: var(--muted); font-size: .75rem; }
-.device-stat dd { margin: 4px 0 0; font-size: 1.5rem; line-height: 1.2; font-weight: 650; font-variant-numeric: tabular-nums; }
 .field, .sms-field, .time-field, .request-fields label { display: grid; align-content: start; gap: 7px; min-width: 0; color: var(--ink); font-size: .8125rem; font-weight: 500; }
 input:not([type="checkbox"]):not([type="hidden"]), textarea, select { width: 100%; min-width: 0; border: 1px solid var(--control-line); border-radius: 6px; background: var(--surface); color: var(--ink); min-height: 40px; padding: 9px 11px; font-size: .875rem; line-height: 1.4; transition: border-color 150ms ease, background-color 150ms ease; }
 input::placeholder, textarea::placeholder { color: #737367; opacity: 1; }
@@ -295,7 +288,6 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
   .connection { align-items: stretch; }
   .connection > button { width: 100%; }
   .sms-grid, .time-filters, .request-fields, .data-grid { grid-template-columns: 1fr; }
-  .device-stats { grid-template-columns: 1fr; }
   .sms-field.full { grid-column: auto; }
   .sms-grid { gap: 16px; }
   .device { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
@@ -325,6 +317,17 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
   .mobile-bottom-nav-icon .icon { width: 17px; height: 17px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; scroll-behavior: auto !important; } }
+
+.rotation-panel .panel-heading { flex-wrap: wrap; }
+.database-count { display: inline-flex; align-items: baseline; gap: 8px; margin: 0; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft); color: var(--muted); font-size: .75rem; white-space: nowrap; }
+.database-count strong { color: var(--ink); font-size: 1.1rem; font-variant-numeric: tabular-nums; }
+.device-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 20px 0 0; }
+.device-stat { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft); }
+.device-stat dt { color: var(--muted); font-size: .75rem; }
+.device-stat dd { margin: 4px 0 0; font-size: 1.5rem; line-height: 1.2; font-weight: 650; font-variant-numeric: tabular-nums; }
+@media (max-width: 600px) {
+  .device-stats { grid-template-columns: 1fr; }
+}
   </style>
 </head>
 <body>
@@ -410,7 +413,7 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
     const mobileNav = document.createElement("nav");
     mobileNav.className = "mobile-bottom-nav";
     mobileNav.setAttribute("aria-label", "Dashboard pages");
-    const currentPath = window.location.pathname.replace(/\/$/, "") || "/";
+    const currentPath = window.location.pathname.replace(/\.html$/, "").replace(/\/$/, "") || "/";
     mobileNavItems.forEach(([href, label, iconMarkup]) => {
       const link = document.createElement("a");
       link.href = href;

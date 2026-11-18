@@ -462,6 +462,16 @@ ACCESS_CANCEL     Cancellation successful.</pre>
 }</pre>
     </section>
 
+    <section class="panel" aria-labelledby="healthBalanceHeading">
+      <h2 id="healthBalanceHeading">Health and balance</h2>
+      <p>Both endpoints require your dashboard API key. Health checks the API process. Balance is fixed at 1 for testing.</p>
+      <p class="endpoint">GET /api/health?api_key=&lt;dashboard-key&gt;</p>
+      <pre>{"status":"ok"}</pre>
+      <p class="endpoint">GET /api/balance?api_key=&lt;dashboard-key&gt;</p>
+      <pre>{"balance":1,"mock":true}</pre>
+      <p>The handler API also accepts <code>action=getHealth</code> (returns <code>OK</code>) and <code>action=getBalance</code> (returns <code>ACCESS_BALANCE:1</code>).</p>
+    </section>
+
     <section class="panel" aria-labelledby="addDatabaseUrlHeading">
       <h2 id="addDatabaseUrlHeading">Add a database to rotation</h2>
       <p>Checks the Firebase clients endpoint first and saves the URL only when it returns HTTP 200. Existing URLs are left unchanged.</p>
@@ -507,7 +517,7 @@ ACCESS_CANCEL     Cancellation successful.</pre>
     const mobileNav = document.createElement("nav");
     mobileNav.className = "mobile-bottom-nav";
     mobileNav.setAttribute("aria-label", "Dashboard pages");
-    const currentPath = window.location.pathname.replace(/\/$/, "") || "/";
+    const currentPath = window.location.pathname.replace(/\.html$/, "").replace(/\/$/, "") || "/";
     mobileNavItems.forEach(([href, label, iconMarkup]) => {
       const link = document.createElement("a");
       link.href = href;

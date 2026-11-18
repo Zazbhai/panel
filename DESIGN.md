@@ -4,7 +4,7 @@ This is a task-focused operations panel. The visual reference is the local `desi
 
 Use one system font, sentence-case labels and short instructions. Primary buttons perform the main save or send action; refresh, edit and navigation use secondary buttons or links. Destructive actions use red and name the affected item in a confirmation dialog. Service switches are native checkbox inputs with switch semantics; selected sections remain checkboxes.
 
-Forms use visible labels, inline validation and clear keyboard focus. Dialogs use native `<dialog>` focus management, Escape cancellation and explicit action labels. Long content wraps; wide tables scroll within the panel. Navigation collapses below 900px and uses a real menu button.
+Forms use visible labels, inline validation and clear keyboard focus. Dialogs use native `<dialog>` focus management, Escape cancellation and explicit action labels. Long content wraps; wide tables scroll within the panel. Below 900px, navigation uses a fixed bottom bar.
 
 Shared styles and interactions live in `frontend/dashboard.css` and `frontend/dashboard-ui.js`. Run `node scripts/build-frontend.cjs` after editing these files. The build embeds them in all seven HTML pages so no backend asset route is needed. Page-specific API and business logic stays in the existing scripts.
 
@@ -14,7 +14,7 @@ The existing collection API has no server pagination. Six-card batches limit DOM
 
 Verify changes using synthetic fixtures with all network requests intercepted. Do not launch the production backend or access Firebase for visual verification.
 
-Service messages use bordered cards, a local search field, a service selector, copy feedback and a keyboard-accessible auto-refresh switch. Only new cards animate; retained cards keep their focus and position during five-second polling. Reduced-motion preferences disable movement. Twelve messages render initially; Show more reveals the next twelve from the loaded results. Page-only styles live in `frontend/service-messages.css`.
+Service messages show the latest six saved order OTPs through `/api/recent-orders?source=saved`. This request does not start a Firebase scan. Deleted or disabled services do not hide saved messages. Search and service filters apply to those six entries. Cards retain focus during polling and respect reduced motion. Page-only styles live in `frontend/service-messages.css`.
 
 The service-messages build embeds the exact contents of `service-matching.js` before the page controller, avoiding a separate asset dependency on older running servers. Matching rules remain in that source file. Run `node scripts/build-frontend.cjs service-messages` after editing it or this page's styles, then `python scripts/verify-service-messages.py` for isolated regression checks, including an unavailable standalone matching asset.
 

@@ -23,14 +23,6 @@ function updateRotationControls() {
   checkDeviceStatsButton.disabled = !rotationReady || busy || rotationDirty;
 }
 
-function clearDeviceStats() {
-  totalDevices.textContent = "—";
-  activeDevices.textContent = "—";
-  offlineDevices.textContent = "—";
-  deviceStatsStatus.textContent = "";
-  deviceStatsStatus.classList.remove("error");
-}
-
 function setRotationStatus(message, isError = false) {
   rotationStatus.textContent = message;
   rotationStatus.classList.toggle("error", Boolean(isError));
@@ -123,6 +115,7 @@ async function loadDeviceStatsJob() {
     const response = await window.dashboardApiFetch("/api/rotation/device-stats");
     const job = await readRotationResponse(response);
     if (job.status === "running") {
+      if (job.previousResult) renderDeviceStats(job.previousResult);
       deviceStatsLoading = true;
       deviceStatsStatus.textContent = "Checking clients.json in the background. You can leave this page.";
       deviceStatsStatus.classList.remove("error");
@@ -141,11 +134,14 @@ async function loadDeviceStatsJob() {
     }
     deviceStatsLoading = false;
     updateRotationControls();
+    if (job.status === "completed") void loadRotationSettings(true);
   } catch (error) {
+    const wasRunning = deviceStatsLoading;
     deviceStatsLoading = false;
     deviceStatsStatus.textContent = `Could not check combined device totals: ${error.message}`;
     deviceStatsStatus.classList.add("error");
     updateRotationControls();
+    if (wasRunning) scheduleDeviceStatsPoll();
   }
 }
 

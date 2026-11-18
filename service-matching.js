@@ -32,11 +32,11 @@
       parts.push(escapeTemplateText(text.slice(lastIndex, marker.index)));
       const markerName = marker[0].toUpperCase();
       if (markerName === "{{OTP}}" || markerName === "[OTP]") {
-        parts.push(codePattern);
+        parts.push(`(${codePattern})`);
       } else if (markerName === "{{ANY}}" || markerName === "[ANY]") {
         parts.push("\\S+?");
       } else {
-        const digitCount = Number(marker[1]);
+        const digitCount = Number(marker[1] || marker[2]);
         parts.push(digitCount >= 1 && digitCount <= 32
           ? `\\d{${digitCount}}`
           : escapeTemplateText(marker[0]));
@@ -60,6 +60,7 @@
       const maxOtpLength = Number.isInteger(service.maxOtpLength)
         ? service.maxOtpLength
         : 8;
+      if (minOtpLength < 1 || maxOtpLength < minOtpLength || maxOtpLength > 32) return false;
       const codePattern = String.raw`(?<!\d)\d(?:[\s-]?\d){${minOtpLength - 1},${maxOtpLength - 1}}(?!\d)`;
       matcher = {
         senderFilter,
@@ -75,7 +76,12 @@
         : "";
       if (!sender.includes(matcher.senderFilter)) return false;
     }
-    return matcher.patterns.some((pattern) => pattern.test(text));
+    return matcher.patterns.some((pattern) => {
+      const match = pattern.exec(text);
+      if (!match?.[1]) return false;
+      const codes = match.slice(1).map((code) => code.replace(/\D/g, ""));
+      return codes.every((code) => code === codes[0]);
+    });
   }
 
   window.serviceMatching = { getEnabledTemplates, matches };

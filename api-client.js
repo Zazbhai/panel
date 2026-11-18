@@ -50,7 +50,7 @@ if (isApiPage) {
     }
 
     try {
-      const response = await window.dashboardApiFetch("/api/config");
+      const response = await window.dashboardApiFetch("/api/health");
       const body = await response.json();
       if (!response.ok) {
         throw new Error(body && body.error ? body.error : `Request failed (HTTP ${response.status}).`);

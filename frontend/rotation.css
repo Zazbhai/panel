@@ -1,0 +1,10 @@
+.rotation-panel .panel-heading { flex-wrap: wrap; }
+.database-count { display: inline-flex; align-items: baseline; gap: 8px; margin: 0; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft); color: var(--muted); font-size: .75rem; white-space: nowrap; }
+.database-count strong { color: var(--ink); font-size: 1.1rem; font-variant-numeric: tabular-nums; }
+.device-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 20px 0 0; }
+.device-stat { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft); }
+.device-stat dt { color: var(--muted); font-size: .75rem; }
+.device-stat dd { margin: 4px 0 0; font-size: 1.5rem; line-height: 1.2; font-weight: 650; font-variant-numeric: tabular-nums; }
+@media (max-width: 600px) {
+  .device-stats { grid-template-columns: 1fr; }
+}

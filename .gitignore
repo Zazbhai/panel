@@ -7,3 +7,9 @@ node_modules/
 # Generated frontend verification screenshots and local baselines
 .preview/
 __pycache__/
+
+# Local Telegram credentials, progress and downloaded attachments
+*.session
+*.session-journal
+last_done*.txt
+tmp_media/

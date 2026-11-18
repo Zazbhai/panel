@@ -27,17 +27,15 @@ function makeTemplatePattern(text, codePattern) {
   const parts = [];
   let lastIndex = 0;
   let marker;
-  let capturedOtp = false;
   while ((marker = markerPattern.exec(text))) {
     parts.push(escapeTemplateText(text.slice(lastIndex, marker.index)));
     const markerName = marker[0].toUpperCase();
     if (markerName === "{{OTP}}" || markerName === "[OTP]") {
-      parts.push(capturedOtp ? `(?:${codePattern})` : `(${codePattern})`);
-      capturedOtp = true;
+      parts.push(`(${codePattern})`);
     } else if (markerName === "{{ANY}}" || markerName === "[ANY]") {
       parts.push("\\S+?");
     } else {
-      const digitCount = Number(marker[1]);
+      const digitCount = Number(marker[1] || marker[2]);
       parts.push(digitCount >= 1 && digitCount <= 32
         ? `\\d{${digitCount}}`
         : escapeTemplateText(marker[0]));
@@ -69,7 +67,10 @@ function matchServiceMessage(service, text, message = {}) {
   }
   for (const pattern of getMatchers(service)) {
     const match = pattern.exec(text);
-    if (match && match[1]) return { code: match[1].replace(/\D/g, "") };
+    if (match && match[1]) {
+      const codes = match.slice(1).map((code) => code.replace(/\D/g, ""));
+      if (codes.every((code) => code === codes[0])) return { code: codes[0] };
+    }
   }
   return null;
 }

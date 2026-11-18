@@ -104,7 +104,7 @@ async function saveServices(nextServices) {
     try {
       localStorage.setItem(storageKey, JSON.stringify(services));
     } catch (error) {
-      throw new Error(`Services were saved on the server, but the browser cache could not update: ${error.message}`);
+      // The server save succeeded even if private browsing blocks the cache.
     }
   } finally {
     servicesSaving = false;
@@ -143,7 +143,7 @@ async function initializeServices() {
       try {
         localStorage.setItem(storageKey, JSON.stringify(services));
       } catch (error) {
-        throw new Error(`Services loaded from the server, but the browser cache could not update: ${error.message}`);
+        // Server data remains usable when browser storage is unavailable.
       }
     } else {
       await writeServicesToServer(services);

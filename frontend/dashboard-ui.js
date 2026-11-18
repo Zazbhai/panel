@@ -31,7 +31,7 @@
     const mobileNav = document.createElement("nav");
     mobileNav.className = "mobile-bottom-nav";
     mobileNav.setAttribute("aria-label", "Dashboard pages");
-    const currentPath = window.location.pathname.replace(/\/$/, "") || "/";
+    const currentPath = window.location.pathname.replace(/\.html$/, "").replace(/\/$/, "") || "/";
     mobileNavItems.forEach(([href, label, iconMarkup]) => {
       const link = document.createElement("a");
       link.href = href;

@@ -241,7 +241,6 @@ async function loadOrderMessages(order) {
   orderMessageStates.set(order.orderId, state);
   renderOrderMessages(order);
   try {
-    const service = await getOrderServiceConfig(order);
     const endTime = Math.min(
       Date.now(),
       Number.isFinite(order.expiresAt) ? order.expiresAt : Date.now()
@@ -251,10 +250,9 @@ async function loadOrderMessages(order) {
       if (!date) return false;
       const timestamp = date.getTime();
       return timestamp >= order.createdAt
-        && timestamp <= endTime
-        && (!service || window.serviceMatching.matches(service, getMessageText(message), message));
+        && timestamp <= endTime;
     });
-    state.templateMissing = !service;
+    state.templateMissing = false;
   } catch (error) {
     state.error = error.message;
   } finally {
@@ -496,10 +494,16 @@ showMoreOrders.addEventListener("click", () => {
   const card = orderList.children[count];
   if (card) { card.tabIndex = -1; card.focus(); }
 });
-const refreshTimer = window.setInterval(() => {
+let refreshTimer = window.setInterval(() => {
   if (isPageVisible()) loadRecentOrders();
 }, ORDER_REFRESH_INTERVAL);
-window.addEventListener("pagehide", () => window.clearInterval(refreshTimer), { once: true });
+window.addEventListener("pagehide", () => { window.clearInterval(refreshTimer); refreshTimer = null; });
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted && refreshTimer === null) {
+    refreshTimer = window.setInterval(() => { if (isPageVisible()) loadRecentOrders(); }, ORDER_REFRESH_INTERVAL);
+    loadRecentOrders();
+  }
+});
 document.addEventListener("visibilitychange", () => {
   if (isPageVisible()) loadRecentOrders();
 });

@@ -12,6 +12,7 @@ import asyncio
 import json
 import os
 import re
+from pathlib import Path
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -30,13 +31,29 @@ ADD_DATABASE_URL_ENDPOINT = os.getenv(
     "DASHBOARD_ADD_DATABASE_URL_ENDPOINT",
     "http://127.0.0.1:3000/api/addDatabaseUrl",
 )
-DASHBOARD_API_KEY = "bc0704a582dddf6f684b51591cfa79242a8b16fa4a7d1af00dbb059f01c905b6"
+def load_dashboard_api_key():
+    if os.getenv("DASHBOARD_API_KEY"):
+        return os.environ["DASHBOARD_API_KEY"]
+    env_file = Path(__file__).resolve().parent / ".env"
+    if env_file.exists():
+        for line in env_file.read_text(encoding="utf-8-sig").splitlines():
+            match = re.match(r"^\s*(?:export\s+)?DASHBOARD_API_KEY\s*=\s*(.*?)\s*$", line)
+            if match:
+                value = match.group(1)
+                if value.startswith(("'", '"')) and value[-1:] == value[:1]:
+                    return value[1:-1]
+                return value.split("#", 1)[0].strip()
+    return ""
+
+
+DASHBOARD_API_KEY = load_dashboard_api_key()
 # ==================
 
 client = TelegramClient("userbot_session", API_ID, API_HASH)
 DONE_FILE = "last_done.txt"
 pending_database_tasks = set()
 queued_database_urls = set()
+database_update_slots = asyncio.Semaphore(4)
 
 
 def last_done():
@@ -59,7 +76,7 @@ DATABASE_URL_RE = re.compile(
 def extract_database_url(msg):
     text = (msg.text or "").replace("\\:", ":")
     match = DATABASE_URL_RE.search(text)
-    return match.group(0).rstrip(".,;:!?\u201d\u2019)") if match else None
+    return match.group(0).rstrip(".,;:!?\u201d\u2019)`*]}>\\") if match else None
 
 
 def print_message(msg):
@@ -70,7 +87,10 @@ def print_message(msg):
 
 
 def _add_database_url(url):
-    endpoint = f"{ADD_DATABASE_URL_ENDPOINT}?{urllib.parse.urlencode({'api_key': DASHBOARD_API_KEY})}"
+    parts = urllib.parse.urlsplit(ADD_DATABASE_URL_ENDPOINT)
+    query = dict(urllib.parse.parse_qsl(parts.query))
+    query["api_key"] = DASHBOARD_API_KEY
+    endpoint = urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(query)))
     request = urllib.request.Request(
         endpoint,
         data=json.dumps({"databaseUrl": url}).encode("utf-8"),
@@ -86,17 +106,29 @@ async def add_database_url(url):
     """Persist a discovered database URL through the dashboard API."""
     if not DASHBOARD_API_KEY:
         print("DASHBOARD_API_KEY is not set; database URL was not added.", flush=True)
-        return
+        return False
     try:
-        await asyncio.to_thread(_add_database_url, url)
+        async with database_update_slots:
+            await asyncio.to_thread(_add_database_url, url)
+        return True
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", errors="replace").strip()
         if error.code == 401 and "AUTH_REQUIRED" in detail:
             print("Dashboard server is using the old API code; restart node server.js and try again.", flush=True)
-            return
+            return False
         print(f"Could not add database URL (HTTP {error.code}): {detail}", flush=True)
-    except (urllib.error.URLError, TimeoutError, ValueError) as error:
+    except (OSError, ValueError) as error:
         print(f"Could not add database URL: {error}", flush=True)
+    return False
+
+
+async def submit_database_url(url):
+    try:
+        if await add_database_url(url):
+            return
+    except Exception as error:
+        print(f"Could not add database URL: {error}", flush=True)
+    queued_database_urls.discard(url)
 
 
 def queue_database_url(url):
@@ -104,7 +136,7 @@ def queue_database_url(url):
     if not url or not DASHBOARD_API_KEY or url in queued_database_urls:
         return
     queued_database_urls.add(url)
-    task = asyncio.create_task(add_database_url(url))
+    task = asyncio.create_task(submit_database_url(url))
     pending_database_tasks.add(task)
     task.add_done_callback(pending_database_tasks.discard)
 

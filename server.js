@@ -6,8 +6,8 @@ const {
   randomInt,
   timingSafeEqual
 } = require("node:crypto");
-const { readFile, writeFile } = require("node:fs/promises");
-const { matchServiceMessage } = require("./service-matching-core");
+const { readFile, writeFile, rename, unlink } = require("node:fs/promises");
+const { getEnabledTemplates, matchServiceMessage } = require("./service-matching-core");
 const path = require("node:path");
 
 const envFileResult = require("dotenv").config({ path: path.join(__dirname, ".env") });
@@ -259,6 +259,7 @@ function normalizeConfiguredServices(services) {
 function validateServiceList(services) {
   if (!Array.isArray(services)) return "Provide services as an array.";
   const names = new Set();
+  const ids = new Set();
   for (const service of services) {
     if (!service || typeof service !== "object" || Array.isArray(service)
       || typeof service.id !== "string" || !service.id.trim() || service.id.length > 100
@@ -279,7 +280,9 @@ function validateServiceList(services) {
     }
     const name = service.name.trim().toLowerCase();
     if (names.has(name)) return "Service names must be unique.";
+    if (ids.has(service.id)) return "Service IDs must be unique.";
     names.add(name);
+    ids.add(service.id);
   }
   return null;
 }
@@ -305,7 +308,19 @@ async function readConfiguredServices() {
 }
 
 async function saveConfiguredServices(services) {
-  await writeFile(servicesDataPath, JSON.stringify(services, null, 2), "utf8");
+  await writeJsonAtomically(servicesDataPath, services);
+}
+
+async function writeJsonAtomically(filePath, value) {
+  const temporaryPath = `${filePath}.${randomBytes(12).toString("hex")}.tmp`;
+  try {
+    await writeFile(temporaryPath, JSON.stringify(value, null, 2), "utf8");
+    await rename(temporaryPath, filePath);
+  } finally {
+    await unlink(temporaryPath).catch((error) => {
+      if (error.code !== "ENOENT") console.error("Could not remove temporary data file:", error.message);
+    });
+  }
 }
 
 function normalizeRotatingDatabaseUrls(values, allowEmpty = false) {
@@ -421,12 +436,12 @@ function normalizeOrderOtpHistory(order) {
     ? []
     : [{ code: order.receivedOtp, receivedAt: order.receivedAt, messageKey: null }];
   const history = order.receivedOtps === undefined ? legacyHistory : order.receivedOtps;
-  if (!Array.isArray(history) || history.length > 100
+  if (!Array.isArray(history)
     || history.some((entry) => !entry
       || typeof entry !== "object"
       || Array.isArray(entry)
       || typeof entry.code !== "string"
-      || !/^\d{4,8}$/.test(entry.code)
+      || !/^\d{1,32}$/.test(entry.code)
       || !Number.isFinite(entry.receivedAt)
       || (entry.messageKey !== null && typeof entry.messageKey !== "string"))) {
     throw new Error("The recent orders data has an invalid OTP history.");
@@ -440,7 +455,7 @@ function normalizeOrderOtpHistory(order) {
 
 function normalizeOrderMessageHistory(order) {
   const history = order.messageHistory === undefined ? [] : order.messageHistory;
-  if (!Array.isArray(history) || history.length > 500
+  if (!Array.isArray(history)
     || history.some((entry) => !entry
       || typeof entry !== "object"
       || Array.isArray(entry)
@@ -464,7 +479,7 @@ async function readRotationState() {
     contents = await readFile(rotationDataPath, "utf8");
   } catch (error) {
     if (error.code === "ENOENT") {
-      return { initialized: false, databaseUrls: [databaseUrl], serviceUsage: {}, orders: [] };
+      return { initialized: false, databaseUrls: [databaseUrl], serviceUsage: Object.create(null), orders: [] };
     }
     throw error;
   }
@@ -482,7 +497,7 @@ async function readRotationState() {
   if (!stored.serviceUsage || typeof stored.serviceUsage !== "object" || Array.isArray(stored.serviceUsage)) {
     throw new Error("The database rotation usage data has an invalid format.");
   }
-  const serviceUsage = {};
+  const serviceUsage = Object.create(null);
   for (const [service, state] of Object.entries(stored.serviceUsage)) {
     if (!service || service !== service.toLowerCase()
       || !state || typeof state !== "object" || Array.isArray(state)
@@ -540,7 +555,7 @@ async function readRotationState() {
       || !Number.isFinite(order.createdAt) || !Number.isFinite(order.expiresAt)
       || order.expiresAt <= order.createdAt
       || !["active", "completed", "cancelled", "expired"].includes(order.status)
-      || !(order.receivedOtp === null || (typeof order.receivedOtp === "string" && /^\d{4,8}$/.test(order.receivedOtp)))
+      || !(order.receivedOtp === null || (typeof order.receivedOtp === "string" && /^\d{1,32}$/.test(order.receivedOtp)))
       || !(order.receivedAt === null || Number.isFinite(order.receivedAt))
       || (order.receivedOtp === null) !== (order.receivedAt === null)
       || order.receivedOtp !== (latestOtp ? latestOtp.code : null)
@@ -576,11 +591,11 @@ async function readRotationState() {
 }
 
 async function saveRotationState(state) {
-  await writeFile(rotationDataPath, JSON.stringify({
+  await writeJsonAtomically(rotationDataPath, {
     databaseUrls: state.databaseUrls,
     serviceUsage: state.serviceUsage,
     orders: state.orders
-  }, null, 2), "utf8");
+  });
 }
 
 async function withRotationLock(operation) {
@@ -822,6 +837,10 @@ async function readRotatingDeviceStats() {
         continue;
       }
       const records = result.value.records;
+      if (records === null) {
+        missingDatabaseUrls.push(url);
+        continue;
+      }
       if (records !== null && (typeof records !== "object" || Array.isArray(records))) {
         failedDatabases.push({ url, reason: "Firebase returned an invalid clients list." });
         continue;
@@ -857,7 +876,8 @@ async function readRotatingDeviceStats() {
     : [];
 
   return {
-    databaseCount: databaseUrls.length - removedDatabases.length,
+    databaseCount: databaseUrls.length,
+    remainingDatabaseCount: databaseUrls.length - removedDatabases.length,
     scannedDatabases,
     failedDatabases,
     removedDatabases,
@@ -874,7 +894,7 @@ async function runRotatingDeviceStatsJob(jobId) {
       id: jobId,
       status: "completed",
       result,
-      error: result.databaseCount > 0 && result.scannedDatabases === 0
+      error: result.failedDatabases.length > 0 && result.scannedDatabases === 0
         ? "Could not read clients.json from any configured database."
         : null,
       finishedAt: Date.now()
@@ -929,7 +949,7 @@ async function reserveNumber(service, database, candidate, serviceState, rotatio
 
 async function findAvailableActiveNumber(service, rotationState) {
   const configuredUrls = rotationState.databaseUrls;
-  const serviceState = rotationState.serviceUsage[service] || {
+  const serviceState = Object.hasOwn(rotationState.serviceUsage, service) ? rotationState.serviceUsage[service] : {
     cursorUrl: configuredUrls[0],
     usedNumbers: [],
     cycle: 0
@@ -1031,15 +1051,17 @@ function appendOrderOtp(order, match) {
   if (!Array.isArray(order.receivedOtps)) order.receivedOtps = [];
   const duplicate = order.receivedOtps.some((entry) => entry.messageKey
     ? entry.messageKey === match.messageKey
-    : entry.code === match.code);
+    : entry.code === match.code && entry.receivedAt === match.receivedAt);
   if (duplicate) return false;
   order.receivedOtps.push({
     code: match.code,
     receivedAt: match.receivedAt,
     messageKey: match.messageKey || null
   });
-  order.receivedOtp = match.code;
-  order.receivedAt = match.receivedAt;
+  order.receivedOtps.sort((left, right) => left.receivedAt - right.receivedAt);
+  const latest = order.receivedOtps.at(-1);
+  order.receivedOtp = latest.code;
+  order.receivedAt = latest.receivedAt;
   order.status = "completed";
   return true;
 }
@@ -1116,12 +1138,11 @@ async function synchronizeRecentOrderOtps() {
           .filter(Boolean));
         const knownFallbacks = new Set((order.receivedOtps || [])
           .filter((entry) => !entry.messageKey)
-          .flatMap((entry) => [entry.code, `${entry.code}:${entry.receivedAt}`]));
+          .map((entry) => `${entry.code}:${entry.receivedAt}`));
         const untilTimestamp = Math.min(Date.now(), order.expiresAt);
         for (const message of findMatchingMessages(messages, order.createdAt, service, untilTimestamp)) {
           if (knownMessageKeys.has(message.key)) continue;
           if (!knownKeys.has(message.key)
-            && !knownFallbacks.has(message.code)
             && !knownFallbacks.has(`${message.code}:${message.timestamp}`)) {
             matches.push({ orderId: order.orderId, message });
           }
@@ -1176,6 +1197,15 @@ async function handleLocalOtpRequest(requestUrl, response) {
   }
   const action = actions[0];
 
+  if (action === "getHealth") {
+    sendText(response, 200, "OK");
+    return;
+  }
+  if (action === "getBalance") {
+    sendText(response, 200, "ACCESS_BALANCE:1");
+    return;
+  }
+
   if (action === "getNumber") {
     const services = requestUrl.searchParams.getAll("service");
     if (services.length !== 1 || !services[0].trim() || services[0].trim().length > 60) {
@@ -1191,7 +1221,8 @@ async function handleLocalOtpRequest(requestUrl, response) {
       sendJson(response, 500, { error: "Could not read configured services." });
       return;
     }
-    if (!configuredServices.services.some((item) => item.name.trim().toLowerCase() === service)) {
+    if (!configuredServices.services.some((item) => item.name.trim().toLowerCase() === service
+      && item.enabled === true && getEnabledTemplates(item).length > 0)) {
       sendText(response, 200, "BAD_SERVICE");
       return;
     }
@@ -1285,6 +1316,12 @@ async function handleLocalOtpRequest(requestUrl, response) {
   }
   if (reservation.status !== "active" && reservation.status !== "completed") {
     sendText(response, 200, "STATUS_CANCEL");
+    return;
+  }
+  if (reservation.expiresAt <= Date.now()) {
+    sendText(response, 200, reservation.receivedOtp !== null
+      ? `STATUS_OK:${reservation.receivedOtp}`
+      : "STATUS_CANCEL");
     return;
   }
   if (action === "getStatus") {
@@ -1703,7 +1740,9 @@ async function handleRequest(request, response) {
   const isApiRequest = requestUrl.pathname.startsWith("/api/") || isLocalOtpApi;
   const requiresExplicitApiKey = isLocalOtpApi
     || requestUrl.pathname === "/api/otp-provider"
-    || requestUrl.pathname === "/api/addDatabaseUrl";
+    || requestUrl.pathname === "/api/addDatabaseUrl"
+    || requestUrl.pathname === "/api/health"
+    || requestUrl.pathname === "/api/balance";
   if (isApiRequest) {
     const authorized = requiresExplicitApiKey
       ? hasValidApiKey(requestUrl)
@@ -1741,6 +1780,17 @@ async function handleRequest(request, response) {
     return;
   }
 
+  if (["/api/health", "/api/balance"].includes(requestUrl.pathname)) {
+    if (request.method !== "GET") {
+      response.writeHead(405, { Allow: "GET" });
+      response.end("Method Not Allowed");
+      return;
+    }
+    sendJson(response, 200, requestUrl.pathname === "/api/health"
+      ? { status: "ok" }
+      : { balance: 1, mock: true });
+    return;
+  }
   if (isLocalOtpApi) {
     if (request.method !== "GET") {
       response.writeHead(405, { Allow: "GET" });
@@ -1757,9 +1807,11 @@ async function handleRequest(request, response) {
       return;
     }
     // Let the dashboard observe OTPs even when no external getStatus poll is running.
-    void synchronizeRecentOrderOtps().catch((error) => {
-      console.error("Recent order OTP scan failed:", error.message);
-    });
+    if (requestUrl.searchParams.get("source") !== "saved") {
+      void synchronizeRecentOrderOtps().catch((error) => {
+        console.error("Recent order OTP scan failed:", error.message);
+      });
+    }
     try {
       const orders = await withRotationLock(async () => {
         const state = await readRotationState();
@@ -1787,7 +1839,8 @@ async function handleRequest(request, response) {
     if (request.method === "POST") {
       if (!deviceStatsJob || deviceStatsJob.status !== "running") {
         const jobId = randomBytes(12).toString("hex");
-        deviceStatsJob = { id: jobId, status: "running", startedAt: Date.now() };
+        const previousResult = deviceStatsJob?.result || deviceStatsJob?.previousResult || null;
+        deviceStatsJob = { id: jobId, status: "running", startedAt: Date.now(), previousResult };
         setImmediate(() => { void runRotatingDeviceStatsJob(jobId); });
       }
       sendJson(response, 202, deviceStatsJob);
