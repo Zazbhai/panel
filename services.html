@@ -451,8 +451,8 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
       
     </div>
     <section class="panel configured-services-panel" aria-labelledby="serviceListHeading">
-      <div class="panel-heading"><div class="configured-heading"><h2 id="serviceListHeading">Configured services</h2><span id="configuredServiceCount" class="count"></span></div><div class="service-heading-actions"><a href="/service-messages">View messages</a><button id="importSmsFormatsButton" class="secondary" type="button">Import SMS formats</button><button id="addServiceButton" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Add service</button></div></div>
-      <p id="serviceImportStatus" class="status" role="status" aria-live="polite"></p>
+      <div class="panel-heading"><div class="configured-heading"><h2 id="serviceListHeading">Configured services</h2><span id="configuredServiceCount" class="count"></span></div><div class="service-heading-actions"><a href="/service-messages">View messages</a><button id="enableAllServicesButton" class="secondary" type="button">Enable all</button><button id="importSmsFormatsButton" class="secondary" type="button">Import SMS formats</button><button id="addServiceButton" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Add service</button></div></div>
+      <p id="serviceActionStatus" class="status" role="status" aria-live="polite"></p>
       <div class="service-directory-toolbar"><label class="field" for="serviceSearch">Search services<input id="serviceSearch" type="search" placeholder="Name, template or sender" autocomplete="off"></label><span id="serviceResultCount" class="count" role="status" aria-live="polite"></span></div>
       <div id="serviceList" class="service-list"></div>
       <div class="service-list-footer"><button id="showMoreServices" class="secondary" type="button" hidden>Show more<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button></div>

@@ -15,8 +15,9 @@ const serviceSearch = document.getElementById("serviceSearch");
 const serviceResultCount = document.getElementById("serviceResultCount");
 const showMoreServices = document.getElementById("showMoreServices");
 const addServiceButton = document.getElementById("addServiceButton");
+const enableAllServicesButton = document.getElementById("enableAllServicesButton");
 const importSmsFormatsButton = document.getElementById("importSmsFormatsButton");
-const serviceImportStatus = document.getElementById("serviceImportStatus");
+const serviceActionStatus = document.getElementById("serviceActionStatus");
 const serviceEditorDialog = document.getElementById("serviceEditorDialog");
 const cancelEditButton = document.getElementById("cancelEditButton");
 const cancelEditTextButton = document.getElementById("cancelEditTextButton");
@@ -71,6 +72,11 @@ let servicesReady = false;
 let servicesSaving = false;
 let servicesSyncing = false;
 
+function updateEnableAllServicesButton() {
+  enableAllServicesButton.disabled = !servicesReady || servicesSyncing || servicesSaving
+    || servicesImporting || services.every((service) => service.enabled);
+}
+
 async function writeServicesToServer(nextServices) {
   const response = await window.dashboardApiFetch("/api/services", {
     method: "PUT",
@@ -93,11 +99,13 @@ async function writeServicesToServer(nextServices) {
 async function saveServices(nextServices) {
   if (!servicesReady) throw new Error("Services are still loading. Try again shortly.");
   if (servicesImporting) throw new Error("SMS formats are being imported. Try again shortly.");
+  if (servicesSyncing || servicesSaving) throw new Error("Services are syncing or saving. Try again shortly.");
   const focusedControl = document.activeElement;
   const focusedServiceId = focusedControl.closest(".service-card")?.dataset.serviceId;
   const focusedAction = focusedControl.dataset.serviceAction;
   try {
     servicesSaving = true;
+    updateEnableAllServicesButton();
     serviceForm.setAttribute("aria-busy", "true");
     serviceList.setAttribute("aria-busy", "true");
     serviceForm.querySelectorAll("button").forEach((button) => { button.disabled = true; });
@@ -112,6 +120,7 @@ async function saveServices(nextServices) {
     }
   } finally {
     servicesSaving = false;
+    updateEnableAllServicesButton();
     serviceForm.removeAttribute("aria-busy");
     serviceList.removeAttribute("aria-busy");
     serviceForm.querySelectorAll("button").forEach((button) => { button.disabled = false; });
@@ -128,6 +137,7 @@ async function initializeServices() {
   if (servicesSyncing || servicesSaving || servicesImporting) return;
   servicesSyncing = true;
   servicesReady = false;
+  updateEnableAllServicesButton();
   try {
     const response = await window.dashboardApiFetch("/api/services");
     let result;
@@ -153,11 +163,13 @@ async function initializeServices() {
       await writeServicesToServer(services);
     }
     servicesReady = true;
+    updateEnableAllServicesButton();
     setStatus("Services loaded.", false);
   } catch (error) {
     setStatus(`Could not sync services: ${error.message}`, true);
   } finally {
     servicesSyncing = false;
+    updateEnableAllServicesButton();
   }
 }
 
@@ -168,6 +180,7 @@ async function refreshServicesFromServer() {
     return;
   }
   servicesSyncing = true;
+  updateEnableAllServicesButton();
   try {
     const response = await window.dashboardApiFetch("/api/services");
     let result;
@@ -198,6 +211,7 @@ async function refreshServicesFromServer() {
     setStatus(`Could not refresh services: ${error.message}`, true);
   } finally {
     servicesSyncing = false;
+    updateEnableAllServicesButton();
   }
 }
 
@@ -350,6 +364,7 @@ function makeServiceCard(service) {
 }
 
 function renderServices() {
+  updateEnableAllServicesButton();
   const query = serviceSearch.value.trim().toLocaleLowerCase();
   const filtered = services.filter((service) => [service.name, service.senderFilter, ...service.templates.map((template) => template.text)]
     .join(" ").toLocaleLowerCase().includes(query));
@@ -565,22 +580,53 @@ serviceForm.addEventListener("submit", async (event) => {
 });
 
 addServiceButton.addEventListener("click", () => openEditor());
+enableAllServicesButton.addEventListener("click", async () => {
+  if (!servicesReady || servicesSyncing || servicesSaving || servicesImporting) {
+    serviceActionStatus.textContent = "Services are still syncing. Try again shortly.";
+    serviceActionStatus.classList.add("error");
+    return;
+  }
+  const disabledCount = services.filter((service) => !service.enabled).length;
+  if (disabledCount === 0) {
+    updateEnableAllServicesButton();
+    return;
+  }
+
+  enableAllServicesButton.disabled = true;
+  try {
+    const confirmed = await window.dashboardUI.confirm({
+      title: "Enable all services?",
+      description: `This enables all ${disabledCount} currently disabled services. Their message templates will be used to match messages.`,
+      confirmLabel: "Enable all"
+    });
+    if (!confirmed) return;
+    await saveServices(services.map((service) => ({ ...service, enabled: true })));
+    serviceActionStatus.textContent = `Enabled ${disabledCount} service${disabledCount === 1 ? "" : "s"}.`;
+    serviceActionStatus.classList.remove("error");
+  } catch (error) {
+    serviceActionStatus.textContent = `Could not enable all services: ${error.message}`;
+    serviceActionStatus.classList.add("error");
+  } finally {
+    updateEnableAllServicesButton();
+  }
+});
 importSmsFormatsButton.addEventListener("click", async () => {
   if (!servicesReady || servicesSyncing || servicesSaving || servicesImporting) {
-    serviceImportStatus.textContent = "Services are still syncing. Try importing again shortly.";
-    serviceImportStatus.classList.add("error");
+    serviceActionStatus.textContent = "Services are still syncing. Try importing again shortly.";
+    serviceActionStatus.classList.add("error");
     return;
   }
 
   servicesImporting = true;
+  updateEnableAllServicesButton();
   importSmsFormatsButton.disabled = true;
   addServiceButton.disabled = true;
   serviceForm.setAttribute("aria-busy", "true");
   serviceList.setAttribute("aria-busy", "true");
   serviceForm.querySelectorAll("button").forEach((button) => { button.disabled = true; });
   serviceList.querySelectorAll("button, input").forEach((control) => { control.disabled = true; });
-  serviceImportStatus.textContent = "Importing services and templates...";
-  serviceImportStatus.classList.remove("error");
+  serviceActionStatus.textContent = "Importing services and templates...";
+  serviceActionStatus.classList.remove("error");
   try {
     const response = await window.dashboardApiFetch("/api/services/import-sms-formats", { method: "POST" });
     let result;
@@ -606,15 +652,16 @@ importSmsFormatsButton.addEventListener("click", async () => {
     } catch (error) {
       // The server save succeeded even if private browsing blocks the cache.
     }
-    serviceImportStatus.textContent = result.addedServices || result.addedTemplates
+    serviceActionStatus.textContent = result.addedServices || result.addedTemplates
       ? `Imported ${result.addedServices} service${result.addedServices === 1 ? "" : "s"} and ${result.addedTemplates} template${result.addedTemplates === 1 ? "" : "s"}. Skipped ${result.skippedTemplates} duplicate or unsupported templates and ${result.skippedServices} services without usable templates.`
       : "No new services or templates; duplicates and formats without an OTP placeholder were skipped.";
-    serviceImportStatus.classList.remove("error");
+    serviceActionStatus.classList.remove("error");
   } catch (error) {
-    serviceImportStatus.textContent = `Could not import SMS formats: ${error.message}`;
-    serviceImportStatus.classList.add("error");
+    serviceActionStatus.textContent = `Could not import SMS formats: ${error.message}`;
+    serviceActionStatus.classList.add("error");
   } finally {
     servicesImporting = false;
+    updateEnableAllServicesButton();
     serviceForm.removeAttribute("aria-busy");
     serviceList.removeAttribute("aria-busy");
     serviceForm.querySelectorAll("button").forEach((button) => { button.disabled = false; });
