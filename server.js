@@ -20,6 +20,7 @@ if (envFileResult.error && envFileResult.error.code !== "ENOENT") {
 const defaultDatabaseUrl = "https://satanoopfirebase-47068-default-rtdb.firebaseio.com";
 const rawDatabaseUrl = process.env.FIREBASE_DATABASE_URL || defaultDatabaseUrl;
 const port = Number(process.env.PORT || 3000);
+const host = process.env.HOST || "0.0.0.0";
 const clientScriptPath = path.join(__dirname, "index.js");
 const activeDevicesPath = path.join(__dirname, "active-devices.html");
 const activeDevicesScriptPath = path.join(__dirname, "active-devices.js");
@@ -2824,8 +2825,8 @@ initializeOrderExpirationTimers().catch((error) => {
   console.error("Could not initialize automatic number cancellations:", error.message);
 });
 
-server.listen(port, "127.0.0.1", () => {
-  console.log(`Firebase Data Dashboard is running at http://127.0.0.1:${port}`);
+server.listen(port, host, () => {
+  console.log(`Firebase Data Dashboard is listening on ${host}:${port}`);
 });
 
 
