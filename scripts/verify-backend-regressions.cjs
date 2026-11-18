@@ -278,6 +278,20 @@ function completedOrder() {
   }
   {
     const f = serverFixture();
+    let upstreamCalls = 0;
+    f.fetch = async () => {
+      upstreamCalls += 1;
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+    f.setRotation({ databaseUrls: ["https://fixture.firebaseio.com"], serviceUsage: {}, orders: [completedOrder()] });
+    const result = await f.request("/api/recent-orders", { admin: true });
+    assert.equal(result.status, 200);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(upstreamCalls, 0,
+      "The recent-orders endpoint must never trigger Firebase OTP scans; getStatus is the only trigger");
+  }
+  {
+    const f = serverFixture();
     let slowReadAborted = false;
     f.fetch = async (url, { signal }) => {
       if (url.endsWith("/clients.json")) {

@@ -2480,12 +2480,8 @@ async function handleRequest(request, response) {
       response.end("Method Not Allowed");
       return;
     }
-    // Let the dashboard observe OTPs even when no external getStatus poll is running.
-    if (requestUrl.searchParams.get("source") !== "saved") {
-      void synchronizeRecentOrderOtps().catch((error) => {
-        console.error("Recent order OTP scan failed:", error.message);
-      });
-    }
+    // Recent orders serve saved data only. Upstream OTP checks happen exclusively
+    // in the getStatus handler for a specific order id, on demand.
     if (recentOrdersCache && recentOrdersCache.expiresAt > Date.now()) {
       sendJson(response, 200, recentOrdersCache.value);
       return;
