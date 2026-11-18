@@ -16,6 +16,43 @@ function completedOrder() {
 (async () => {
   {
     const f = serverFixture();
+    const results = await Promise.all(Array.from({ length: 12 }, () =>
+      f.context.readConfiguredServices()
+    ));
+    assert(results.every((result) => result.initialized));
+    const servicesPath = [...f.files.keys()].find((file) => file.endsWith("services.json"));
+    assert.equal(f.readCounts.get(servicesPath), 1,
+      "Concurrent service reads should share one full-file read and JSON parse");
+  }
+  {
+    const f = serverFixture();
+    f.setRotation({ databaseUrls: ["https://fixture.firebaseio.com"], serviceUsage: {}, orders: [] });
+    const devices = Object.fromEntries(Array.from({ length: 4 }, (_, index) => [
+      `device-${index + 1}`, { status: true }
+    ]));
+    const numbers = Object.fromEntries(Array.from({ length: 4 }, (_, index) => [
+      `device-${index + 1}`, `900000000${index + 1}`
+    ]));
+    f.fetch = async (url) => {
+      if (url.endsWith("/clients.json")) {
+        return { ok: true, status: 200, json: async () => devices };
+      }
+      const deviceId = decodeURIComponent(url.split("/messages/")[1].replace(/\.json$/, ""));
+      return { ok: true, status: 200, json: async () => ({
+        message1: { message: `Jio number ${numbers[deviceId]}` }
+      }) };
+    };
+    const reservations = await Promise.all(Array.from({ length: 4 }, () =>
+      f.context.findAvailableActiveNumber("fixture")
+    ));
+    assert.equal(reservations.length, 4);
+    assert.equal(new Set(reservations.map((reservation) => reservation?.number)).size, 4,
+      "Concurrent allocations for one service should serialize and reserve unique numbers");
+    assert(reservations.every(Boolean),
+      "Concurrent same-service allocations should not exhaust conflict retries");
+  }
+  {
+    const f = serverFixture();
     let proxyBodyCancelled = false;
     const proxyBody = {
       body: { getReader: () => ({

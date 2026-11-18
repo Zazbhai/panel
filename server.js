@@ -73,8 +73,10 @@ const failedLoginAttempts = new Map();
 const activeNumberCache = new Map();
 const slowDatabases = new Map();
 const clientStatusCache = new Map();
+const serviceAllocationOperations = new Map();
 let recentOrdersCache = null;
 let configuredServicesCache = null;
+let configuredServicesReadPromise = null;
 let lastRuntimeCachePruneAt = 0;
 const compressedStaticAssets = new Map();
 const sharedDatabaseJsonCache = new Map();
@@ -335,10 +337,7 @@ function validateServiceList(services) {
   return null;
 }
 
-async function readConfiguredServices() {
-  if (configuredServicesCache && configuredServicesCache.expiresAt > Date.now()) {
-    return configuredServicesCache.value;
-  }
+async function loadConfiguredServices() {
   let contents;
   try {
     contents = await readFile(servicesDataPath, "utf8");
@@ -362,6 +361,21 @@ async function readConfiguredServices() {
   const value = { initialized: true, services };
   configuredServicesCache = { value, expiresAt: Date.now() + servicesCacheTtlMs };
   return value;
+}
+
+async function readConfiguredServices() {
+  if (configuredServicesCache && configuredServicesCache.expiresAt > Date.now()) {
+    return configuredServicesCache.value;
+  }
+  if (configuredServicesReadPromise) return configuredServicesReadPromise;
+
+  const pending = loadConfiguredServices();
+  configuredServicesReadPromise = pending;
+  try {
+    return await pending;
+  } finally {
+    if (configuredServicesReadPromise === pending) configuredServicesReadPromise = null;
+  }
 }
 
 async function saveConfiguredServices(services) {
@@ -1489,44 +1503,68 @@ function findAvailableNumberCandidate(service, rotationState, inventories, allow
   return null;
 }
 
-async function findAvailableActiveNumber(service) {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const snapshot = await withRotationLock(async () => {
-      const state = await readRotationState();
-      if (synchronizeNumberReservations(state)) await saveRotationState(state);
-      return state;
-    });
-    const snapshotUsage = JSON.stringify(snapshot.serviceUsage[service] || null);
-    const inventoryScan = await readActiveNumberInventories(service, snapshot);
-    const result = await withRotationLock(async () => {
-      const state = await readRotationState();
-      if (synchronizeNumberReservations(state)) await saveRotationState(state);
-      if (JSON.stringify(state.databaseUrls) !== JSON.stringify(snapshot.databaseUrls)
-        || JSON.stringify(state.serviceUsage[service] || null) !== snapshotUsage) {
-        return { retry: true };
-      }
-      const previousUsage = JSON.stringify(state.serviceUsage[service] || null);
-      const candidate = findAvailableNumberCandidate(
-        service, state, inventoryScan.inventories, inventoryScan.complete
-      );
-      if (!candidate) {
-        if (inventoryScan.stoppedEarly) return { retry: true };
-        if (inventoryScan.failures.length > 0) {
-          const upstreamError = inventoryScan.failures[0].error;
-          const error = new Error("One or more Firebase databases could not be read.");
-          error.status = upstreamError?.status;
-          error.retryAfterMs = upstreamError?.retryAfterMs;
-          error.code = upstreamError?.code;
-          throw error;
-        }
-        if (JSON.stringify(state.serviceUsage[service] || null) !== previousUsage) await saveRotationState(state);
-        return { reservation: null };
-      }
-      return { reservation: await reserveNumber(service, candidate.database, candidate.candidate, candidate.serviceState, state) };
-    });
-    if (!result.retry) return result.reservation;
+async function withServiceAllocationLock(service, operation) {
+  const previous = serviceAllocationOperations.get(service) || Promise.resolve();
+  let release;
+  const current = new Promise((resolve) => { release = resolve; });
+  serviceAllocationOperations.set(service, current);
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (serviceAllocationOperations.get(service) === current) {
+      serviceAllocationOperations.delete(service);
+    }
   }
-  throw new Error("Number allocation changed repeatedly. Please retry.");
+}
+
+async function findAvailableActiveNumber(service) {
+  return withServiceAllocationLock(service, async () => {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const snapshot = await withRotationLock(async () => {
+        const state = await readRotationState();
+        if (synchronizeNumberReservations(state)) await saveRotationState(state);
+        return state;
+      });
+      const snapshotUsage = JSON.stringify(snapshot.serviceUsage[service] || null);
+      const inventoryScan = await readActiveNumberInventories(service, snapshot);
+      const result = await withRotationLock(async () => {
+        const state = await readRotationState();
+        if (synchronizeNumberReservations(state)) await saveRotationState(state);
+        if (JSON.stringify(state.databaseUrls) !== JSON.stringify(snapshot.databaseUrls)
+          || JSON.stringify(state.serviceUsage[service] || null) !== snapshotUsage) {
+          return { retry: true };
+        }
+        const previousUsage = JSON.stringify(state.serviceUsage[service] || null);
+        const candidate = findAvailableNumberCandidate(
+          service, state, inventoryScan.inventories, inventoryScan.complete
+        );
+        if (!candidate) {
+          if (inventoryScan.stoppedEarly) return { retry: true };
+          if (inventoryScan.failures.length > 0) {
+            const upstreamError = inventoryScan.failures[0].error;
+            const error = new Error("One or more Firebase databases could not be read.");
+            error.status = upstreamError?.status;
+            error.retryAfterMs = upstreamError?.retryAfterMs;
+            error.code = upstreamError?.code;
+            throw error;
+          }
+          if (JSON.stringify(state.serviceUsage[service] || null) !== previousUsage) {
+            await saveRotationState(state);
+          }
+          return { reservation: null };
+        }
+        return {
+          reservation: await reserveNumber(
+            service, candidate.database, candidate.candidate, candidate.serviceState, state
+          )
+        };
+      });
+      if (!result.retry) return result.reservation;
+    }
+    throw new Error("Number allocation changed repeatedly. Please retry.");
+  });
 }
 
 function findMatchingMessages(messages, afterTimestamp, service, untilTimestamp = Infinity) {
