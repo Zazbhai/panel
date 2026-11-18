@@ -67,10 +67,10 @@ async function getEnabledServices() {
 }
 
 function getOrderServiceName(order, services) {
-  const key = String(order.service || "").toLocaleLowerCase();
+  const key = String(order.service || "").replace(/\s+/g, "").toLocaleLowerCase();
   const service = services.find((item) => [item.id, item.name]
     .filter((value) => typeof value === "string")
-    .some((value) => value.toLocaleLowerCase() === key));
+    .some((value) => value.replace(/\s+/g, "").toLocaleLowerCase() === key));
   return service?.name || order.service || "Unknown service";
 }
 

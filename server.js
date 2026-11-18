@@ -9,7 +9,7 @@ const {
 const { readFile, writeFile, rename, unlink } = require("node:fs/promises");
 const { gzipSync } = require("node:zlib");
 const { getEnabledTemplates, matchServiceMessage } = require("./service-matching-core");
-const { mergeSmsFormats } = require("./service-sms-format-import");
+const { mergeSmsFormats, normalizeServiceName, normalizeServiceNames } = require("./service-sms-format-import");
 const path = require("node:path");
 
 const envFileResult = require("dotenv").config({ path: path.join(__dirname, ".env") });
@@ -268,7 +268,7 @@ async function readJsonBody(request, maximumBytes) {
 
 function normalizeConfiguredServices(services) {
   if (!Array.isArray(services)) return services;
-  return services.map((service) => {
+  const normalized = services.map((service) => {
     if (!service || typeof service !== "object" || Array.isArray(service)) return service;
     const { template: legacyTemplate, ...rest } = service;
     const templates = Array.isArray(service.templates)
@@ -284,6 +284,7 @@ function normalizeConfiguredServices(services) {
       senderFilter: service.senderFilter === undefined ? "" : service.senderFilter
     };
   });
+  return normalizeServiceNames(normalized);
 }
 
 function validateServiceList(services) {
@@ -294,6 +295,7 @@ function validateServiceList(services) {
     if (!service || typeof service !== "object" || Array.isArray(service)
       || typeof service.id !== "string" || !service.id.trim() || service.id.length > 100
       || typeof service.name !== "string" || !service.name.trim() || service.name.length > 60
+      || /\s/.test(service.name)
       || !Array.isArray(service.templates) || service.templates.length === 0
       || !Number.isInteger(service.minOtpLength) || service.minOtpLength < 1 || service.minOtpLength > 32
       || !Number.isInteger(service.maxOtpLength) || service.maxOtpLength < service.minOtpLength || service.maxOtpLength > 32
@@ -1374,7 +1376,7 @@ async function synchronizeRecentOrderOtps() {
     }
     const services = new Map(configuredServices.services
       .filter((service) => service && typeof service.name === "string")
-      .map((service) => [service.name.trim().toLowerCase(), service]));
+      .map((service) => [normalizeServiceName(service.name).toLowerCase(), service]));
     const now = Date.now();
     const candidates = snapshot.filter((order) => {
       const lastCheck = recentOrderOtpChecks.get(order.orderId) || 0;
@@ -1415,7 +1417,7 @@ async function synchronizeRecentOrderOtps() {
       }
       const matchingOrders = orders.map((order) => ({
         order,
-        service: services.get(order.service.trim().toLowerCase())
+        service: services.get(normalizeServiceName(order.service.trim()).toLowerCase())
       })).filter((entry) => entry.service);
       if (!matchingOrders.length) return;
       try {
@@ -1510,7 +1512,7 @@ async function handleLocalOtpRequest(requestUrl, response) {
       sendText(response, 400, "BAD_SERVICE");
       return;
     }
-    const service = services[0].trim().toLowerCase();
+    const service = normalizeServiceName(services[0].trim()).toLowerCase();
     let configuredServices;
     try {
       configuredServices = await readConfiguredServices();
@@ -1519,7 +1521,7 @@ async function handleLocalOtpRequest(requestUrl, response) {
       sendJson(response, 500, { error: "Could not read configured services." });
       return;
     }
-    if (!configuredServices.services.some((item) => item.name.trim().toLowerCase() === service
+    if (!configuredServices.services.some((item) => normalizeServiceName(item.name).toLowerCase() === service
       && item.enabled === true && getEnabledTemplates(item).length > 0)) {
       sendText(response, 200, "BAD_SERVICE");
       return;
@@ -1641,7 +1643,8 @@ async function handleLocalOtpRequest(requestUrl, response) {
     }
     const orderService = configuredServices.services.find((service) =>
       service && typeof service.name === "string"
-      && service.name.trim().toLowerCase() === reservation.service.trim().toLowerCase());
+      && normalizeServiceName(service.name).toLowerCase()
+        === normalizeServiceName(reservation.service).toLowerCase());
     if (!orderService) {
       sendText(response, 200, reservation.receivedOtp === null
         ? "STATUS_WAIT_CODE"
@@ -2326,6 +2329,9 @@ async function handleRequest(request, response) {
       }
       sendJson(response, 200, {
         initialized: true,
+        sourceServices: source.length,
+        sourceFormats: source.reduce((total, entry) =>
+          total + (Array.isArray(entry?.formats) ? entry.formats.length : 0), 0),
         ...imported
       });
     } catch (error) {

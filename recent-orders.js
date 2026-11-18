@@ -124,7 +124,7 @@ async function getOrderServiceConfig(order) {
   }
   const service = result.services.find((item) => item
     && typeof item.name === "string"
-    && item.name.trim().toLowerCase() === String(order.service).trim().toLowerCase());
+    && item.name.replace(/\s+/g, "").toLowerCase() === String(order.service).replace(/\s+/g, "").toLowerCase());
   return service || null;
 }
 

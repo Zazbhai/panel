@@ -50,6 +50,10 @@ function normalizeService(service) {
   };
 }
 
+function serviceNameKey(name) {
+  return name.replace(/\s+/g, "").toLocaleLowerCase();
+}
+
 function readServices() {
   try {
     const stored = localStorage.getItem(storageKey);
@@ -521,7 +525,8 @@ serviceForm.addEventListener("submit", async (event) => {
     setStatus("Services are still loading. Try again shortly.", true);
     return;
   }
-  const name = serviceNameInput.value.trim();
+  const name = serviceNameInput.value.replace(/\s+/g, "");
+  serviceNameInput.value = name;
   if (!name) {
     setStatus("Enter a service name.", true);
     return;
@@ -544,7 +549,7 @@ serviceForm.addEventListener("submit", async (event) => {
 
   const existing = services.find((service) => service.id === serviceIdInput.value);
   const duplicate = services.find((service) =>
-    service.id !== serviceIdInput.value && service.name.toLocaleLowerCase() === name.toLocaleLowerCase());
+    service.id !== serviceIdInput.value && serviceNameKey(service.name) === serviceNameKey(name));
   if (duplicate) {
     setStatus(`A service named "${duplicate.name}" already exists.`, true);
     return;
@@ -652,9 +657,8 @@ importSmsFormatsButton.addEventListener("click", async () => {
     } catch (error) {
       // The server save succeeded even if private browsing blocks the cache.
     }
-    serviceActionStatus.textContent = result.addedServices || result.addedTemplates
-      ? `Imported ${result.addedServices} service${result.addedServices === 1 ? "" : "s"} and ${result.addedTemplates} template${result.addedTemplates === 1 ? "" : "s"}. Skipped ${result.skippedTemplates} duplicate or unsupported templates and ${result.skippedServices} services without usable templates.`
-      : "No new services or templates; duplicates and formats without an OTP placeholder were skipped.";
+    const summary = `Read ${result.sourceServices} source services and ${result.sourceFormats} formats. Added ${result.addedServices} services and ${result.addedTemplates} patterns; ${result.duplicateTemplates} supported patterns were already configured, and ${result.unsupportedTemplates} formats had no usable OTP marker. ${result.services.length} services are available; search or use Show more to browse them.`;
+    serviceActionStatus.textContent = summary;
     serviceActionStatus.classList.remove("error");
   } catch (error) {
     serviceActionStatus.textContent = `Could not import SMS formats: ${error.message}`;
