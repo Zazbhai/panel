@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const { gunzipSync } = require("node:zlib");
+const vm = require("node:vm");
 const serverFixture = require("./server-fixture.cjs");
 
 function completedOrder() {
@@ -50,6 +51,35 @@ function completedOrder() {
       "Concurrent allocations for one service should serialize and reserve unique numbers");
     assert(reservations.every(Boolean),
       "Concurrent same-service allocations should not exhaust conflict retries");
+  }
+  {
+    const f = serverFixture();
+    f.setRotation({ databaseUrls: ["https://fixture.firebaseio.com"], serviceUsage: {}, orders: [] });
+    const devices = Object.fromEntries(Array.from({ length: 40 }, (_, index) => [
+      "device-" + index, { status: true }
+    ]));
+    let upstreamReads = 0;
+    f.fetch = async (url) => {
+      upstreamReads++;
+      if (url.endsWith("/clients.json")) return { ok: true, status: 200, json: async () => devices };
+      const deviceId = decodeURIComponent(url.split("/messages/")[1].replace(/\.json$/, ""));
+      const index = Number(deviceId.slice("device-".length));
+      return { ok: true, status: 200, json: async () => ({
+        message1: { message: "Jio number " + ("9000000" + String(index).padStart(3, "0")), timestamp: Date.now() }
+      }) };
+    };
+    await f.context.refillNumberPool("fixture");
+    assert.equal(vm.runInContext('numberPools.get("fixture").items.size', f.context), 32,
+      "Background refill should prepare a bounded batch of future numbers");
+    const readsBeforeAllocation = upstreamReads;
+    const reservation = await f.context.findAvailableActiveNumber("fixture");
+    assert(reservation, "A prepared number should be allocated");
+    assert.equal(upstreamReads, readsBeforeAllocation,
+      "A warm-pool allocation must not scan Firebase on the request path");
+    assert.equal(vm.runInContext('numberPools.get("fixture").items.size', f.context), 31,
+      "An allocated candidate should be removed from the pool");
+    assert.equal(typeof reservation.number, "string",
+      "A prepared candidate should include its allocated number");
   }
   {
     const f = serverFixture();

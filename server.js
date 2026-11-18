@@ -72,9 +72,12 @@ const rotationStateCacheTtlMs = 250;
 const numberPoolSize = readPositiveIntegerEnv("NUMBER_POOL_SIZE", 32, 1, 500);
 const numberPoolRefillThreshold = Math.max(1, Math.floor(numberPoolSize / 4));
 const numberPoolTtlMs = 15000;
+const numberPoolMaxServices = 32;
+const numberPoolWarmServices = readPositiveIntegerEnv("NUMBER_POOL_WARM_SERVICES", 4, 0, 32);
 const failedLoginAttempts = new Map();
 const activeNumberCache = new Map();
 const numberPools = new Map();
+let activeNumberPoolRefill = null;
 const slowDatabases = new Map();
 const clientStatusCache = new Map();
 const serviceAllocationOperations = new Map();
@@ -798,24 +801,24 @@ function extractCarrierNumber(message) {
 
 function getLatestCarrierNumber(messages) {
   if (!messages || typeof messages !== "object" || Array.isArray(messages)) return null;
-  const entries = Object.entries(messages)
-    .filter(([, message]) => message
-      && typeof message === "object"
-      && !Array.isArray(message)
-      && !/\bjoin[\s\W_]*telegram\b/i.test(getMessageText(message)))
-    .sort(([leftKey, left], [rightKey, right]) => {
-      const leftTime = getMessageTimestamp(leftKey, left);
-      const rightTime = getMessageTimestamp(rightKey, right);
-      if (leftTime !== null && rightTime !== null) return rightTime - leftTime;
-      if (leftTime !== null) return -1;
-      if (rightTime !== null) return 1;
-      return String(rightKey).localeCompare(String(leftKey), undefined, { numeric: true });
-    });
-  for (const [, message] of entries) {
+  let latestNumber = null;
+  let latestTimestamp = null;
+  let latestKey = null;
+  for (const [key, message] of Object.entries(messages)) {
+    if (!message || typeof message !== "object" || Array.isArray(message)
+      || /\bjoin[\s\W_]*telegram\b/i.test(getMessageText(message))) continue;
+    const timestamp = getMessageTimestamp(key, message);
     const number = extractCarrierNumber(message);
-    if (number) return number;
+    if (!number) continue;
+    if (latestNumber === null
+      || (timestamp !== null && (latestTimestamp === null || timestamp > latestTimestamp))
+      || (timestamp === latestTimestamp && String(key).localeCompare(String(latestKey), undefined, { numeric: true }) > 0)) {
+      latestNumber = number;
+      latestTimestamp = timestamp;
+      latestKey = key;
+    }
   }
-  return null;
+  return latestNumber;
 }
 
 function synchronizeNumberReservations(rotationState, now = Date.now()) {
@@ -872,6 +875,27 @@ async function initializeOrderExpirationTimers() {
       await saveRotationState(rotationState);
     }
   });
+  setTimeout(() => {
+    warmNumberPools().catch((error) => {
+      console.error("Could not warm number pools:", error.message);
+    });
+  }, 1000).unref();
+}
+
+async function warmNumberPools() {
+  const [configured, rotationState] = await Promise.all([
+    readConfiguredServices(),
+    withRotationLock(readRotationState)
+  ]);
+  if (numberPoolWarmServices === 0) return;
+  let warmed = 0;
+  for (const service of configured.services) {
+    if (service?.enabled !== true || getEnabledTemplates(service).length === 0) continue;
+    if (!rotationState.databaseUrls.length) break;
+    refillNumberPool(normalizeServiceName(service.name).toLowerCase());
+    warmed++;
+    if (warmed >= numberPoolWarmServices) break;
+  }
 }
 
 async function withDatabaseReadSlot(operation) {
@@ -1152,7 +1176,7 @@ function cacheActiveNumber(database, candidate) {
   }
 }
 
-async function readActiveNumbers(database, isAvailable = () => true, parentSignal = null) {
+async function readActiveNumbers(database, isAvailable = () => true, parentSignal = null, requiredCandidates = 1) {
   const clients = await fetchSharedDatabaseJson(
     `${database}/clients.json`,
     numberFetchTimeoutMs,
@@ -1188,7 +1212,7 @@ async function readActiveNumbers(database, isAvailable = () => true, parentSigna
       if (cached.number) {
         const candidate = { deviceId, number: cached.number };
         numbers.set(cached.number, candidate);
-        if (isAvailable({ ...candidate, database })) {
+        if (requiredCandidates <= 1 && isAvailable({ ...candidate, database })) {
           if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
           return { numbers: [candidate], messageReadFailures };
         }
@@ -1197,12 +1221,21 @@ async function readActiveNumbers(database, isAvailable = () => true, parentSigna
     }
     uncachedClients.push([deviceId]);
   }
+  if (requiredCandidates > 1 && [...numbers.values()].filter(isAvailable).length >= requiredCandidates) {
+    if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
+    return { numbers: [...numbers.values()], messageReadFailures };
+  }
   const offset = randomInt(Math.max(1, uncachedClients.length));
   const candidates = uncachedClients.length
     ? uncachedClients.map((_, index) => uncachedClients[(offset + index) % uncachedClients.length])
     : [];
-  for (let index = 0; index < candidates.length; index += 8) {
-    const batch = candidates.slice(index, index + 8);
+  let messageReads = 0;
+  for (let index = 0; index < candidates.length;) {
+    const batchSize = requiredCandidates > 1 ? Math.min(8, 48 - messageReads) : 8;
+    if (batchSize <= 0) break;
+    const batch = candidates.slice(index, index + batchSize);
+    index += batch.length;
+    messageReads += batch.length;
     const reads = batch.map(async ([deviceId]) => ({
       deviceId,
       number: getLatestCarrierNumber(await fetchSharedDatabaseJson(
@@ -1212,7 +1245,7 @@ async function readActiveNumbers(database, isAvailable = () => true, parentSigna
         batchController.signal
       ))
     }));
-    try {
+    if (requiredCandidates <= 1) try {
       const available = await Promise.any(reads.map(async (read) => {
         const candidate = await read;
         cacheActiveNumber(database, candidate);
@@ -1244,7 +1277,7 @@ async function readActiveNumbers(database, isAvailable = () => true, parentSigna
       if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
       return { numbers: [...numbers.values()], messageReadFailures, upstreamError };
     }
-    if ([...numbers.values()].some(isAvailable)) {
+    if ([...numbers.values()].filter(isAvailable).length >= requiredCandidates) {
       if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
       return { numbers: [...numbers.values()], messageReadFailures };
     }
@@ -1400,7 +1433,7 @@ async function reserveNumber(service, database, candidate, serviceState, rotatio
   return reservation;
 }
 
-async function readActiveNumberInventories(service, rotationState) {
+async function readActiveNumberInventories(service, rotationState, requiredCandidates = 1) {
   const configuredUrls = rotationState.databaseUrls;
   const serviceState = Object.hasOwn(rotationState.serviceUsage, service) ? rotationState.serviceUsage[service] : {
     cursorUrl: configuredUrls[0], usedNumbers: [], cycle: 0
@@ -1413,7 +1446,8 @@ async function readActiveNumberInventories(service, rotationState) {
     .map((order) => order.number));
   const isAvailable = (candidate) => !usedNumbers.has(candidate.number)
     && !lockedNumbers.has(candidate.number)
-    && !reservedNumbers.has(candidate.number);
+    && !reservedNumbers.has(candidate.number)
+    && !numberPools.get(service)?.items.has(candidate.number);
   const now = Date.now();
   const healthyUrls = orderedUrls.filter((database) => (slowDatabases.get(database)?.expiresAt || 0) <= now);
   const scanUrls = healthyUrls.length
@@ -1427,16 +1461,21 @@ async function readActiveNumberInventories(service, rotationState) {
   const controller = new AbortController();
   let nextIndex = 0;
   let foundAvailable = false;
+  let availableCandidateCount = 0;
   const scanDatabase = async () => {
     while (!controller.signal.aborted) {
       const index = nextIndex++;
       if (index >= scanUrls.length) return;
       const database = scanUrls[index];
       try {
-        const inventory = { database, ...await readActiveNumbers(database, isAvailable, controller.signal) };
+        const inventory = {
+          database,
+          ...await readActiveNumbers(database, isAvailable, controller.signal, requiredCandidates)
+        };
         if (controller.signal.aborted) return;
         inventories.push(inventory);
-        if (inventory.numbers.some(isAvailable)) {
+        availableCandidateCount += inventory.numbers.filter(isAvailable).length;
+        if (availableCandidateCount >= requiredCandidates) {
           foundAvailable = true;
           stoppedEarly = true;
           complete = false;
@@ -1458,7 +1497,7 @@ async function readActiveNumberInventories(service, rotationState) {
     }
   };
   await Promise.all(Array.from(
-    { length: Math.min(databasePingConcurrency, scanUrls.length) },
+    { length: Math.min(requiredCandidates > 1 ? 1 : databasePingConcurrency, scanUrls.length) },
     scanDatabase
   ));
   if (foundAvailable) complete = false;
@@ -1542,14 +1581,122 @@ async function withServiceAllocationLock(service, operation) {
   }
 }
 
+function pruneNumberPool(pool) {
+  const now = Date.now();
+  for (const [number, candidate] of pool.items) {
+    if (candidate.expiresAt <= now) pool.items.delete(number);
+  }
+}
+
+function takePooledCandidate(service, rotationState) {
+  const pool = numberPools.get(service);
+  if (!pool?.items.size) return null;
+  const configuredDatabases = new Set(rotationState.databaseUrls);
+  const serviceState = Object.hasOwn(rotationState.serviceUsage, service)
+    ? rotationState.serviceUsage[service]
+    : { cursorUrl: rotationState.databaseUrls[0] || "", usedNumbers: [], cycle: 0 };
+  const usedNumbers = new Set(serviceState.usedNumbers);
+  const lockedNumbers = new Set(rotationState.orders
+    .filter((order) => order.service === service && order.receivedOtp !== null)
+    .map((order) => order.number));
+  pruneNumberPool(pool);
+  for (const [number, candidate] of pool.items) {
+    pool.items.delete(number);
+    if (!configuredDatabases.has(candidate.database)
+      || usedNumbers.has(number) || lockedNumbers.has(number) || reservedNumbers.has(number)) continue;
+    const latestNumber = activeNumberCache.get(candidate.database + "|" + candidate.deviceId);
+    if (latestNumber && latestNumber.number !== number) continue;
+    const latestClients = sharedDatabaseJsonCache.get(candidate.database + "/clients.json");
+    if (latestClients?.expiresAt > Date.now() && latestClients.value?.[candidate.deviceId]?.status !== true) continue;
+    return { ...candidate, serviceState };
+  }
+  return null;
+}
+
+async function fillNumberPool(service, pool) {
+  const state = await withRotationLock(readRotationState);
+  const target = Math.max(1, numberPoolSize - pool.items.size);
+  const inventoryScan = await readActiveNumberInventories(service, state, target);
+  const usage = state.serviceUsage[service];
+  const unavailable = new Set(usage?.usedNumbers);
+  for (const order of state.orders) {
+    if (order.service === service && order.receivedOtp !== null) unavailable.add(order.number);
+  }
+  for (const inventory of inventoryScan.inventories) {
+    for (const candidate of inventory.numbers) {
+      if (pool.items.size >= numberPoolSize) break;
+      if (!candidate.number || unavailable.has(candidate.number)
+        || reservedNumbers.has(candidate.number) || pool.items.has(candidate.number)) continue;
+      const latestNumber = activeNumberCache.get(inventory.database + "|" + candidate.deviceId);
+      const expiresAt = Math.min(Date.now() + numberPoolTtlMs, latestNumber?.expiresAt || 0);
+      if (expiresAt > Date.now()) {
+        pool.items.set(candidate.number, {
+          database: inventory.database,
+          deviceId: candidate.deviceId,
+          number: candidate.number,
+          expiresAt
+        });
+      }
+    }
+    if (pool.items.size >= numberPoolSize) break;
+  }
+}
+
+function refillNumberPool(service) {
+  let pool = numberPools.get(service);
+  if (!pool) {
+    if (numberPools.size >= numberPoolMaxServices) {
+      const evict = [...numberPools].find(([, entry]) => !entry.pending);
+      if (!evict) return;
+      numberPools.delete(evict[0]);
+    }
+    pool = { items: new Map(), pending: false, retryAt: 0 };
+  }
+  numberPools.delete(service);
+  numberPools.set(service, pool);
+  pruneNumberPool(pool);
+  if (pool.items.size >= numberPoolRefillThreshold || pool.retryAt > Date.now()) return;
+  pool.pending = true;
+  if (activeNumberPoolRefill) return activeNumberPoolRefill;
+  activeNumberPoolRefill = new Promise((resolve) => setImmediate(resolve)).then(async () => {
+    for (const [name, queued] of [...numberPools]) {
+      if (!queued.pending) continue;
+      queued.pending = false;
+      pruneNumberPool(queued);
+      if (queued.items.size >= numberPoolRefillThreshold) continue;
+      try {
+        await fillNumberPool(name, queued);
+      } catch (error) {
+        console.error("Could not refill a number pool:", error.message);
+      } finally {
+        queued.retryAt = Date.now() + 1000;
+        queued.pending = false;
+      }
+    }
+  }).finally(() => {
+    activeNumberPoolRefill = null;
+    const next = [...numberPools].find(([, entry]) => entry.pending);
+    if (next) refillNumberPool(next[0]);
+  });
+  return activeNumberPoolRefill;
+}
+
 async function findAvailableActiveNumber(service) {
   return withServiceAllocationLock(service, async () => {
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const snapshot = await withRotationLock(async () => {
+      const { snapshot, pooledReservation } = await withRotationLock(async () => {
         const state = await readRotationState();
         if (synchronizeNumberReservations(state)) await saveRotationState(state);
-        return state;
+        const pooled = takePooledCandidate(service, state);
+        if (!pooled) return { snapshot: state };
+        return {
+          pooledReservation: await reserveNumber(service, pooled.database, pooled, pooled.serviceState, state)
+        };
       });
+      if (pooledReservation) {
+        refillNumberPool(service);
+        return pooledReservation;
+      }
       const snapshotUsage = JSON.stringify(snapshot.serviceUsage[service] || null);
       const inventoryScan = await readActiveNumberInventories(service, snapshot);
       const result = await withRotationLock(async () => {
@@ -1584,7 +1731,10 @@ async function findAvailableActiveNumber(service) {
           )
         };
       });
-      if (!result.retry) return result.reservation;
+      if (!result.retry) {
+        if (result.reservation) refillNumberPool(service);
+        return result.reservation;
+      }
     }
     throw new Error("Number allocation changed repeatedly. Please retry.");
   });
@@ -1596,7 +1746,11 @@ function findMatchingMessages(messages, afterTimestamp, service, untilTimestamp 
     .filter(([key, message]) => message
       && typeof message === "object"
       && !Array.isArray(message)
-      && !/\bjoin[\s\W_]*telegram\b/i.test(getMessageText(message)))
+      && !/\bjoin[\s\W_]*telegram\b/i.test(getMessageText(message))
+      && (() => {
+        const timestamp = getMessageTimestamp(key, message);
+        return timestamp !== null && timestamp >= afterTimestamp && timestamp <= untilTimestamp;
+      })())
     .sort(([leftKey, left], [rightKey, right]) => {
       const leftTime = getMessageTimestamp(leftKey, left);
       const rightTime = getMessageTimestamp(rightKey, right);
@@ -1608,7 +1762,6 @@ function findMatchingMessages(messages, afterTimestamp, service, untilTimestamp 
   const matches = [];
   for (const [key, message] of entries) {
     const timestamp = getMessageTimestamp(key, message);
-    if (timestamp === null || timestamp < afterTimestamp || timestamp > untilTimestamp) continue;
     const text = getMessageText(message);
     const match = matchServiceMessage(service, text, message);
     if (match) matches.push({ key, timestamp, message, code: match.code });
