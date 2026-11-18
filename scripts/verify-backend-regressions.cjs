@@ -81,5 +81,32 @@ function completedOrder() {
     await new Promise(setImmediate);
     assert.equal(f.requests.length, 0, "Saved OTP feed must not initiate an upstream scan");
   }
+  {
+    const f = serverFixture();
+    f.setRotation({
+      databaseUrls: ["https://fixture.firebaseio.com"],
+      serviceUsage: {},
+      orders: []
+    });
+    let releaseScan;
+    const scanBlocked = new Promise((resolve) => { releaseScan = resolve; });
+    f.fetch = async (url) => {
+      if (url.endsWith("/clients.json")) {
+        await scanBlocked;
+        return { ok: true, status: 200, json: async () => ({ "device-1": { status: true } }) };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+    const allocation = f.context.findAvailableActiveNumber("fixture");
+    await new Promise(setImmediate);
+    const recentOrders = await Promise.race([
+      f.request("/api/recent-orders?source=saved", { admin: true }),
+      new Promise((resolve) => setTimeout(() => resolve(null), 100))
+    ]);
+    assert(recentOrders && recentOrders.status === 200,
+      "A slow number scan must not block the recent-orders endpoint");
+    releaseScan();
+    await allocation;
+  }
   console.log("PASS: expiry, missing clients cleanup, permission failures, history limits, out-of-order OTPs and saved-only feed.");
 })().catch((error) => { console.error(error); process.exitCode = 1; });

@@ -947,38 +947,48 @@ async function reserveNumber(service, database, candidate, serviceState, rotatio
   return reservation;
 }
 
-async function findAvailableActiveNumber(service, rotationState) {
+async function readActiveNumberInventories(rotationState) {
+  const configuredUrls = rotationState.databaseUrls;
+  const inventories = [];
+  for (let index = 0; index < configuredUrls.length; index += databasePingConcurrency) {
+    const batch = configuredUrls.slice(index, index + databasePingConcurrency);
+    inventories.push(...await Promise.all(batch.map(async (database) => ({
+      database,
+      ...await readActiveNumbers(database)
+    }))));
+  }
+  return inventories;
+}
+
+function findAvailableNumberCandidate(service, rotationState, inventories) {
   const configuredUrls = rotationState.databaseUrls;
   const serviceState = Object.hasOwn(rotationState.serviceUsage, service) ? rotationState.serviceUsage[service] : {
-    cursorUrl: configuredUrls[0],
-    usedNumbers: [],
-    cycle: 0
+    cursorUrl: configuredUrls[0], usedNumbers: [], cycle: 0
   };
   const startIndex = Math.max(0, configuredUrls.indexOf(serviceState.cursorUrl));
-  const orderedUrls = configuredUrls.map((_, index) =>
-    configuredUrls[(startIndex + index) % configuredUrls.length]);
+  const orderedUrls = configuredUrls.map((_, index) => configuredUrls[(startIndex + index) % configuredUrls.length]);
+  const inventoryByUrl = new Map(inventories.map((inventory) => [inventory.database, inventory]));
+  const orderedInventories = orderedUrls.map((database) => inventoryByUrl.get(database)).filter(Boolean);
   const usedNumbers = new Set(serviceState.usedNumbers);
   const lockedNumbers = new Set(rotationState.orders
     .filter((order) => order.service === service && order.receivedOtp !== null)
     .map((order) => order.number));
-  const inventories = [];
 
-  for (const database of orderedUrls) {
-    const inventory = await readActiveNumbers(database);
-    inventories.push({ database, ...inventory });
+  for (const inventory of orderedInventories) {
+    const { database } = inventory;
     const available = inventory.numbers.filter((candidate) =>
       !usedNumbers.has(candidate.number)
       && !lockedNumbers.has(candidate.number)
       && !reservedNumbers.has(candidate.number));
     if (available.length > 0) {
-      return reserveNumber(service, database, available[randomInt(available.length)], serviceState, rotationState);
+      return { database, candidate: available[randomInt(available.length)], serviceState };
     }
     if (inventory.messageReadFailures > 0) {
       throw new Error(`Could not read every active client in database ${database}.`);
     }
   }
 
-  const allNumbers = new Set(inventories.flatMap((inventory) =>
+  const allNumbers = new Set(orderedInventories.flatMap((inventory) =>
     inventory.numbers.map((candidate) => candidate.number)));
   const recyclableNumbers = [...allNumbers].filter((number) => !lockedNumbers.has(number));
   if (recyclableNumbers.length === 0) return null;
@@ -989,22 +999,48 @@ async function findAvailableActiveNumber(service, rotationState) {
     usedNumbers: [],
     cycle: serviceState.cycle + 1
   };
-  rotationState.serviceUsage[service] = recycledServiceState;
-  for (const inventory of inventories) {
+  for (const inventory of orderedInventories) {
     const available = inventory.numbers.filter((candidate) =>
       !lockedNumbers.has(candidate.number) && !reservedNumbers.has(candidate.number));
     if (available.length > 0) {
-      return reserveNumber(
-        service,
-        inventory.database,
-        available[randomInt(available.length)],
-        recycledServiceState,
-        rotationState
-      );
+      return {
+        database: inventory.database,
+        candidate: available[randomInt(available.length)],
+        serviceState: recycledServiceState
+      };
     }
   }
-  await saveRotationState(rotationState);
+  rotationState.serviceUsage[service] = recycledServiceState;
   return null;
+}
+
+async function findAvailableActiveNumber(service) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const snapshot = await withRotationLock(async () => {
+      const state = await readRotationState();
+      if (synchronizeNumberReservations(state)) await saveRotationState(state);
+      return state;
+    });
+    const snapshotUsage = JSON.stringify(snapshot.serviceUsage[service] || null);
+    const inventories = await readActiveNumberInventories(snapshot);
+    const result = await withRotationLock(async () => {
+      const state = await readRotationState();
+      if (synchronizeNumberReservations(state)) await saveRotationState(state);
+      if (JSON.stringify(state.databaseUrls) !== JSON.stringify(snapshot.databaseUrls)
+        || JSON.stringify(state.serviceUsage[service] || null) !== snapshotUsage) {
+        return { retry: true };
+      }
+      const previousUsage = JSON.stringify(state.serviceUsage[service] || null);
+      const candidate = findAvailableNumberCandidate(service, state, inventories);
+      if (!candidate) {
+        if (JSON.stringify(state.serviceUsage[service] || null) !== previousUsage) await saveRotationState(state);
+        return { reservation: null };
+      }
+      return { reservation: await reserveNumber(service, candidate.database, candidate.candidate, candidate.serviceState, state) };
+    });
+    if (!result.retry) return result.reservation;
+  }
+  throw new Error("Number allocation changed repeatedly. Please retry.");
 }
 
 function findMatchingMessages(messages, afterTimestamp, service, untilTimestamp = Infinity) {
@@ -1228,13 +1264,7 @@ async function handleLocalOtpRequest(requestUrl, response) {
     }
     let reservation;
     try {
-      reservation = await withRotationLock(async () => {
-        const rotationState = await readRotationState();
-        if (synchronizeNumberReservations(rotationState)) {
-          await saveRotationState(rotationState);
-        }
-        return findAvailableActiveNumber(service, rotationState);
-      });
+      reservation = await findAvailableActiveNumber(service);
     } catch (error) {
       console.error("Could not select an active client number:", error.message);
       sendJson(response, 502, { error: "Could not select an active-client number from the configured databases." });
