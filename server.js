@@ -18,10 +18,10 @@ if (envFileResult.error && envFileResult.error.code !== "ENOENT") {
 const defaultDatabaseUrl = "https://satanoopfirebase-47068-default-rtdb.firebaseio.com";
 const rawDatabaseUrl = process.env.FIREBASE_DATABASE_URL || defaultDatabaseUrl;
 const port = Number(process.env.PORT || 3000);
-const dashboardPath = path.join(__dirname, "index.html");
 const clientScriptPath = path.join(__dirname, "index.js");
 const activeDevicesPath = path.join(__dirname, "active-devices.html");
 const activeDevicesScriptPath = path.join(__dirname, "active-devices.js");
+const dashboardPath = activeDevicesPath;
 const servicesPath = path.join(__dirname, "services.html");
 const servicesScriptPath = path.join(__dirname, "services.js");
 const rotationPath = path.join(__dirname, "rotation.html");

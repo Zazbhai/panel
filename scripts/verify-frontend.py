@@ -14,7 +14,7 @@ from playwright.sync_api import sync_playwright, expect
 ROOT = Path(__file__).resolve().parent.parent
 OUTPUT = ROOT / '.preview'
 OUTPUT.mkdir(exist_ok=True)
-ROUTES = {'/': 'index', '/active-devices': 'active-devices', '/services': 'services', '/rotation': 'rotation', '/service-messages': 'service-messages', '/recent-orders': 'recent-orders', '/api-docs': 'api-docs'}
+ROUTES = {'/': 'active-devices', '/active-devices': 'active-devices', '/services': 'services', '/rotation': 'rotation', '/service-messages': 'service-messages', '/recent-orders': 'recent-orders', '/api-docs': 'api-docs'}
 DATABASE = 'https://preview-only.firebaseio.com'
 SERVICES = [
     {'id': 'fixture-1', 'name': 'Flipkart', 'template': 'Your verification code is {{OTP}}. Do not share it.', 'enabled': True},
@@ -117,7 +117,7 @@ def main():
                 if width in (1440,390): snapshot(page, name+f'-{width}')
                 if width <= 768:
                     expect(page.locator('.mobile-bottom-nav')).to_be_visible()
-                    expect(page.locator('.mobile-bottom-nav a')).to_have_count(7)
+                    expect(page.locator('.mobile-bottom-nav a')).to_have_count(6)
                     expect(page.locator('.mobile-bottom-nav a[aria-current="page"]')).to_have_count(1)
                     expect(page.locator('.nav-toggle')).not_to_be_visible()
                     expect(page.locator('.page-nav')).not_to_be_visible()

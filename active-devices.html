@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>All devices · Dashboard</title>
+  <title>Devices · Dashboard</title>
   <style data-dashboard-styles>
 :root {
   color-scheme: light;
@@ -319,19 +319,26 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; scroll-behavior: auto !important; } }
 
 .devices-page .page-heading { margin-bottom: 24px; align-items: center; }
+.devices-page { padding-bottom: 88px; }
+.devices-page .page-kicker { margin: 0 0 7px; color: var(--accent); font-size: .7rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.devices-page .page-heading h1 { font-size: 2.75rem; letter-spacing: 0; }
+.devices-page .page-description { max-width: 48ch; font-size: .95rem; }
 .device-heading-actions { display: flex; align-items: center; gap: 18px; }
 .device-heading-actions .refresh-note { padding: 0; }
-.database-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, .65fr); gap: 24px; align-items: end; margin-bottom: 24px; }
+.device-control-panel { margin-bottom: 26px; padding: 18px; border: 1px solid var(--line); border-radius: 16px; background: color-mix(in srgb, var(--surface) 92%, var(--soft)); box-shadow: 0 12px 34px rgb(41 41 35 / 5%); }
+.database-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, .8fr); gap: 18px; align-items: end; }
 .database-toolbar .field { gap: 8px; }
+.database-toolbar .field > label, .database-toolbar .field { font-weight: 600; }
 .device-search-control { display: flex; align-items: center; position: relative; }
 .device-search-control .icon { position: absolute; left: 12px; color: var(--muted); pointer-events: none; }
 .devices-page .device-search-control input { padding-left: 37px; }
+.devices-page .field-hint { display: block; margin-top: 7px; color: var(--muted); font-size: .72rem; font-weight: 400; }
 .devices-page select { text-overflow: ellipsis; }
-.database-notice { margin: -12px 0 24px; font-size: .8125rem; color: var(--muted); }
+.database-notice { margin: 12px 0 0; font-size: .8125rem; color: var(--muted); }
 .device-overview { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 0 0 26px; }
-.device-stat { display: flex; justify-content: space-between; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 16px 20px; }
+.device-stat { position: relative; display: flex; justify-content: space-between; align-items: center; gap: 10px; min-height: 96px; overflow: hidden; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); padding: 18px 20px; box-shadow: 0 7px 20px rgb(41 41 35 / 4%); }
 .device-stat dt { color: var(--muted); font-size: .8125rem; }
-.device-stat dd { margin: 0; font-size: 1.375rem; font-weight: 650; line-height: 1.3; font-variant-numeric: tabular-nums; }
+.device-stat dd { margin: 0; color: var(--ink); font-size: 1.75rem; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .device-stat.online dd { color: var(--success); }
 .device-stat.offline dd { color: var(--muted); }
 .devices-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
@@ -347,7 +354,12 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
 #showMoreDevices { min-width: 154px; }
 .devices-page #status { margin: 0 0 18px; }
 .device-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: stretch; gap: 18px; }
-.devices-page .device-card { --card-line: #b9b9ab; --card-edge: #929385; display: flex; flex-direction: column; padding: 20px; min-width: 0; border: 1px solid var(--card-line); border-top: 3px solid var(--card-edge); border-radius: 12px; background: var(--surface); box-shadow: 0 2px 3px #29292305; transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease; }
+.devices-page .device-card { --card-line: #b9b9ab; --card-edge: #929385; display: flex; flex-direction: column; padding: 20px; min-width: 0; border: 1px solid var(--card-line); border-top: 3px solid var(--card-edge); border-radius: 14px; background: var(--surface); box-shadow: 0 2px 3px #29292305; animation: device-card-in 420ms cubic-bezier(.2,.8,.2,1) both; transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease; }
+.devices-page .device-card:nth-child(2) { animation-delay: 35ms; }
+.devices-page .device-card:nth-child(3) { animation-delay: 70ms; }
+.devices-page .device-card:nth-child(4) { animation-delay: 105ms; }
+.devices-page .device-card:nth-child(5) { animation-delay: 140ms; }
+.devices-page .device-card:nth-child(6) { animation-delay: 175ms; }
 .devices-page .device-card[data-state="online"] { --card-line: #b2c7b7; --card-edge: #5a8669; }
 .devices-page .device-card[data-state="unknown"] { --card-line: #d2bd99; --card-edge: #a78550; }
 .devices-page .device-card:focus-within { border-color: var(--card-edge); box-shadow: 0 0 0 3px #b84e2b0b, 0 5px 15px #29292309; }
@@ -362,6 +374,7 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
 .device-state::before { content: ""; display: block; width: 6px; height: 6px; border-radius: 50%; background: #8d8e82; }
 .device-state.online { color: var(--success); }
 .device-state.online::before { background: var(--success); }
+.device-state.online::before { box-shadow: 0 0 0 0 rgb(53 101 71 / 35%); animation: device-status-pulse 2.4s ease-out infinite; }
 .device-state.unknown::before { background: transparent; border: 1px solid var(--muted); }
 .device-telemetry { display: grid; grid-template-columns: minmax(95px, .7fr) minmax(0, 1.3fr); gap: 14px; margin-bottom: 18px; }
 .device-telemetry .device-field { gap: 5px; font-size: .8125rem; }
@@ -390,6 +403,7 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
 .device-empty p { margin: 0; font-size: .8125rem; }
 @media (max-width: 1100px) { .device-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 700px) {
+  .device-control-panel { padding: 14px; border-radius: 14px; }
   .database-toolbar { grid-template-columns: 1fr; gap: 16px; }
   .devices-page .page-heading { align-items: flex-start; }
   .device-heading-actions .refresh-note { display: none; }
@@ -407,12 +421,28 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
   .device-heading-actions button { padding: 9px 11px; }
   .device-heading-actions .refresh-note { display: none; }
   .devices-page .page-description { max-width: 30ch; }
+  .devices-page .page-heading h1 { font-size: 2rem; }
   .device-grid { grid-template-columns: minmax(0, 1fr); gap: 16px; }
   .device-card-header { margin-bottom: 18px; }
   .devices-page .device-card { padding: 18px; }
   .device-stat dt { font-size: .75rem; }
   .device-stat dd { font-size: 1.25rem; }
   .devices-page .message-section > summary { min-height: 40px; }
+}
+
+@keyframes device-card-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes device-status-pulse {
+  0% { box-shadow: 0 0 0 0 rgb(53 101 71 / 35%); }
+  70% { box-shadow: 0 0 0 7px rgb(53 101 71 / 0%); }
+  100% { box-shadow: 0 0 0 0 rgb(53 101 71 / 0%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .devices-page .device-card, .device-state.online::before { animation: none; }
 }
   </style>
 </head>
@@ -423,8 +453,7 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
       <a class="app-brand" href="/"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>Dashboard</span></a>
       <button class="nav-toggle secondary icon-button" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="page-navigation"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
       <nav id="page-navigation" class="page-nav" aria-label="Dashboard pages">
-        <a href="/">Overview</a>
-        <a href="/active-devices" aria-current="page">Devices</a>
+        <a href="/" aria-current="page">Devices</a>
         <a href="/services">Services</a>
         <a href="/rotation">Rotation</a>
         <a href="/service-messages">Messages</a>
@@ -433,12 +462,13 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
       </nav>
     </header>
     <div class="page-heading" id="page-content" tabindex="-1">
-      <div><h1>All devices</h1><p class="page-description">Devices from your selected database. Phone numbers load six devices at a time.</p></div>
+      <div><p class="page-kicker">Operations</p><h1>Devices</h1><p class="page-description">Monitor connected devices across your selected database.</p></div>
       <div class="device-heading-actions">
         <span class="refresh-note">Status updates every 30s</span>
         <button id="refreshButton" class="secondary" type="button" disabled><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 7a7 7 0 0 1 11.5-1.5L20 8M4 16l2.4 2.5A7 7 0 0 0 17.9 17"/></svg>Refresh</button>
       </div>
     </div>
+    <section class="device-control-panel" aria-label="Device workspace controls">
     <div class="database-toolbar">
       <label class="field" for="dbUrl">Database
         <select id="dbUrl" disabled><option value="">Loading databases…</option></select>
@@ -447,11 +477,12 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
         <span class="device-search-control">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg>
           <input id="deviceSearch" type="search" placeholder="Name, device ID or loaded number" autocomplete="off" disabled>
-          <span class="hint">Phone-number search covers loaded batches; clear the search and show more to load more numbers.</span>
         </span>
+        <span class="field-hint">Search covers loaded batches. Use Show more to load the next six devices.</span>
       </label>
     </div>
     <p id="databaseNotice" class="database-notice" hidden></p>
+    </section>
     <dl class="device-overview" aria-label="Device counts">
       <div class="device-stat"><dt>Total devices</dt><dd id="totalDeviceCount">—</dd></div>
       <div class="device-stat online"><dt>Online</dt><dd id="onlineDeviceCount">—</dd></div>
@@ -496,8 +527,7 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
   }
 
   const mobileNavItems = [
-    ["/", "Overview", '<rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/>'],
-    ["/active-devices", "Devices", '<rect x="7" y="3" width="10" height="18" rx="2"/><path d="M10 6h4M11 18h2"/>'],
+    ["/", "Devices", '<rect x="7" y="3" width="10" height="18" rx="2"/><path d="M10 6h4M11 18h2"/>'],
     ["/services", "Services", '<path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="11" cy="18" r="2"/>'],
     ["/rotation", "Rotation", '<path d="M20 11a8 8 0 0 0-14.7-4L3 10M3 5v5h5M4 13a8 8 0 0 0 14.7 4L21 14M21 19v-5h-5"/>'],
     ["/service-messages", "Messages", '<path d="M20 11.5a7.5 7.5 0 0 1-8 7.5 8 8 0 0 1-3.6-.8L4 20l1.8-4.3A7.5 7.5 0 0 1 12 4a7.5 7.5 0 0 1 8 7.5Z"/>'],
@@ -508,7 +538,8 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
     const mobileNav = document.createElement("nav");
     mobileNav.className = "mobile-bottom-nav";
     mobileNav.setAttribute("aria-label", "Dashboard pages");
-    const currentPath = window.location.pathname.replace(/\.html$/, "").replace(/\/$/, "") || "/";
+    const rawPath = window.location.pathname.replace(/\.html$/, "").replace(/\/$/, "") || "/";
+    const currentPath = rawPath === "/active-devices" ? "/" : rawPath;
     mobileNavItems.forEach(([href, label, iconMarkup]) => {
       const link = document.createElement("a");
       link.href = href;
