@@ -1,4 +1,5 @@
 const dbUrlInput = document.getElementById("dbUrl");
+const databaseSearch = document.getElementById("databaseSearch");
 const refreshButton = document.getElementById("refreshButton");
 const status = document.getElementById("status");
 const deviceCount = document.getElementById("deviceCount");
@@ -29,6 +30,7 @@ let devicesLoading = false;
 let databasesLoading = false;
 let cardSequence = 0;
 let totalDevices = 0;
+let availableDatabaseUrls = [];
 
 const carrierNames = String.raw`(?:jio|airtel|vi|vodafone|idea|bsnl)`;
 const phoneCandidate = String.raw`(?<![\d])(?:\+?91[\s-]?)?[6-9](?:[\s-]?\d){9}(?!\d)`;
@@ -639,13 +641,16 @@ async function loadDatabases() {
       try { urls.push(normalizeDatabaseUrl(defaultUrl)); } catch { /* The error below provides the recovery action. */ }
     }
     if (!urls.length) throw new Error(config.status === "rejected" && rotation.status === "rejected" ? "Could not load database settings. Try Refresh." : "No valid databases configured. Add a database on the Rotation page.");
-    dbUrlInput.replaceChildren(...urls.map((url) => new Option(url, url)));
-    dbUrlInput.value = urls.includes(preferred) ? preferred : urls.includes(defaultUrl) ? defaultUrl : urls[0];
+    availableDatabaseUrls = urls;
+    renderDatabaseOptions(preferred || urls.includes(defaultUrl) ? (preferred || defaultUrl) : urls[0]);
+    databaseSearch.disabled = false;
     databaseNotice.hidden = rotation.status === "fulfilled";
     databaseNotice.textContent = rotation.status === "rejected" ? "Saved database list unavailable. Showing the configured default." : "";
     dbUrlInput.disabled = false;
     await loadDevices();
   } catch (error) {
+    availableDatabaseUrls = [];
+    databaseSearch.disabled = true;
     dbUrlInput.replaceChildren(new Option("Databases unavailable", ""));
     resetDeviceList();
     deviceList.append(emptyState("No database selected", "Use Refresh to retry, or configure a database on the Rotation page."));
@@ -657,7 +662,30 @@ async function loadDatabases() {
   }
 }
 
+function renderDatabaseOptions(preferredValue = dbUrlInput.value) {
+  const query = databaseSearch.value.trim().toLocaleLowerCase();
+  const matches = availableDatabaseUrls.filter((url) => !query || url.toLocaleLowerCase().includes(query));
+  const selected = matches.includes(preferredValue) ? preferredValue : (matches[0] || "");
+  if (matches.length) {
+    dbUrlInput.replaceChildren(...matches.map((url) => new Option(url, url)));
+    dbUrlInput.value = selected;
+    dbUrlInput.disabled = false;
+    databaseNotice.hidden = true;
+  } else {
+    dbUrlInput.replaceChildren(new Option("No matching databases", ""));
+    dbUrlInput.value = "";
+    dbUrlInput.disabled = true;
+    databaseNotice.hidden = false;
+    databaseNotice.textContent = "No database URL matches that search.";
+  }
+}
+
 dbUrlInput.addEventListener("change", () => loadDevices());
+databaseSearch.addEventListener("input", () => {
+  const previous = dbUrlInput.value;
+  renderDatabaseOptions(previous);
+  if (dbUrlInput.value && dbUrlInput.value !== previous) loadDevices();
+});
 deviceSearch.addEventListener("input", () => {
   visibleDeviceLimit = DEVICE_BATCH_SIZE;
   filterDeviceCards();

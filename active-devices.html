@@ -326,7 +326,7 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
 .device-heading-actions { display: flex; align-items: center; gap: 18px; }
 .device-heading-actions .refresh-note { padding: 0; }
 .device-control-panel { margin-bottom: 26px; padding: 18px; border: 1px solid var(--line); border-radius: 16px; background: color-mix(in srgb, var(--surface) 92%, var(--soft)); box-shadow: 0 12px 34px rgb(41 41 35 / 5%); }
-.database-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, .8fr); gap: 18px; align-items: end; }
+.database-toolbar { display: grid; grid-template-columns: minmax(220px, .9fr) minmax(260px, 1.1fr) minmax(260px, .9fr); gap: 18px; align-items: end; }
 .database-toolbar .field { gap: 8px; }
 .database-toolbar .field > label, .database-toolbar .field { font-weight: 600; }
 .device-search-control { display: flex; align-items: center; position: relative; }
@@ -472,6 +472,12 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
     <div class="database-toolbar">
       <label class="field" for="dbUrl">Database
         <select id="dbUrl" disabled><option value="">Loading databases…</option></select>
+      </label>
+      <label class="field" for="databaseSearch">Find database
+        <span class="device-search-control">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg>
+          <input id="databaseSearch" type="search" placeholder="Search database URL" autocomplete="off" disabled>
+        </span>
       </label>
       <label class="field" for="deviceSearch">Search devices
         <span class="device-search-control">
