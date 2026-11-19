@@ -11,6 +11,7 @@ const { gzipSync } = require("node:zlib");
 const { getEnabledTemplates, matchServiceMessage } = require("./service-matching-core");
 const { mergeSmsFormats, normalizeServiceName, normalizeServiceNames } = require("./service-sms-format-import");
 const path = require("node:path");
+const { AsyncRuntimeStore } = require("./runtime-store.cjs");
 
 const envFileResult = require("dotenv").config({ path: path.join(__dirname, ".env") });
 if (envFileResult.error && envFileResult.error.code !== "ENOENT") {
@@ -37,10 +38,11 @@ const recentOrdersScriptPath = path.join(__dirname, "recent-orders.js");
 const servicesDataPath = path.join(__dirname, "services.json");
 const smsFormatsDataPath = path.join(__dirname, "service-sms-formats.json");
 const rotationDataPath = path.join(__dirname, "rotation.json");
+const runtimeDataPath = path.join(__dirname, "runtime.sqlite");
+let runtimeStorePromise = null;
 const maximumServicesRequestBytes = 16 * 1024 * 1024;
 const maximumRotationRequestBytes = 1024 * 1024;
 const databasePingConcurrency = 8;
-const recentOtpScanConcurrency = 6;
 const apiDocsPath = path.join(__dirname, "api-docs.html");
 const apiClientScriptPath = path.join(__dirname, "api-client.js");
 const dashboardApiKey = process.env.DASHBOARD_API_KEY;
@@ -51,9 +53,6 @@ const loginAttemptWindowMs = 15 * 60 * 1000;
 const maximumLoginAttempts = 10;
 const numberReservationDurationMs = 10 * 60 * 1000;
 const reservedNumbers = new Map();
-const orderExpirationTimers = new Map();
-const recentOrderOtpChecks = new Map();
-const recentOrderOtpScanIntervalMs = 8000;
 const activeNumberCacheTtlMs = 30000;
 const numberFetchTimeoutMs = 5000;
 const activeClientsCacheTtlMs = 3000;
@@ -71,20 +70,17 @@ const servicesCacheTtlMs = 5000;
 const rotationStateCacheTtlMs = 250;
 const numberPoolSize = readPositiveIntegerEnv("NUMBER_POOL_SIZE", 32, 1, 500);
 const numberPoolRefillThreshold = Math.max(1, Math.floor(numberPoolSize / 4));
-const numberPoolTtlMs = 15000;
-const numberPoolMaxServices = 32;
 const numberPoolWarmServices = readPositiveIntegerEnv("NUMBER_POOL_WARM_SERVICES", 4, 0, 32);
+const numberRequestTimeoutMs = readPositiveIntegerEnv("NUMBER_REQUEST_TIMEOUT_MS", 4000, 1000, 4900);
 const failedLoginAttempts = new Map();
 const activeNumberCache = new Map();
 const numberPools = new Map();
 let activeNumberPoolRefill = null;
 const slowDatabases = new Map();
-const clientStatusCache = new Map();
 const serviceAllocationOperations = new Map();
 let recentOrdersCache = null;
 let configuredServicesCache = null;
 let configuredServicesReadPromise = null;
-let lastRuntimeCachePruneAt = 0;
 const compressedStaticAssets = new Map();
 const sharedDatabaseJsonCache = new Map();
 const sharedDatabaseJsonInflight = new Map();
@@ -95,7 +91,6 @@ const queuedDatabaseReads = [];
 let rotationSettingsCache = null;
 let rotationStateCache = null;
 let rotationOperation = Promise.resolve();
-let recentOrderOtpScanPromise = null;
 let deviceStatsJob = null;
 
 function readPositiveIntegerEnv(name, fallback, minimum, maximum) {
@@ -156,6 +151,39 @@ function sendText(response, statusCode, text) {
     "Cache-Control": "no-store"
   });
   response.end(text);
+}
+
+function makeAbortError(message = "The number request timed out before a number was reserved.") {
+  const error = new Error(message);
+  error.name = "TimeoutError";
+  error.code = "ALLOCATION_TIMEOUT";
+  error.status = 503;
+  error.retryAfterMs = 1000;
+  return error;
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw makeAbortError();
+}
+
+function waitForAbortable(promise, signal) {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(makeAbortError());
+  return new Promise((resolve, reject) => {
+    const abort = () => {
+      cleanup();
+      reject(makeAbortError());
+    };
+    const cleanup = () => signal.removeEventListener("abort", abort);
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then((value) => {
+      cleanup();
+      resolve(value);
+    }, (error) => {
+      cleanup();
+      reject(error);
+    });
+  });
 }
 
 function getCompressedStaticAsset(assetPath, content) {
@@ -565,7 +593,7 @@ function normalizeOrderMessageHistory(order) {
   }));
 }
 
-async function readRotationState() {
+async function readLegacyRotationState() {
   if (rotationStateCache && rotationStateCache.expiresAt > Date.now()) {
     return cloneRotationState(rotationStateCache.value);
   }
@@ -684,7 +712,7 @@ async function readRotationState() {
       numberActive
     });
   }
-  const state = { initialized: true, databaseUrls, serviceUsage, orders };
+  const state = { initialized: true, databaseUrls, serviceUsage, orders, runtimeStoreVersion: stored.runtimeStoreVersion };
   rotationStateCache = { value: cloneRotationState(state), expiresAt: Date.now() + rotationStateCacheTtlMs };
   return state;
 }
@@ -692,6 +720,7 @@ async function readRotationState() {
 function cloneRotationState(state) {
   return {
     initialized: state.initialized,
+    runtimeStoreVersion: state.runtimeStoreVersion,
     databaseUrls: [...state.databaseUrls],
     serviceUsage: Object.assign(Object.create(null), Object.fromEntries(
       Object.entries(state.serviceUsage).map(([service, usage]) => [service, {
@@ -707,15 +736,70 @@ function cloneRotationState(state) {
   };
 }
 
-async function saveRotationState(state) {
+async function getRuntimeStore() {
+  if (!runtimeStorePromise) {
+    runtimeStorePromise = (async () => {
+      const legacy = await readLegacyRotationState();
+      const store = new AsyncRuntimeStore(runtimeDataPath);
+      try {
+        if (legacy.runtimeStoreVersion === 1 && !await store.call("metadata")) {
+          throw new Error("runtime.sqlite is missing or empty after migration. Restore the runtime database backup to preserve permanent service locks.");
+        }
+        await store.call("initialize", legacy);
+        // Keep the pre-migration JSON as a rollback/backup copy. Never overwrite it.
+        if (legacy.orders.length || Object.keys(legacy.serviceUsage).length) {
+          try {
+            await writeFile(path.join(__dirname, "rotation.pre-sqlite.json"),
+              await readFile(rotationDataPath, "utf8"), { flag: "wx" });
+          } catch (error) { if (error.code !== "EEXIST") throw error; }
+        }
+        const metadata = await store.call("metadata");
+        if (legacy.initialized) {
+          // rotation.json remains the editable list of databases. Orders/locks are SQLite-owned.
+          metadata.databaseUrls = legacy.databaseUrls;
+          metadata.initialized = true;
+          await store.call("setMetadata", metadata);
+          await writeRotationSettings(metadata);
+        }
+        rotationStateCache = null;
+        return store;
+      } catch (error) {
+        await store.close().catch(() => {});
+        throw error;
+      }
+    })();
+  }
+  return runtimeStorePromise;
+}
+
+async function writeRotationSettings(state) {
   await writeJsonAtomically(rotationDataPath, {
-    databaseUrls: state.databaseUrls,
-    serviceUsage: state.serviceUsage,
-    orders: state.orders
+    databaseUrls: state.databaseUrls, serviceUsage: {}, orders: [], runtimeStoreVersion: 1
   });
+}
+
+async function readRotationState() {
+  return (await getRuntimeStore()).call("snapshot");
+}
+
+async function readRotationMetadata() {
+  return (await getRuntimeStore()).call("metadata");
+}
+
+async function saveRotationState(state) {
+  const store = await getRuntimeStore();
+  await store.call("saveSnapshot", state);
+  await writeRotationSettings(state);
   recentOrdersCache = null;
   rotationSettingsCache = null;
-  rotationStateCache = { value: cloneRotationState({ ...state, initialized: true }), expiresAt: Date.now() + rotationStateCacheTtlMs };
+  rotationStateCache = null;
+}
+
+async function saveRotationMetadata(state) {
+  // Settings changes never load or rewrite order history.
+  await writeRotationSettings(state);
+  await (await getRuntimeStore()).call("setMetadata", { ...state, initialized: true });
+  rotationSettingsCache = null;
 }
 
 async function withRotationLock(operation) {
@@ -821,60 +905,9 @@ function getLatestCarrierNumber(messages) {
   return latestNumber;
 }
 
-function synchronizeNumberReservations(rotationState, now = Date.now()) {
-  let changed = false;
-  reservedNumbers.clear();
-  for (const order of rotationState.orders) {
-    if (order.status === "active" && order.expiresAt <= now) {
-      order.status = "expired";
-      order.numberActive = false;
-      changed = true;
-    }
-    if (order.status !== "active") {
-      if (order.expiresAt <= now && order.numberActive) {
-        order.numberActive = false;
-        changed = true;
-      }
-      clearOrderExpirationTimer(order.orderId);
-      continue;
-    }
-    reservedNumbers.set(order.number, order.orderId);
-    scheduleOrderExpiration(order);
-  }
-  return changed;
-}
-
-function clearOrderExpirationTimer(orderId) {
-  const timer = orderExpirationTimers.get(orderId);
-  if (timer) clearTimeout(timer);
-  orderExpirationTimers.delete(orderId);
-}
-
-function scheduleOrderExpiration(order) {
-  if (orderExpirationTimers.has(order.orderId)) return;
-  const timer = setTimeout(() => {
-    orderExpirationTimers.delete(order.orderId);
-    withRotationLock(async () => {
-      const rotationState = await readRotationState();
-      if (synchronizeNumberReservations(rotationState)) {
-        await saveRotationState(rotationState);
-      }
-    }).catch((error) => {
-      console.error(`Could not automatically cancel expired order ${order.orderId}:`, error.message);
-      scheduleOrderExpiration({ orderId: order.orderId, expiresAt: Date.now() + 30000 });
-    });
-  }, Math.max(0, order.expiresAt - Date.now()));
-  timer.unref();
-  orderExpirationTimers.set(order.orderId, timer);
-}
-
 async function initializeOrderExpirationTimers() {
-  await withRotationLock(async () => {
-    const rotationState = await readRotationState();
-    if (synchronizeNumberReservations(rotationState)) {
-      await saveRotationState(rotationState);
-    }
-  });
+  await (await getRuntimeStore()).call("expire");
+  // Expiry is indexed and checked at claim/read time; no per-order timers or JSON rewrites.
   setTimeout(() => {
     warmNumberPools().catch((error) => {
       console.error("Could not warm number pools:", error.message);
@@ -885,7 +918,7 @@ async function initializeOrderExpirationTimers() {
 async function warmNumberPools() {
   const [configured, rotationState] = await Promise.all([
     readConfiguredServices(),
-    withRotationLock(readRotationState)
+    readRotationMetadata()
   ]);
   if (numberPoolWarmServices === 0) return;
   let warmed = 0;
@@ -1164,6 +1197,7 @@ function cacheActiveNumber(database, candidate) {
   const key = `${database}|${candidate.deviceId}`;
   activeNumberCache.set(key, {
     number: candidate.number,
+    verifiedAt: Date.now(),
     expiresAt: Date.now() + activeNumberCacheTtlMs
   });
   if (activeNumberCache.size > 5000) {
@@ -1176,12 +1210,14 @@ function cacheActiveNumber(database, candidate) {
   }
 }
 
-async function readActiveNumbers(database, isAvailable = () => true, parentSignal = null, requiredCandidates = 1) {
+async function readActiveNumbers(database, isAvailable = () => true, parentSignal = null, requiredCandidates = 1, excludedNumbers = null) {
   const clients = await fetchSharedDatabaseJson(
     `${database}/clients.json`,
     numberFetchTimeoutMs,
-    activeClientsCacheTtlMs
+    activeClientsCacheTtlMs,
+    parentSignal
   );
+  throwIfAborted(parentSignal);
   if (parentSignal?.aborted) return { numbers: [], messageReadFailures: 0 };
   if (!clients || typeof clients !== "object" || Array.isArray(clients)) {
     return { numbers: [], messageReadFailures: 0 };
@@ -1205,14 +1241,31 @@ async function readActiveNumbers(database, isAvailable = () => true, parentSigna
   }
   const now = Date.now();
   const uncachedClients = [];
+  // Known mappings survive restarts and are shared across services. A scan must not
+  // download the same device's SMS history just to rediscover its phone number.
+  const store = await getRuntimeStore();
+  const knownMappings = await store.call("mappings", database);
+  if (knownMappings.length) {
+    const checkedAt = Date.now();
+    const activeIds = new Set(Object.entries(clients)
+      .filter(([id, client]) => isValidDatabaseKey(id) && client?.status === true)
+      .map(([id]) => id));
+    await store.call("markOnlineBatch", knownMappings.map(({ deviceId }) => ({
+      database, deviceId, online: activeIds.has(deviceId), now: checkedAt
+    })));
+  }
+  const durableMappings = new Map(knownMappings
+    .map((item) => [item.deviceId, { number: item.number, verifiedAt: item.verifiedAt, expiresAt: item.verifiedAt + 86400000 }]));
   for (const [deviceId] of activeClients) {
     const key = `${database}|${deviceId}`;
-    const cached = activeNumberCache.get(key);
+    const memory = activeNumberCache.get(key);
+    const cached = memory?.expiresAt > now ? memory : durableMappings.get(deviceId);
     if (cached && cached.expiresAt > now) {
       if (cached.number) {
-        const candidate = { deviceId, number: cached.number };
+        const candidate = { deviceId, number: cached.number, verifiedAt: cached.verifiedAt };
         numbers.set(cached.number, candidate);
-        if (requiredCandidates <= 1 && isAvailable({ ...candidate, database })) {
+        const eligible = (value) => isAvailable(value) && !excludedNumbers?.has(value.number);
+        if (requiredCandidates <= 1 && eligible({ ...candidate, database })) {
           if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
           return { numbers: [candidate], messageReadFailures };
         }
@@ -1221,7 +1274,8 @@ async function readActiveNumbers(database, isAvailable = () => true, parentSigna
     }
     uncachedClients.push([deviceId]);
   }
-  if (requiredCandidates > 1 && [...numbers.values()].filter(isAvailable).length >= requiredCandidates) {
+  if (requiredCandidates > 1
+    && [...numbers.values()].filter((candidate) => isAvailable(candidate) && !excludedNumbers?.has(candidate.number)).length >= requiredCandidates) {
     if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
     return { numbers: [...numbers.values()], messageReadFailures };
   }
@@ -1249,7 +1303,9 @@ async function readActiveNumbers(database, isAvailable = () => true, parentSigna
       const available = await Promise.any(reads.map(async (read) => {
         const candidate = await read;
         cacheActiveNumber(database, candidate);
-        if (candidate.number && isAvailable({ ...candidate, database })) {
+        if (candidate.number
+          && isAvailable({ ...candidate, database })
+          && !excludedNumbers?.has(candidate.number)) {
           batchController.abort();
           return candidate;
         }
@@ -1277,7 +1333,8 @@ async function readActiveNumbers(database, isAvailable = () => true, parentSigna
       if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
       return { numbers: [...numbers.values()], messageReadFailures, upstreamError };
     }
-    if ([...numbers.values()].filter(isAvailable).length >= requiredCandidates) {
+    if ([...numbers.values()].filter((candidate) =>
+      isAvailable(candidate) && !excludedNumbers?.has(candidate.number)).length >= requiredCandidates) {
       if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
       return { numbers: [...numbers.values()], messageReadFailures };
     }
@@ -1295,7 +1352,7 @@ function recordSlowDatabase(database, error) {
 
 async function readRotatingDeviceStats() {
   const databaseUrls = await withRotationLock(async () => {
-    const state = await readRotationState();
+    const state = await readRotationMetadata();
     return [...state.databaseUrls];
   });
   const failedDatabases = [];
@@ -1346,17 +1403,12 @@ async function readRotatingDeviceStats() {
 
   const removedDatabases = missingDatabaseUrls.length
     ? await withRotationLock(async () => {
-      const state = await readRotationState();
+      const state = await readRotationMetadata();
       const missing = new Set(missingDatabaseUrls);
       const removed = state.databaseUrls.filter((url) => missing.has(url));
       if (!removed.length) return [];
       state.databaseUrls = state.databaseUrls.filter((url) => !missing.has(url));
-      for (const serviceState of Object.values(state.serviceUsage)) {
-        if (!state.databaseUrls.includes(serviceState.cursorUrl)) {
-          serviceState.cursorUrl = state.databaseUrls[0] || "";
-        }
-      }
-      await saveRotationState(state);
+      await saveRotationMetadata(state);
       return removed;
     })
     : [];
@@ -1397,43 +1449,7 @@ async function runRotatingDeviceStatsJob(jobId) {
   }
 }
 
-async function reserveNumber(service, database, candidate, serviceState, rotationState) {
-  const usedNumbers = new Set(serviceState.usedNumbers);
-  usedNumbers.add(candidate.number);
-  rotationState.serviceUsage[service] = {
-    cursorUrl: database,
-    usedNumbers: [...usedNumbers],
-    cycle: serviceState.cycle
-  };
-
-  let orderId;
-  do {
-    orderId = randomBytes(12).toString("hex");
-  } while (rotationState.orders.some((order) => order.orderId === orderId));
-  const createdAt = Date.now();
-  const reservation = {
-    orderId,
-    deviceId: candidate.deviceId,
-    number: candidate.number,
-    databaseUrl: database,
-    service,
-    createdAt,
-    expiresAt: createdAt + numberReservationDurationMs,
-    status: "active",
-    receivedOtp: null,
-    receivedAt: null,
-    receivedOtps: [],
-    messageHistory: [],
-    numberActive: false
-  };
-  rotationState.orders.push(reservation);
-  await saveRotationState(rotationState);
-  reservedNumbers.set(candidate.number, orderId);
-  scheduleOrderExpiration(reservation);
-  return reservation;
-}
-
-async function readActiveNumberInventories(service, rotationState, requiredCandidates = 1) {
+async function readActiveNumberInventories(service, rotationState, requiredCandidates = 1, excludedNumbers = null, parentSignal = null) {
   const configuredUrls = rotationState.databaseUrls;
   const serviceState = Object.hasOwn(rotationState.serviceUsage, service) ? rotationState.serviceUsage[service] : {
     cursorUrl: configuredUrls[0], usedNumbers: [], cycle: 0
@@ -1444,10 +1460,10 @@ async function readActiveNumberInventories(service, rotationState, requiredCandi
   const lockedNumbers = new Set(rotationState.orders
     .filter((order) => order.service === service && order.receivedOtp !== null)
     .map((order) => order.number));
+  const unavailableReservations = new Set(rotationState.reserved || reservedNumbers.keys());
   const isAvailable = (candidate) => !usedNumbers.has(candidate.number)
     && !lockedNumbers.has(candidate.number)
-    && !reservedNumbers.has(candidate.number)
-    && !numberPools.get(service)?.items.has(candidate.number);
+    && !unavailableReservations.has(candidate.number);
   const now = Date.now();
   const healthyUrls = orderedUrls.filter((database) => (slowDatabases.get(database)?.expiresAt || 0) <= now);
   const scanUrls = healthyUrls.length
@@ -1459,6 +1475,11 @@ async function readActiveNumberInventories(service, rotationState, requiredCandi
   let complete = scanUrls.length === orderedUrls.length;
   let stoppedEarly = false;
   const controller = new AbortController();
+  const abortForParent = () => controller.abort();
+  if (parentSignal) {
+    if (parentSignal.aborted) controller.abort();
+    else parentSignal.addEventListener("abort", abortForParent, { once: true });
+  }
   let nextIndex = 0;
   let foundAvailable = false;
   let availableCandidateCount = 0;
@@ -1470,11 +1491,12 @@ async function readActiveNumberInventories(service, rotationState, requiredCandi
       try {
         const inventory = {
           database,
-          ...await readActiveNumbers(database, isAvailable, controller.signal, requiredCandidates)
+          ...await readActiveNumbers(database, isAvailable, controller.signal, requiredCandidates, excludedNumbers)
         };
         if (controller.signal.aborted) return;
         inventories.push(inventory);
-        availableCandidateCount += inventory.numbers.filter(isAvailable).length;
+        availableCandidateCount += inventory.numbers.filter((candidate) =>
+          isAvailable(candidate) && !excludedNumbers?.has(candidate.number)).length;
         if (availableCandidateCount >= requiredCandidates) {
           foundAvailable = true;
           stoppedEarly = true;
@@ -1500,6 +1522,8 @@ async function readActiveNumberInventories(service, rotationState, requiredCandi
     { length: Math.min(requiredCandidates > 1 ? 1 : databasePingConcurrency, scanUrls.length) },
     scanDatabase
   ));
+  if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
+  throwIfAborted(parentSignal);
   if (foundAvailable) complete = false;
   return { inventories, complete, stoppedEarly, failures };
 }
@@ -1581,162 +1605,99 @@ async function withServiceAllocationLock(service, operation) {
   }
 }
 
-function pruneNumberPool(pool) {
-  const now = Date.now();
-  for (const [number, candidate] of pool.items) {
-    if (candidate.expiresAt <= now) pool.items.delete(number);
-  }
+async function rememberInventories(store, inventories) {
+  const entries = inventories.flatMap((inventory) => inventory.numbers
+    .filter((candidate) => candidate.number)
+    .map((candidate) => ({ database: inventory.database, deviceId: candidate.deviceId, number: candidate.number, verifiedAt: candidate.verifiedAt })));
+  if (entries.length) await store.call("rememberBatch", entries);
 }
 
-function takePooledCandidate(service, rotationState) {
-  const pool = numberPools.get(service);
-  if (!pool?.items.size) return null;
-  const configuredDatabases = new Set(rotationState.databaseUrls);
-  const serviceState = Object.hasOwn(rotationState.serviceUsage, service)
-    ? rotationState.serviceUsage[service]
-    : { cursorUrl: rotationState.databaseUrls[0] || "", usedNumbers: [], cycle: 0 };
-  const usedNumbers = new Set(serviceState.usedNumbers);
-  const lockedNumbers = new Set(rotationState.orders
-    .filter((order) => order.service === service && order.receivedOtp !== null)
-    .map((order) => order.number));
-  pruneNumberPool(pool);
-  for (const [number, candidate] of pool.items) {
-    pool.items.delete(number);
-    if (!configuredDatabases.has(candidate.database)
-      || usedNumbers.has(number) || lockedNumbers.has(number) || reservedNumbers.has(number)) continue;
-    const latestNumber = activeNumberCache.get(candidate.database + "|" + candidate.deviceId);
-    if (latestNumber && latestNumber.number !== number) continue;
-    const latestClients = sharedDatabaseJsonCache.get(candidate.database + "/clients.json");
-    if (latestClients?.expiresAt > Date.now() && latestClients.value?.[candidate.deviceId]?.status !== true) continue;
-    return { ...candidate, serviceState };
-  }
-  return null;
+async function fillNumberPool(service) {
+  const store = await getRuntimeStore();
+  const state = await store.call("allocationState", service);
+  const prepared = await store.call("candidates", { service, databases: state.databaseUrls, limit: numberPoolSize });
+  if (prepared.length >= numberPoolRefillThreshold) return;
+  const scan = await readActiveNumberInventories(service, state, numberPoolSize);
+  await rememberInventories(store, scan.inventories);
 }
 
-async function fillNumberPool(service, pool) {
-  const state = await withRotationLock(readRotationState);
-  const target = Math.max(1, numberPoolSize - pool.items.size);
-  const inventoryScan = await readActiveNumberInventories(service, state, target);
-  const usage = state.serviceUsage[service];
-  const unavailable = new Set(usage?.usedNumbers);
-  for (const order of state.orders) {
-    if (order.service === service && order.receivedOtp !== null) unavailable.add(order.number);
-  }
-  for (const inventory of inventoryScan.inventories) {
-    for (const candidate of inventory.numbers) {
-      if (pool.items.size >= numberPoolSize) break;
-      if (!candidate.number || unavailable.has(candidate.number)
-        || reservedNumbers.has(candidate.number) || pool.items.has(candidate.number)) continue;
-      const latestNumber = activeNumberCache.get(inventory.database + "|" + candidate.deviceId);
-      const expiresAt = Math.min(Date.now() + numberPoolTtlMs, latestNumber?.expiresAt || 0);
-      if (expiresAt > Date.now()) {
-        pool.items.set(candidate.number, {
-          database: inventory.database,
-          deviceId: candidate.deviceId,
-          number: candidate.number,
-          expiresAt
-        });
-      }
-    }
-    if (pool.items.size >= numberPoolSize) break;
-  }
-}
-
+// All services share one persisted inventory and one bounded discovery job.
 function refillNumberPool(service) {
-  let pool = numberPools.get(service);
-  if (!pool) {
-    if (numberPools.size >= numberPoolMaxServices) {
-      const evict = [...numberPools].find(([, entry]) => !entry.pending);
-      if (!evict) return;
-      numberPools.delete(evict[0]);
-    }
-    pool = { items: new Map(), pending: false, retryAt: 0 };
-  }
-  numberPools.delete(service);
-  numberPools.set(service, pool);
-  pruneNumberPool(pool);
-  if (pool.items.size >= numberPoolRefillThreshold || pool.retryAt > Date.now()) return;
-  pool.pending = true;
   if (activeNumberPoolRefill) return activeNumberPoolRefill;
-  activeNumberPoolRefill = new Promise((resolve) => setImmediate(resolve)).then(async () => {
-    for (const [name, queued] of [...numberPools]) {
-      if (!queued.pending) continue;
-      queued.pending = false;
-      pruneNumberPool(queued);
-      if (queued.items.size >= numberPoolRefillThreshold) continue;
-      try {
-        await fillNumberPool(name, queued);
-      } catch (error) {
-        console.error("Could not refill a number pool:", error.message);
-      } finally {
-        queued.retryAt = Date.now() + 1000;
-        queued.pending = false;
-      }
-    }
-  }).finally(() => {
-    activeNumberPoolRefill = null;
-    const next = [...numberPools].find(([, entry]) => entry.pending);
-    if (next) refillNumberPool(next[0]);
-  });
+  if ((numberPools.get("shared")?.retryAt || 0) > Date.now()) return;
+  numberPools.set("shared", { retryAt: Date.now() + 1000 });
+  activeNumberPoolRefill = new Promise((resolve) => setImmediate(resolve))
+    .then(() => fillNumberPool(service))
+    .catch((error) => console.error("Could not refill number inventory:", error.message))
+    .finally(() => { activeNumberPoolRefill = null; });
   return activeNumberPoolRefill;
 }
 
-async function findAvailableActiveNumber(service) {
+async function verifyInventoryCandidate(store, candidate, signal) {
+  const cached = sharedDatabaseJsonCache.get(candidate.database + "/clients.json");
+  let online;
+  if (cached?.expiresAt > Date.now()) online = cached.value?.[candidate.deviceId]?.status === true;
+  else {
+    const client = await fetchSharedDatabaseJson(
+      candidate.database + "/clients/" + encodeURIComponent(candidate.deviceId) + ".json",
+      numberFetchTimeoutMs, activeClientsCacheTtlMs, signal
+    );
+    online = client?.status === true;
+  }
+  await store.call("markOnline", { ...candidate, online });
+  return online;
+}
+
+async function findAvailableActiveNumber(service, signal = null, onCommit = null, deadline = Date.now() + numberRequestTimeoutMs) {
   return withServiceAllocationLock(service, async () => {
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const { snapshot, pooledReservation } = await withRotationLock(async () => {
-        const state = await readRotationState();
-        if (synchronizeNumberReservations(state)) await saveRotationState(state);
-        const pooled = takePooledCandidate(service, state);
-        if (!pooled) return { snapshot: state };
-        return {
-          pooledReservation: await reserveNumber(service, pooled.database, pooled, pooled.serviceState, state)
-        };
-      });
-      if (pooledReservation) {
-        refillNumberPool(service);
-        return pooledReservation;
-      }
-      const snapshotUsage = JSON.stringify(snapshot.serviceUsage[service] || null);
-      const inventoryScan = await readActiveNumberInventories(service, snapshot);
-      const result = await withRotationLock(async () => {
-        const state = await readRotationState();
-        if (synchronizeNumberReservations(state)) await saveRotationState(state);
-        if (JSON.stringify(state.databaseUrls) !== JSON.stringify(snapshot.databaseUrls)
-          || JSON.stringify(state.serviceUsage[service] || null) !== snapshotUsage) {
-          return { retry: true };
-        }
-        const previousUsage = JSON.stringify(state.serviceUsage[service] || null);
-        const candidate = findAvailableNumberCandidate(
-          service, state, inventoryScan.inventories, inventoryScan.complete
-        );
-        if (!candidate) {
-          if (inventoryScan.stoppedEarly) return { retry: true };
-          if (inventoryScan.failures.length > 0) {
-            const upstreamError = inventoryScan.failures[0].error;
-            const error = new Error("One or more Firebase databases could not be read.");
-            error.status = upstreamError?.status;
-            error.retryAfterMs = upstreamError?.retryAfterMs;
-            error.code = upstreamError?.code;
-            throw error;
+    throwIfAborted(signal);
+    const store = await waitForAbortable(getRuntimeStore(), signal);
+    const tryInventory = async () => {
+      const metadata = await store.call("metadata");
+      const claimCandidates = async (candidates) => {
+        for (const candidate of candidates) {
+          throwIfAborted(signal);
+          if (!await verifyInventoryCandidate(store, candidate, signal)) continue;
+          throwIfAborted(signal);
+          // Final upstream check is complete; reserve synchronously within the remaining API budget.
+          onCommit?.();
+          const order = await store.call("claim", {
+            service, candidate, deadline: deadline - 100, now: Date.now(), duration: numberReservationDurationMs
+          });
+          if (order) {
+            recentOrdersCache = null;
+            refillNumberPool(service);
+            return order;
           }
-          if (JSON.stringify(state.serviceUsage[service] || null) !== previousUsage) {
-            await saveRotationState(state);
-          }
-          return { reservation: null };
+          const error = new Error("Number allocation is busy. Retry shortly.");
+          error.code = "ALLOCATION_CONTENTION";
+          error.status = 503;
+          error.retryAfterMs = 1000;
+          throw error;
         }
-        return {
-          reservation: await reserveNumber(
-            service, candidate.database, candidate.candidate, candidate.serviceState, state
-          )
-        };
-      });
-      if (!result.retry) {
-        if (result.reservation) refillNumberPool(service);
-        return result.reservation;
-      }
-    }
-    throw new Error("Number allocation changed repeatedly. Please retry.");
+        return null;
+      };
+      let result = await claimCandidates(await store.call("candidates", {
+        service, databases: metadata.databaseUrls, limit: numberPoolSize
+      }));
+      if (result) return result;
+      await store.call("advanceCycle", { service, databases: metadata.databaseUrls });
+      result = await claimCandidates(await store.call("candidates", {
+        service, databases: metadata.databaseUrls, limit: numberPoolSize
+      }));
+      return result;
+    };
+    let order = await tryInventory();
+    if (order) return order;
+    throwIfAborted(signal);
+    const state = await store.call("allocationState", service);
+    const scan = await readActiveNumberInventories(service, state, 1, null, signal);
+    throwIfAborted(signal);
+    await rememberInventories(store, scan.inventories);
+    order = await tryInventory();
+    if (order) return order;
+    if (scan.failures.length) throw scan.failures[0].error;
+    return null;
   });
 }
 
@@ -1813,166 +1774,6 @@ function appendOrderMessage(order, match) {
   return true;
 }
 
-async function synchronizeRecentOrderOtps() {
-  if (recentOrderOtpScanPromise) return recentOrderOtpScanPromise;
-  recentOrderOtpScanPromise = (async () => {
-    let snapshot;
-    try {
-      snapshot = await withRotationLock(async () => {
-        const rotationState = await readRotationState();
-        if (synchronizeNumberReservations(rotationState)) await saveRotationState(rotationState);
-        return rotationState.orders
-          .filter((order) => (order.status === "active" || order.status === "completed")
-            && order.expiresAt > Date.now())
-          .map((order) => ({ ...order }));
-      });
-    } catch (error) {
-      console.error("Could not prepare recent order OTP scan:", error.message);
-      return;
-    }
-    const cacheNow = Date.now();
-    if (cacheNow - lastRuntimeCachePruneAt > 60000) {
-      for (const [key, entry] of clientStatusCache) {
-        if (entry.expiresAt <= cacheNow) clientStatusCache.delete(key);
-      }
-      for (const [key, entry] of activeNumberCache) {
-        if (entry.expiresAt <= cacheNow) activeNumberCache.delete(key);
-      }
-      for (const [key, entry] of slowDatabases) {
-        if (entry.expiresAt <= cacheNow) slowDatabases.delete(key);
-      }
-      lastRuntimeCachePruneAt = cacheNow;
-    }
-    const activeOrderIds = new Set(snapshot.map((order) => order.orderId));
-    for (const orderId of recentOrderOtpChecks.keys()) {
-      if (!activeOrderIds.has(orderId)) recentOrderOtpChecks.delete(orderId);
-    }
-    if (!snapshot.length) return;
-
-    let configuredServices;
-    try {
-      configuredServices = await readConfiguredServices();
-    } catch (error) {
-      console.error("Could not read configured services for recent order OTP scan:", error.message);
-      return;
-    }
-    const services = new Map(configuredServices.services
-      .filter((service) => service && typeof service.name === "string")
-      .map((service) => [normalizeServiceName(service.name).toLowerCase(), service]));
-    const now = Date.now();
-    const candidates = snapshot.filter((order) => {
-      const lastCheck = recentOrderOtpChecks.get(order.orderId) || 0;
-      return now - lastCheck >= recentOrderOtpScanIntervalMs;
-    });
-    if (!candidates.length) return;
-
-    const matches = [];
-    const numberStatusUpdates = [];
-    const groups = new Map();
-    for (const order of candidates) {
-      const key = JSON.stringify([order.databaseUrl, order.deviceId]);
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(order);
-    }
-    const scanDevice = async ([groupKey, orders]) => {
-      for (const order of orders) recentOrderOtpChecks.set(order.orderId, now);
-      const [databaseUrl, deviceId] = JSON.parse(groupKey);
-      const clientStatusKey = groupKey;
-      const cachedStatus = clientStatusCache.get(clientStatusKey);
-      let numberActive;
-      if (cachedStatus && cachedStatus.expiresAt > Date.now()) {
-        numberActive = cachedStatus.numberActive;
-      } else {
-        try {
-      const client = await fetchSharedDatabaseJson(
-            `${databaseUrl}/clients/${encodeURIComponent(deviceId)}.json`,
-            8000,
-            1000
-          );
-          numberActive = client?.status === true;
-          clientStatusCache.set(clientStatusKey, { numberActive, expiresAt: Date.now() + recentOrderOtpScanIntervalMs });
-        } catch (error) {
-          console.error(`Could not check active status for recent order ${orders[0].orderId}:`, error.message);
-        }
-      }
-      if (numberActive !== undefined) {
-        for (const order of orders) numberStatusUpdates.push({ orderId: order.orderId, numberActive });
-      }
-      const matchingOrders = orders.map((order) => ({
-        order,
-        service: services.get(normalizeServiceName(order.service.trim()).toLowerCase())
-      })).filter((entry) => entry.service);
-      if (!matchingOrders.length) return;
-      try {
-        const messages = await fetchSharedDatabaseJson(
-          `${databaseUrl}/messages/${encodeURIComponent(deviceId)}.json`,
-          8000,
-          numberMessagesCacheTtlMs
-        );
-        for (const { order, service } of matchingOrders) {
-          const knownMessageKeys = new Set((order.messageHistory || [])
-            .map((entry) => entry.key));
-          const knownKeys = new Set((order.receivedOtps || [])
-            .map((entry) => entry.messageKey)
-            .filter(Boolean));
-          const knownFallbacks = new Set((order.receivedOtps || [])
-            .filter((entry) => !entry.messageKey)
-            .map((entry) => `${entry.code}:${entry.receivedAt}`));
-          const untilTimestamp = Math.min(Date.now(), order.expiresAt);
-          for (const message of findMatchingMessages(messages, order.createdAt, service, untilTimestamp)) {
-            if (knownMessageKeys.has(message.key)) continue;
-            if (!knownKeys.has(message.key)
-              && !knownFallbacks.has(`${message.code}:${message.timestamp}`)) {
-              matches.push({ orderId: order.orderId, message });
-            }
-          }
-        }
-      } catch (error) {
-        console.error(`Could not scan messages for recent order ${orders[0].orderId}:`, error.message);
-      }
-    };
-    const deviceGroups = [...groups.entries()];
-    for (let index = 0; index < deviceGroups.length; index += recentOtpScanConcurrency) {
-      await Promise.all(deviceGroups.slice(index, index + recentOtpScanConcurrency).map(scanDevice));
-    }
-    if (!matches.length && !numberStatusUpdates.length) return;
-
-    await withRotationLock(async () => {
-      const rotationState = await readRotationState();
-      let changed = false;
-      for (const update of numberStatusUpdates) {
-        const order = rotationState.orders.find((item) => item.orderId === update.orderId);
-        if (!order || (order.status !== "active" && order.status !== "completed")) continue;
-        if (order.numberActive !== update.numberActive) {
-          order.numberActive = update.numberActive;
-          changed = true;
-        }
-      }
-      for (const match of matches) {
-        const order = rotationState.orders.find((item) => item.orderId === match.orderId);
-        if (!order || (order.status !== "active" && order.status !== "completed")) continue;
-        const messageAdded = appendOrderMessage(order, match.message);
-        const otpAdded = appendOrderOtp(order, {
-          code: match.message.code,
-          receivedAt: match.message.timestamp,
-          messageKey: match.message.key
-        });
-        if (messageAdded || otpAdded) {
-          recentOrderOtpChecks.delete(order.orderId);
-          changed = true;
-        }
-      }
-      if (changed) {
-        synchronizeNumberReservations(rotationState);
-        await saveRotationState(rotationState);
-      }
-    });
-  })().finally(() => {
-    recentOrderOtpScanPromise = null;
-  });
-  return recentOrderOtpScanPromise;
-}
-
 async function handleLocalOtpRequest(requestUrl, response) {
   const actions = requestUrl.searchParams.getAll("action");
   if (actions.length !== 1) {
@@ -1997,24 +1798,54 @@ async function handleLocalOtpRequest(requestUrl, response) {
       return;
     }
     const service = normalizeServiceName(services[0].trim()).toLowerCase();
+    const allocationDeadline = Date.now() + numberRequestTimeoutMs;
+    const allocationController = new AbortController();
+    const allocationTimer = setTimeout(() => allocationController.abort(), numberRequestTimeoutMs);
+    const beginReservationCommit = () => {
+      throwIfAborted(allocationController.signal);
+      clearTimeout(allocationTimer);
+    };
     let configuredServices;
     try {
-      configuredServices = await readConfiguredServices();
+      configuredServices = await waitForAbortable(readConfiguredServices(), allocationController.signal);
+      throwIfAborted(allocationController.signal);
     } catch (error) {
+      clearTimeout(allocationTimer);
+      if (error.code === "ALLOCATION_TIMEOUT") {
+        sendJson(response, 503, {
+          error: "Number request exceeded its time limit. No order was created.",
+          code: "ALLOCATION_TIMEOUT"
+        }, { "Retry-After": "1" });
+        return;
+      }
       console.error("Could not read configured services:", error.message);
       sendJson(response, 500, { error: "Could not read configured services." });
       return;
     }
     if (!configuredServices.services.some((item) => normalizeServiceName(item.name).toLowerCase() === service
       && item.enabled === true && getEnabledTemplates(item).length > 0)) {
+      clearTimeout(allocationTimer);
       sendText(response, 200, "BAD_SERVICE");
       return;
     }
     let reservation;
     try {
-      reservation = await findAvailableActiveNumber(service);
+      reservation = await waitForAbortable(
+        findAvailableActiveNumber(service, allocationController.signal, beginReservationCommit, allocationDeadline),
+        allocationController.signal
+      );
+      throwIfAborted(allocationController.signal);
     } catch (error) {
-      console.error("Could not select an active client number:", error.message);
+      if (error.code === "ALLOCATION_TIMEOUT") {
+        sendJson(response, 503, {
+          error: "Number request exceeded its time limit. No order was created.",
+          code: "ALLOCATION_TIMEOUT"
+        }, { "Retry-After": "1" });
+        return;
+      }
+      if (error.code !== "ALLOCATION_CONTENTION") {
+        console.error("Could not select an active client number:", error.message);
+      }
       const temporarilyUnavailable = [429, 500, 502, 503, 504].includes(error.status)
         || error.name === "AbortError" || error.name === "TimeoutError";
       const headers = error.retryAfterMs > 0
@@ -2028,9 +1859,13 @@ async function handleLocalOtpRequest(requestUrl, response) {
             : "Could not select an active-client number from the configured databases.",
         code: error.code === "RESPONSE_TOO_LARGE"
           ? "UPSTREAM_RESPONSE_TOO_LARGE"
-          : "UPSTREAM_UNAVAILABLE"
+          : error.code === "ALLOCATION_CONTENTION"
+            ? "ALLOCATION_CONTENTION"
+            : "UPSTREAM_UNAVAILABLE"
       }, headers);
       return;
+    } finally {
+      clearTimeout(allocationTimer);
     }
     if (!reservation) {
       sendText(response, 200, "NO_NUMBERS");
@@ -2057,28 +1892,9 @@ async function handleLocalOtpRequest(requestUrl, response) {
     }
     let result;
     try {
-      result = await withRotationLock(async () => {
-        const rotationState = await readRotationState();
-        const expiredOrdersChanged = synchronizeNumberReservations(rotationState);
-        const reservation = rotationState.orders.find((order) => order.orderId === orderIds[0]);
-        if (!reservation) {
-          if (expiredOrdersChanged) await saveRotationState(rotationState);
-          return "NO_ACTIVATION";
-        }
-        if (reservation.status !== "active") {
-          if (expiredOrdersChanged) await saveRotationState(rotationState);
-          return "STATUS_CANCEL";
-        }
-        if (statuses[0] === "8") {
-          reservation.status = "cancelled";
-          reservation.numberActive = false;
-          synchronizeNumberReservations(rotationState);
-          await saveRotationState(rotationState);
-          return "ACCESS_CANCEL";
-        }
-        if (expiredOrdersChanged) await saveRotationState(rotationState);
-        return "ACCESS_RETRY_GET";
-      });
+      // Cancel/retry decisions run inside one SQLite transaction.
+      result = await (await getRuntimeStore()).call("setStatus", { id: orderIds[0], status: statuses[0] });
+      recentOrdersCache = null;
     } catch (error) {
       console.error("Could not update a recent number order:", error.message);
       sendJson(response, 500, { error: "Could not update the number order." });
@@ -2090,13 +1906,8 @@ async function handleLocalOtpRequest(requestUrl, response) {
 
   let reservation;
   try {
-    reservation = await withRotationLock(async () => {
-      const rotationState = await readRotationState();
-      const expiredOrdersChanged = synchronizeNumberReservations(rotationState);
-      const order = rotationState.orders.find((item) => item.orderId === orderIds[0]);
-      if (expiredOrdersChanged) await saveRotationState(rotationState);
-      return order || null;
-    });
+    // Indexed single-order read: expiry handled inside SQLite, no state reload.
+    reservation = await (await getRuntimeStore()).call("getOrder", orderIds[0]);
   } catch (error) {
     console.error("Could not read a recent number order:", error.message);
     sendJson(response, 500, { error: "Could not read the number order." });
@@ -2183,32 +1994,10 @@ async function handleLocalOtpRequest(requestUrl, response) {
     }
     let updatedOrder;
     try {
-      updatedOrder = await withRotationLock(async () => {
-        const rotationState = await readRotationState();
-        const expiredOrdersChanged = synchronizeNumberReservations(rotationState);
-        const currentOrder = rotationState.orders.find((order) => order.orderId === orderIds[0]);
-        if (!currentOrder) {
-          if (expiredOrdersChanged) await saveRotationState(rotationState);
-          return null;
-        }
-        if (currentOrder.status === "active" || currentOrder.status === "completed") {
-          let changed = false;
-          for (const match of matches) {
-            const messageAdded = appendOrderMessage(currentOrder, match);
-            const otpAdded = appendOrderOtp(currentOrder, {
-              code: match.code,
-              receivedAt: match.timestamp,
-              messageKey: match.key
-            });
-            changed = messageAdded || otpAdded || changed;
-          }
-          synchronizeNumberReservations(rotationState);
-          if (changed || expiredOrdersChanged) await saveRotationState(rotationState);
-        } else if (expiredOrdersChanged) {
-          await saveRotationState(rotationState);
-        }
-        return currentOrder;
+      updatedOrder = await (await getRuntimeStore()).call("updateOrderState", {
+        id: orderIds[0], matches
       });
+      if (updatedOrder) recentOrdersCache = null;
     } catch (error) {
       console.error("Could not save an OTP received for a number order:", error.message);
       sendJson(response, 500, { error: "Could not save the received OTP." });
@@ -2658,26 +2447,29 @@ async function handleRequest(request, response) {
       response.end("Method Not Allowed");
       return;
     }
-    // Recent orders serve saved data only. Upstream OTP checks happen exclusively
-    // in the getStatus handler for a specific order id, on demand.
-    if (recentOrdersCache && recentOrdersCache.expiresAt > Date.now()) {
-      sendJson(response, 200, recentOrdersCache.value);
-      return;
-    }
+    // Saved data only; no Firebase scans are triggered by this endpoint.
     try {
-      const orders = await withRotationLock(async () => {
-        const state = await readRotationState();
-        if (synchronizeNumberReservations(state)) await saveRotationState(state);
-        return state.orders
-          .slice()
-          .sort((left, right) => right.createdAt - left.createdAt)
-          .map((order) => ({
-            ...order,
-            locked: order.receivedOtp !== null
-          }));
-      });
-      const value = { orders };
-      recentOrdersCache = { value, expiresAt: Date.now() + recentOrdersCacheTtlMs };
+      const params = requestUrl.searchParams;
+      const options = {
+        limit: Math.min(2000, Math.max(1, Number(params.get("limit")) || 6)),
+        search: (params.get("search") || "").slice(0, 200), status: params.get("status") || "",
+        from: params.has("from") ? Number(params.get("from")) : null,
+        to: params.has("to") ? Number(params.get("to")) : null,
+        before: params.has("before") ? JSON.parse(params.get("before")) : null
+      };
+      if ((options.from !== null && !Number.isFinite(options.from))
+        || (options.to !== null && !Number.isFinite(options.to))
+        || (options.before && (!Number.isFinite(options.before.createdAt) || typeof options.before.orderId !== "string"))) {
+        sendJson(response, 400, { error: "Invalid order range or cursor." }); return;
+      }
+      const savedFeed = params.get("source") === "saved";
+      const key = JSON.stringify([savedFeed, options]);
+      if (recentOrdersCache?.key === key && recentOrdersCache.expiresAt > Date.now()) {
+        sendJson(response, 200, recentOrdersCache.value); return;
+      }
+      const store = await getRuntimeStore();
+      const value = savedFeed ? await store.call("latestMessages") : await store.call("getRecentOrders", options);
+      recentOrdersCache = { key, value, expiresAt: Date.now() + recentOrdersCacheTtlMs };
       sendJson(response, 200, value);
     } catch (error) {
       console.error("Could not read recent orders:", error.message);
@@ -2736,11 +2528,11 @@ async function handleRequest(request, response) {
         return;
       }
       const result = await withRotationLock(async () => {
-        const state = await readRotationState();
+        const state = await readRotationMetadata();
         const alreadyExists = state.databaseUrls.includes(normalized);
         if (!alreadyExists) {
           state.databaseUrls.push(normalized);
-          await saveRotationState(state);
+          await saveRotationMetadata(state);
         }
         return {
           databaseUrl: normalized,
@@ -2761,7 +2553,7 @@ async function handleRequest(request, response) {
         return;
       }
       try {
-        const state = await withRotationLock(readRotationState);
+        const state = await withRotationLock(readRotationMetadata);
         const value = {
           initialized: state.initialized,
           databaseUrls: state.databaseUrls
@@ -2798,15 +2590,10 @@ async function handleRequest(request, response) {
       }
       try {
         await withRotationLock(async () => {
-          const state = await readRotationState();
-          for (const serviceState of Object.values(state.serviceUsage)) {
-            if (!validated.databaseUrls.includes(serviceState.cursorUrl)) {
-              serviceState.cursorUrl = validated.databaseUrls[0];
-            }
-          }
+          const state = await readRotationMetadata();
           state.initialized = true;
           state.databaseUrls = validated.databaseUrls;
-          await saveRotationState(state);
+          await saveRotationMetadata(state);
         });
         sendJson(response, 200, {
           initialized: true,

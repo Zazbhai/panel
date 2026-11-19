@@ -53,6 +53,20 @@ const whatsapp = {
   templates: [{ text: "Your WhatsApp code: [OTP]", enabled: true }]
 };
 const whatsappText = "<#> Your WhatsApp account is being registered on a new device Do not share this code with anyone Your WhatsApp code: 661-572 4sgLq1p5sV6";
+const wildcard = {
+  name: "Wildcard App",
+  minOtpLength: 6,
+  maxOtpLength: 6,
+  senderFilter: "",
+  templates: [{ text: "Wildcard App {{ANY}} code {{OTP}}.", enabled: true }]
+};
+const keywordOnly = {
+  name: "Quick Bank",
+  minOtpLength: 6,
+  maxOtpLength: 6,
+  senderFilter: "",
+  templates: [{ text: "A configured format that will not match {{OTP}}", enabled: true }]
+};
 
 assert.deepEqual(matchServiceMessage(jio, jioText, { sender: "VM-JIO" }), { code: "989099" });
 assert.equal(matchServiceMessage(swiggy, jioText, { sender: "VM-JIO" }), null);
@@ -63,6 +77,9 @@ assert.deepEqual(matchServiceMessage(senderScoped, "Use code 989099 to continue.
 assert.equal(matchServiceMessage(jio, "98909 is your One time password (OTP) to login to MyJio. Don't share OTP with anyone.", {}), null);
 assert.deepEqual(matchServiceMessage(flipkart, flipkartText, { sender: "VA-FL-PKRT-S" }), { code: "634435" });
 assert.deepEqual(matchServiceMessage(whatsapp, whatsappText), { code: "661572" });
+assert.deepEqual(matchServiceMessage(wildcard, "Wildcard App account was created for Maria Jane. Your verification code is 654321."), { code: "654321" });
+assert.deepEqual(matchServiceMessage(keywordOnly, "Quick Bank verification code: 482913"), { code: "482913" });
+assert.equal(matchServiceMessage(keywordOnly, "Quick Bank reference number: 482913"), null);
 const digitMarkerService = { templates: [{ text: "Account [DIGITS:3] code [OTP]", enabled: true }] };
 assert.deepEqual(matchServiceMessage(digitMarkerService, "Account 123 code 654321"), { code: "654321" });
 assert.equal(matchServiceMessage(digitMarkerService, "Account 12 code 654321"), null);

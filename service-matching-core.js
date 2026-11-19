@@ -33,7 +33,7 @@ function makeTemplatePattern(text, codePattern) {
     if (markerName === "{{OTP}}" || markerName === "[OTP]") {
       parts.push(`(${codePattern})`);
     } else if (markerName === "{{ANY}}" || markerName === "[ANY]") {
-      parts.push("\\S+?");
+      parts.push("[\\s\\S]*?");
     } else {
       const digitCount = Number(marker[1] || marker[2]);
       parts.push(digitCount >= 1 && digitCount <= 32
@@ -54,6 +54,37 @@ function getMatchers(service) {
   return getEnabledTemplates(service).map((template) => makeTemplatePattern(template.text, codePattern));
 }
 
+function normalizeKeyword(value) {
+  return typeof value === "string"
+    ? value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim()
+    : "";
+}
+
+function matchByServiceKeyword(service, text, codePattern) {
+  const name = normalizeKeyword(service.name);
+  if (!name || name.length < 2 || !(` ${normalizeKeyword(text)} `).includes(` ${name} `)) return null;
+  const contextPattern = /\b(?:otp|one[\s-]?time(?:\s+password)?|verification|verify|passcode|password|security\s+code|code|pin)\b/gi;
+  const codeRegex = new RegExp(codePattern, "g");
+  const candidates = [];
+  let match;
+  while ((match = codeRegex.exec(text))) {
+    const start = match.index;
+    const end = start + match[0].length;
+    contextPattern.lastIndex = 0;
+    let context;
+    let distance = Infinity;
+    while ((context = contextPattern.exec(text))) {
+      const contextEnd = context.index + context[0].length;
+      distance = Math.min(distance, contextEnd <= start ? start - contextEnd : context.index >= end ? context.index - end : 0);
+    }
+    if (distance <= 48) candidates.push({ code: match[0].replace(/\D/g, ""), distance });
+  }
+  if (!candidates.length) return null;
+  candidates.sort((left, right) => left.distance - right.distance);
+  if (candidates[1] && candidates[0].distance === candidates[1].distance && candidates[0].code !== candidates[1].code) return null;
+  return { code: candidates[0].code };
+}
+
 function matchServiceMessage(service, text, message = {}) {
   if (!service || typeof text !== "string") return null;
   const senderFilter = typeof service.senderFilter === "string"
@@ -72,7 +103,13 @@ function matchServiceMessage(service, text, message = {}) {
       if (codes.every((code) => code === codes[0])) return { code: codes[0] };
     }
   }
-  return null;
+  const enabledTemplates = getEnabledTemplates(service);
+  if (enabledTemplates.some((template) => (template.text.match(/(?:\{\{OTP\}\}|\[OTP\])/gi) || []).length > 1)) return null;
+  const minOtpLength = Number.isInteger(service.minOtpLength) ? service.minOtpLength : 4;
+  const maxOtpLength = Number.isInteger(service.maxOtpLength) ? service.maxOtpLength : 8;
+  if (minOtpLength < 1 || maxOtpLength < minOtpLength || maxOtpLength > 32) return null;
+  const codePattern = String.raw`(?<!\d)\d(?:[\s-]?\d){${minOtpLength - 1},${maxOtpLength - 1}}(?!\d)`;
+  return matchByServiceKeyword(service, text, codePattern);
 }
 
 module.exports = { getEnabledTemplates, matchServiceMessage };

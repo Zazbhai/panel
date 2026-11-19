@@ -24,6 +24,17 @@ module.exports = function serverFixture() {
   const fixture = { apiKey, files, requests, readCounts, fetch: null };
   const context = vm.createContext({
     require(name) {
+      if (name === "./runtime-store.cjs") return {
+        AsyncRuntimeStore: class {
+          constructor() {
+            const { RuntimeStore } = localRequire("./runtime-store-core.cjs");
+            this.store = new RuntimeStore(":memory:");
+            fixture.runtime = this.store;
+          }
+          async call(method, ...args) { return this.store[method](...args); }
+          async close() { this.store.close(); }
+        }
+      };
       if (name === "dotenv") return { config: () => ({}) };
       if (name === "node:fs/promises") return {
         async readFile(file) {
@@ -31,7 +42,10 @@ module.exports = function serverFixture() {
           if (!files.has(file)) throw Object.assign(new Error("Missing fixture file"), { code: "ENOENT" });
           return files.get(file);
         },
-        async writeFile(file, contents) { files.set(file, contents); },
+        async writeFile(file, contents, options) {
+          if (options?.flag === "wx" && files.has(file)) throw Object.assign(new Error("Exists"), { code: "EEXIST" });
+          files.set(file, contents);
+        },
         async rename(from, to) { assert(files.has(from)); files.set(to, files.get(from)); files.delete(from); },
         async unlink(file) { files.delete(file); }
       };
@@ -49,7 +63,7 @@ module.exports = function serverFixture() {
   });
   vm.runInContext(source.slice(0, startup), context);
   fixture.context = context;
-  fixture.rotation = () => JSON.parse(files.get(path.join(path.dirname(serverPath), "rotation.json")));
+  fixture.rotation = () => fixture.runtime?.metadata() ? fixture.runtime.snapshot() : JSON.parse(files.get(path.join(path.dirname(serverPath), "rotation.json")));
   fixture.setRotation = (state) => files.set(path.join(path.dirname(serverPath), "rotation.json"), JSON.stringify(state));
   fixture.request = async (url, { method = "GET", body, admin = false } = {}) => {
     const result = {};

@@ -23,9 +23,12 @@ const cancelEditButton = document.getElementById("cancelEditButton");
 const cancelEditTextButton = document.getElementById("cancelEditTextButton");
 const saveServiceButton = document.getElementById("saveServiceButton");
 const SERVICE_BATCH_SIZE = 6;
+const SERVICE_SEARCH_DELAY = 120;
+const serviceSearchIndex = new WeakMap();
 let templateEditorSequence = 0;
 let visibleServiceLimit = SERVICE_BATCH_SIZE;
 let servicesImporting = false;
+let serviceSearchTimer = null;
 
 function setStatus(message, isError) {
   serviceStatus.textContent = message;
@@ -34,7 +37,7 @@ function setStatus(message, isError) {
 
 function normalizeService(service) {
   const { template: legacyTemplate, ...rest } = service;
-  return {
+  const normalized = {
     ...rest,
     templates: Array.isArray(service.templates)
       ? service.templates.map((template) => ({
@@ -48,6 +51,10 @@ function normalizeService(service) {
     maxOtpLength: Number.isInteger(service.maxOtpLength) ? service.maxOtpLength : 8,
     senderFilter: typeof service.senderFilter === "string" ? service.senderFilter : ""
   };
+  serviceSearchIndex.set(normalized, [normalized.name, normalized.senderFilter,
+    ...normalized.templates.map((template) => template.text)]
+    .join(" ").toLocaleLowerCase());
+  return normalized;
 }
 
 function serviceNameKey(name) {
@@ -370,8 +377,17 @@ function makeServiceCard(service) {
 function renderServices() {
   updateEnableAllServicesButton();
   const query = serviceSearch.value.trim().toLocaleLowerCase();
-  const filtered = services.filter((service) => [service.name, service.senderFilter, ...service.templates.map((template) => template.text)]
-    .join(" ").toLocaleLowerCase().includes(query));
+  const filtered = query
+    ? services.filter((service) => {
+      let indexed = serviceSearchIndex.get(service);
+      if (indexed === undefined) {
+        indexed = [service.name, service.senderFilter, ...service.templates.map((template) => template.text)]
+          .join(" ").toLocaleLowerCase();
+        serviceSearchIndex.set(service, indexed);
+      }
+      return indexed.includes(query);
+    })
+    : services;
   const visible = filtered.slice(0, visibleServiceLimit);
   configuredServiceCount.textContent = query
     ? `${filtered.length} of ${services.length} services`
@@ -674,7 +690,13 @@ importSmsFormatsButton.addEventListener("click", async () => {
     importSmsFormatsButton.disabled = false;
   }
 });
-serviceSearch.addEventListener("input", () => { visibleServiceLimit = SERVICE_BATCH_SIZE; renderServices(); });
+serviceSearch.addEventListener("input", () => {
+  window.clearTimeout(serviceSearchTimer);
+  serviceSearchTimer = window.setTimeout(() => {
+    visibleServiceLimit = SERVICE_BATCH_SIZE;
+    renderServices();
+  }, SERVICE_SEARCH_DELAY);
+});
 showMoreServices.addEventListener("click", () => {
   const previousVisible = serviceList.querySelectorAll(".service-card").length;
   visibleServiceLimit += SERVICE_BATCH_SIZE;

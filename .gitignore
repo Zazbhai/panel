@@ -18,3 +18,6 @@ tmp_media/
 # Local runtime data
 rotation.json
 services.json
+runtime.sqlite
+runtime.sqlite-*
+rotation.pre-sqlite.json

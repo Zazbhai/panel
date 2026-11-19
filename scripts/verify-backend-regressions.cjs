@@ -69,17 +69,46 @@ function completedOrder() {
       }) };
     };
     await f.context.refillNumberPool("fixture");
-    assert.equal(vm.runInContext('numberPools.get("fixture").items.size', f.context), 32,
-      "Background refill should prepare a bounded batch of future numbers");
+    assert.equal(f.runtime.candidates({ service: "fixture", databases: f.rotation().databaseUrls }).length, 32,
+      "Background refill should prepare a bounded shared inventory of future numbers");
     const readsBeforeAllocation = upstreamReads;
     const reservation = await f.context.findAvailableActiveNumber("fixture");
     assert(reservation, "A prepared number should be allocated");
     assert.equal(upstreamReads, readsBeforeAllocation,
       "A warm-pool allocation must not scan Firebase on the request path");
-    assert.equal(vm.runInContext('numberPools.get("fixture").items.size', f.context), 31,
-      "An allocated candidate should be removed from the pool");
+    assert.equal(f.runtime.candidates({ service: "fixture", databases: f.rotation().databaseUrls }).length, 31,
+      "An active lease should exclude the number from the shared inventory");
     assert.equal(typeof reservation.number, "string",
       "A prepared candidate should include its allocated number");
+  }
+  {
+    const f = serverFixture();
+    f.setRotation({ databaseUrls: ["https://fixture.firebaseio.com"], serviceUsage: {}, orders: [] });
+    const servicesPath = [...f.files.keys()].find((file) => file.endsWith("services.json"));
+    f.files.set(servicesPath, JSON.stringify([
+      { id: "fixture", name: "fixture", enabled: true, template: "Code [OTP]" }
+    ]));
+    f.context.setTimeout = (callback) => setTimeout(callback, 20);
+    f.context.clearTimeout = clearTimeout;
+    let upstreamAborted = false;
+    f.fetch = async (url, { signal }) => {
+      if (url.endsWith("/clients.json")) {
+        return { ok: true, status: 200, json: async () => ({ device: { status: true } }) };
+      }
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => {
+          upstreamAborted = true;
+          reject(Object.assign(new Error("Request aborted"), { name: "AbortError" }));
+        }, { once: true });
+      });
+    };
+    const startedAt = Date.now();
+    const result = await f.request("/stubs/handler_api.php?action=getNumber&service=fixture&api_key=" + f.apiKey);
+    assert(Date.now() - startedAt < 500, "A slow number request must return within its configured deadline");
+    assert.equal(result.status, 503);
+    assert.equal(JSON.parse(result.body).code, "ALLOCATION_TIMEOUT");
+    assert.equal(upstreamAborted, true, "The timeout must cancel in-flight Firebase reads");
+    assert.equal(f.rotation().orders.length, 0, "A timed-out request must not create an order");
   }
   {
     const f = serverFixture();
@@ -331,12 +360,14 @@ function completedOrder() {
       }
       return { ok: true, status: 200, json: async () => ({ status: true }) };
     };
-    await f.context.synchronizeRecentOrderOtps();
+    for (const order of orders) {
+      await f.request(`/stubs/handler_api.php?action=getStatus&id=${order.orderId}&api_key=${f.apiKey}`);
+    }
     assert.equal(messageReads, 1,
       "Orders sharing one device must reuse a single messages read per scan");
     const updated = f.rotation().orders;
-    assert.equal(updated.filter((order) => order.receivedOtp === "654321").length, 2,
-      "Both orders must receive the matched OTP from the shared read");
+    assert.equal(updated.filter((order) => order.receivedOtp === "654321").length, 1,
+      "The same device message must never be credited to two orders");
   }
   {
     const f = serverFixture();
@@ -348,6 +379,10 @@ function completedOrder() {
     f.setRotation({ databaseUrls: ["https://fixture.firebaseio.com"], serviceUsage: {}, orders: [completedOrder()] });
     const result = await f.request("/api/recent-orders", { admin: true });
     assert.equal(result.status, 200);
+    const payload = JSON.parse(result.body);
+    assert.equal(payload.orders.length, 1);
+    assert.equal(payload.stats.total, 1);
+    assert.equal(payload.orders[0].locked, true, "Saved orders still expose locked state");
     await new Promise((resolve) => setTimeout(resolve, 25));
     assert.equal(upstreamCalls, 0,
       "The recent-orders endpoint must never trigger Firebase OTP scans; getStatus is the only trigger");

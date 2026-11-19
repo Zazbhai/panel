@@ -27,6 +27,12 @@ let cardSequence = 0;
 let ordersLoading = false;
 let requestSequence = 0;
 let displayedOrders = [];
+let lastCursor = null;
+let orderSummary = null;
+let serverHasMore = false;
+let orderFilterVersion = 0;
+let ordersReloadPending = false;
+let searchTimer = null;
 let serviceTemplatesPromise = null;
 const orderMessageStates = new Map();
 const orderMessagePanels = new Map();
@@ -440,10 +446,10 @@ function renderOrders(orders, refreshExpandedMessages = false) {
       || (statusFilter.value === "number-active" ? order.numberActive === true : order.status === statusFilter.value))
     && [order.orderId, order.service, order.number, order.deviceId].join(" ").toLocaleLowerCase().includes(query))
     .sort((left, right) => (Number(right.createdAt) || 0) - (Number(left.createdAt) || 0));
-  document.getElementById("totalOrderCount").textContent = matches.length;
-  document.getElementById("waitingOrderCount").textContent = matches.filter((order) => order.status === "active").length;
-  document.getElementById("completedOrderCount").textContent = matches.filter((order) => order.status === "completed").length;
-  activeNumberCount.textContent = new Set(matches.filter((order) => order.numberActive === true).map((order) => order.number)).size;
+  document.getElementById("totalOrderCount").textContent = orderSummary?.total ?? matches.length;
+  document.getElementById("waitingOrderCount").textContent = orderSummary?.waiting ?? matches.filter((order) => order.status === "active").length;
+  document.getElementById("completedOrderCount").textContent = orderSummary?.completed ?? matches.filter((order) => order.status === "completed").length;
+  activeNumberCount.textContent = orderSummary?.active ?? new Set(matches.filter((order) => order.numberActive === true).map((order) => order.number)).size;
   const visible = matches.slice(0, visibleLimit);
   const ids = new Set(visible.map((order) => order.orderId));
   for (const [id, card] of orderCards) {
@@ -461,9 +467,10 @@ function renderOrders(orders, refreshExpandedMessages = false) {
       loadOrderMessages(order);
     }
   }
-  orderCount.textContent = visible.length < matches.length ? `${visible.length} of ${matches.length} orders` : `${matches.length} order${matches.length === 1 ? "" : "s"}`;
-  showMoreOrders.hidden = visible.length >= matches.length;
-  showMoreOrders.setAttribute("aria-label", `Show ${Math.min(ORDER_BATCH_SIZE, matches.length - visible.length)} more orders`);
+  const total = orderSummary?.total ?? matches.length;
+  orderCount.textContent = visible.length < total ? `${visible.length} of ${total} orders` : `${total} order${total === 1 ? "" : "s"}`;
+  showMoreOrders.hidden = !serverHasMore && visible.length >= matches.length;
+  showMoreOrders.setAttribute("aria-label", `Show ${ORDER_BATCH_SIZE} more orders`);
   if (!matches.length) orderList.append(makeOrderEmpty(orders.length ? "No matching orders" : "No orders yet", orders.length ? "Try another date range, status or search." : "Allocated numbers will appear here."));
   const existingIds = new Set(orders.map((order) => order.orderId));
   for (const id of orderMessageStates.keys()) if (!existingIds.has(id)) orderMessageStates.delete(id);
@@ -478,8 +485,9 @@ function isPageVisible() {
 }
 
 async function loadRecentOrders() {
-  if (ordersLoading) return;
+  if (ordersLoading) { ordersReloadPending = true; return; }
   ordersLoading = true;
+  const filterVersion = orderFilterVersion;
   const requestId = ++requestSequence;
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), ORDER_REQUEST_TIMEOUT);
@@ -487,26 +495,34 @@ async function loadRecentOrders() {
   orderList.setAttribute("aria-busy", "true");
   setRefreshStatus("Updating...");
   try {
-    const response = await window.dashboardApiFetch(`/api/recent-orders?_=${Date.now()}`, {
-      cache: "no-store",
-      signal: controller.signal
+    const bounds = getDateBounds();
+    const params = new URLSearchParams({
+      limit: String(ORDER_BATCH_SIZE),
+      search: orderSearch.value.trim(), status: statusFilter.value
     });
+    if (bounds) { params.set("from", String(bounds.start)); params.set("to", String(bounds.end)); }
     let result;
-    try {
-      result = await response.json();
-    } catch {
-      throw new Error(`The server returned invalid order data (HTTP ${response.status}).`);
-    }
-    if (!response.ok) {
-      throw new Error(result && result.error
-        ? result.error
-        : `Could not load recent orders (HTTP ${response.status}).`);
-    }
-    if (!result || !Array.isArray(result.orders)) {
-      throw new Error("The server returned an invalid recent orders list.");
-    }
+    const collected = [];
+    do {
+      const response = await window.dashboardApiFetch(`/api/recent-orders?${params}`, {
+        cache: "no-store", signal: controller.signal
+      });
+      const page = await response.json();
+      if (!response.ok) throw new Error(page?.error || `Could not load recent orders (HTTP ${response.status}).`);
+      if (!page || !Array.isArray(page.orders)) throw new Error("The server returned an invalid recent orders list.");
+      collected.push(...page.orders);
+      result = { ...page, orders: collected };
+      if (!page.hasMore || !page.nextCursor || collected.length >= visibleLimit) break;
+      params.set("before", JSON.stringify(page.nextCursor));
+      // Every page stays fixed-size so refreshes and Load more have the same
+      // predictable request cost.
+      params.set("limit", String(ORDER_BATCH_SIZE));
+    } while (!controller.signal.aborted);
 
-    if (requestId !== requestSequence) return;
+    if (requestId !== requestSequence || filterVersion !== orderFilterVersion) return;
+    orderSummary = result.stats || null;
+    serverHasMore = result.hasMore === true;
+    lastCursor = result.hasMore ? result.nextCursor : null;
     renderOrders(result.orders, true);
     ordersStatus.textContent = "";
     ordersStatus.classList.remove("error");
@@ -526,13 +542,73 @@ async function loadRecentOrders() {
       ordersLoading = false;
       refreshOrdersButton.disabled = false;
       orderList.setAttribute("aria-busy", "false");
+      if (ordersReloadPending) { ordersReloadPending = false; loadRecentOrders(); }
     }
   }
 }
 
 refreshOrdersButton.addEventListener("click", loadRecentOrders);
-function applyOrderFilters() { visibleLimit = ORDER_BATCH_SIZE; renderOrders(displayedOrders); }
-orderSearch.addEventListener("input", applyOrderFilters);
+
+// Appends exactly ORDER_BATCH_SIZE more orders using the server cursor.
+async function loadMoreOrders() {
+  if (ordersLoading) { ordersReloadPending = true; return; }
+  ordersLoading = true;
+  const requestId = ++requestSequence;
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), ORDER_REQUEST_TIMEOUT);
+  showMoreOrders.disabled = true;
+  setRefreshStatus("Loading more...");
+  try {
+    const bounds = getDateBounds();
+    const params = new URLSearchParams({
+      limit: String(ORDER_BATCH_SIZE),
+      search: orderSearch.value.trim(), status: statusFilter.value
+    });
+    if (bounds) { params.set("from", String(bounds.start)); params.set("to", String(bounds.end)); }
+    if (lastCursor) params.set("before", JSON.stringify(lastCursor));
+    const response = await window.dashboardApiFetch(`/api/recent-orders?${params}`, {
+      cache: "no-store", signal: controller.signal
+    });
+    const page = await response.json();
+    if (!response.ok) throw new Error(page?.error || `Could not load recent orders (HTTP ${response.status}).`);
+    if (!page || !Array.isArray(page.orders)) throw new Error("The server returned an invalid recent orders list.");
+    if (requestId !== requestSequence) return;
+    displayedOrders.push(...page.orders);
+    serverHasMore = page.hasMore === true;
+    lastCursor = page.hasMore ? page.nextCursor : null;
+    visibleLimit = displayedOrders.length;
+    renderOrders(displayedOrders, true);
+    setRefreshStatus(`Updated ${new Intl.DateTimeFormat(undefined, { timeStyle: "short" }).format(new Date())}`);
+  } catch (error) {
+    if (requestId !== requestSequence) return;
+    visibleLimit -= ORDER_BATCH_SIZE;
+    setRefreshStatus("Could not load more");
+    ordersStatus.textContent = error && error.name === "AbortError"
+      ? "The update timed out. Retrying..."
+      : `Could not load more orders: ${error.message}`;
+    ordersStatus.classList.add("error");
+  } finally {
+    window.clearTimeout(timeoutId);
+    if (requestId === requestSequence) {
+      ordersLoading = false;
+      showMoreOrders.disabled = false;
+    }
+  }
+}
+
+function applyOrderFilters() {
+  visibleLimit = ORDER_BATCH_SIZE;
+  lastCursor = null;
+  orderFilterVersion++;
+  orderSummary = null;
+  serverHasMore = false;
+  renderOrders(displayedOrders);
+  loadRecentOrders();
+}
+orderSearch.addEventListener("input", () => {
+  window.clearTimeout(searchTimer);
+  searchTimer = window.setTimeout(applyOrderFilters, 250);
+});
 statusFilter.addEventListener("change", applyOrderFilters);
 function selectRange(range) {
   selectedRange = range;
@@ -563,7 +639,8 @@ customDates.addEventListener("submit", (event) => {
 showMoreOrders.addEventListener("click", () => {
   const count = orderCards.size;
   visibleLimit += ORDER_BATCH_SIZE;
-  renderOrders(displayedOrders);
+  if (serverHasMore) loadMoreOrders();
+  else { renderOrders(displayedOrders); loadRecentOrders(); }
   const card = orderList.children[count];
   if (card) { card.tabIndex = -1; card.focus(); }
 });
