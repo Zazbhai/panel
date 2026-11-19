@@ -1635,7 +1635,7 @@ async function fillNumberPool(service, parentSignal = null) {
 function refillNumberPool(service, parentSignal = null) {
   const key = normalizeServiceName(service).toLowerCase();
   const active = activeNumberPoolRefills.get(key);
-  if (active) return parentSignal ? waitForAbortable(active, parentSignal) : active;
+  if (active) return active;
   const pool = numberPools.get(key) || { retryAt: 0 };
   if (pool.retryAt > Date.now()) return Promise.resolve(pool.lastResult);
   pool.retryAt = Date.now() + 1000;
@@ -1714,11 +1714,11 @@ async function findAvailableActiveNumber(service, signal = null, onCommit = null
     let order = await tryInventory();
     if (order) return order;
     throwIfAborted(signal);
-    // A cold process may have no persisted candidates yet. Join the per-service
-    // background refill before doing a request-scoped scan; concurrent callers
-    // share this same discovery promise instead of starting duplicate Firebase
-    // reads.
-    await waitForAbortable(refillNumberPool(service, signal), signal);
+    // Start/continue a full background refill, but do not make this request wait
+    // for the entire pool. A pool refill may discover dozens of numbers across
+    // many databases; this request only needs one. The shared Firebase inflight
+    // cache lets the focused scan reuse reads started by the refill.
+    refillNumberPool(service, signal);
     order = await tryInventory();
     if (order) return order;
     throwIfAborted(signal);
