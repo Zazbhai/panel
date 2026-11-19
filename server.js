@@ -71,11 +71,15 @@ const rotationStateCacheTtlMs = 250;
 const numberPoolSize = readPositiveIntegerEnv("NUMBER_POOL_SIZE", 32, 1, 500);
 const numberPoolRefillThreshold = Math.max(1, Math.floor(numberPoolSize / 4));
 const numberPoolWarmServices = readPositiveIntegerEnv("NUMBER_POOL_WARM_SERVICES", 4, 0, 32);
-const numberRequestTimeoutMs = readPositiveIntegerEnv("NUMBER_REQUEST_TIMEOUT_MS", 4000, 1000, 4900);
+// Keep enough time for a cold inventory lookup while still bounding a client request.
+// The previous 4 second budget was shorter than a first-pass scan across rotating
+// Firebase databases, which caused repeated ALLOCATION_TIMEOUT responses before the
+// background inventory could be persisted.
+const numberRequestTimeoutMs = readPositiveIntegerEnv("NUMBER_REQUEST_TIMEOUT_MS", 10000, 1000, 10000);
 const failedLoginAttempts = new Map();
 const activeNumberCache = new Map();
 const numberPools = new Map();
-let activeNumberPoolRefill = null;
+const activeNumberPoolRefills = new Map();
 const slowDatabases = new Map();
 const serviceAllocationOperations = new Map();
 let recentOrdersCache = null;
@@ -923,14 +927,15 @@ async function warmNumberPools() {
     readRotationMetadata()
   ]);
   if (numberPoolWarmServices === 0) return;
-  let warmed = 0;
-  for (const service of configured.services) {
-    if (service?.enabled !== true || getEnabledTemplates(service).length === 0) continue;
-    if (!rotationState.databaseUrls.length) break;
-    refillNumberPool(normalizeServiceName(service.name).toLowerCase());
-    warmed++;
-    if (warmed >= numberPoolWarmServices) break;
-  }
+  if (!rotationState.databaseUrls.length) return;
+  const services = configured.services
+    .filter((service) => service?.enabled === true && getEnabledTemplates(service).length > 0)
+    .slice(0, numberPoolWarmServices)
+    .map((service) => normalizeServiceName(service.name).toLowerCase());
+  // Start the selected service refills together. Each service has its own
+  // in-flight promise, while the shared database-read gate still bounds total
+  // upstream concurrency.
+  await Promise.all(services.map((service) => refillNumberPool(service)));
 }
 
 async function withDatabaseReadSlot(operation) {
@@ -1614,25 +1619,42 @@ async function rememberInventories(store, inventories) {
   if (entries.length) await store.call("rememberBatch", entries);
 }
 
-async function fillNumberPool(service) {
+async function fillNumberPool(service, parentSignal = null) {
   const store = await getRuntimeStore();
   const state = await store.call("allocationState", service);
   const prepared = await store.call("candidates", { service, databases: state.databaseUrls, limit: numberPoolSize });
-  if (prepared.length >= numberPoolRefillThreshold) return;
-  const scan = await readActiveNumberInventories(service, state, numberPoolSize);
+  if (prepared.length >= numberPoolRefillThreshold) return prepared.length;
+  const scan = await readActiveNumberInventories(service, state, numberPoolSize, null, parentSignal);
   await rememberInventories(store, scan.inventories);
+  return scan.inventories.reduce((total, inventory) => total + inventory.numbers.length, 0);
 }
 
-// All services share one persisted inventory and one bounded discovery job.
-function refillNumberPool(service) {
-  if (activeNumberPoolRefill) return activeNumberPoolRefill;
-  if ((numberPools.get("shared")?.retryAt || 0) > Date.now()) return;
-  numberPools.set("shared", { retryAt: Date.now() + 1000 });
-  activeNumberPoolRefill = new Promise((resolve) => setImmediate(resolve))
-    .then(() => fillNumberPool(service))
-    .catch((error) => console.error("Could not refill number inventory:", error.message))
-    .finally(() => { activeNumberPoolRefill = null; });
-  return activeNumberPoolRefill;
+// Keep one discovery job per service so warmups can fetch from multiple services
+// in parallel without duplicate scans for the same service. The shared Firebase
+// read gate still caps total upstream work.
+function refillNumberPool(service, parentSignal = null) {
+  const key = normalizeServiceName(service).toLowerCase();
+  const active = activeNumberPoolRefills.get(key);
+  if (active) return parentSignal ? waitForAbortable(active, parentSignal) : active;
+  const pool = numberPools.get(key) || { retryAt: 0 };
+  if (pool.retryAt > Date.now()) return Promise.resolve(pool.lastResult);
+  pool.retryAt = Date.now() + 1000;
+  numberPools.set(key, pool);
+  const refill = new Promise((resolve) => setImmediate(resolve))
+    .then(() => fillNumberPool(key, parentSignal))
+    .then((result) => {
+      pool.lastResult = result;
+      return result;
+    })
+    .catch((error) => {
+      console.error(`Could not refill number inventory for ${key}:`, error.message);
+      return null;
+    })
+    .finally(() => {
+      activeNumberPoolRefills.delete(key);
+    });
+  activeNumberPoolRefills.set(key, refill);
+  return refill;
 }
 
 async function verifyInventoryCandidate(store, candidate, signal) {
@@ -1690,6 +1712,14 @@ async function findAvailableActiveNumber(service, signal = null, onCommit = null
       return result;
     };
     let order = await tryInventory();
+    if (order) return order;
+    throwIfAborted(signal);
+    // A cold process may have no persisted candidates yet. Join the per-service
+    // background refill before doing a request-scoped scan; concurrent callers
+    // share this same discovery promise instead of starting duplicate Firebase
+    // reads.
+    await waitForAbortable(refillNumberPool(service, signal), signal);
+    order = await tryInventory();
     if (order) return order;
     throwIfAborted(signal);
     const state = await store.call("allocationState", service);
