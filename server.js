@@ -71,6 +71,7 @@ const rotationStateCacheTtlMs = 250;
 const numberPoolSize = readPositiveIntegerEnv("NUMBER_POOL_SIZE", 32, 1, 500);
 const numberPoolRefillThreshold = Math.max(1, Math.floor(numberPoolSize / 4));
 const numberPoolWarmServices = readPositiveIntegerEnv("NUMBER_POOL_WARM_SERVICES", 4, 0, 32);
+const numberPoolSweepIntervalMs = readPositiveIntegerEnv("NUMBER_POOL_SWEEP_INTERVAL_MS", 5000, 1000, 60000);
 // Keep enough time for a cold inventory lookup while still bounding a client request.
 // The previous 4 second budget was shorter than a first-pass scan across rotating
 // Firebase databases, which caused repeated ALLOCATION_TIMEOUT responses before the
@@ -80,6 +81,9 @@ const failedLoginAttempts = new Map();
 const activeNumberCache = new Map();
 const numberPools = new Map();
 const activeNumberPoolRefills = new Map();
+const numberPoolFailures = new Map();
+const requestedNumberPoolServices = new Set();
+let numberPoolSweepRunning = false;
 const slowDatabases = new Map();
 const serviceAllocationOperations = new Map();
 let recentOrdersCache = null;
@@ -914,11 +918,7 @@ function getLatestCarrierNumber(messages) {
 async function initializeOrderExpirationTimers() {
   await (await getRuntimeStore()).call("expire");
   // Expiry is indexed and checked at claim/read time; no per-order timers or JSON rewrites.
-  setTimeout(() => {
-    warmNumberPools().catch((error) => {
-      console.error("Could not warm number pools:", error.message);
-    });
-  }, 1000).unref();
+  setTimeout(startNumberPoolSweeper, 1000).unref();
 }
 
 async function warmNumberPools() {
@@ -932,10 +932,26 @@ async function warmNumberPools() {
     .filter((service) => service?.enabled === true && getEnabledTemplates(service).length > 0)
     .slice(0, numberPoolWarmServices)
     .map((service) => normalizeServiceName(service.name).toLowerCase());
+  for (const service of requestedNumberPoolServices) {
+    if (!services.includes(service)) services.push(service);
+  }
   // Start the selected service refills together. Each service has its own
   // in-flight promise, while the shared database-read gate still bounds total
   // upstream concurrency.
   await Promise.all(services.map((service) => refillNumberPool(service)));
+}
+
+function startNumberPoolSweeper() {
+  const sweep = () => {
+    if (numberPoolSweepRunning) return;
+    numberPoolSweepRunning = true;
+    warmNumberPools()
+      .catch((error) => console.error("Could not sweep number pools:", error.message))
+      .finally(() => { numberPoolSweepRunning = false; });
+  };
+  sweep();
+  const timer = setInterval(sweep, numberPoolSweepIntervalMs);
+  timer.unref();
 }
 
 async function withDatabaseReadSlot(operation) {
@@ -1644,9 +1660,14 @@ function refillNumberPool(service, parentSignal = null) {
     .then(() => fillNumberPool(key, parentSignal))
     .then((result) => {
       pool.lastResult = result;
+      numberPoolFailures.delete(key);
       return result;
     })
     .catch((error) => {
+      numberPoolFailures.set(key, {
+        error,
+        expiresAt: Date.now() + Math.max(1000, error.retryAfterMs || 5000)
+      });
       console.error(`Could not refill number inventory for ${key}:`, error.message);
       return null;
     })
@@ -1672,18 +1693,39 @@ async function verifyInventoryCandidate(store, candidate, signal) {
   return online;
 }
 
-async function findAvailableActiveNumber(service, signal = null, onCommit = null, deadline = Date.now() + numberRequestTimeoutMs) {
+async function findAvailableActiveNumber(
+  service,
+  signal = null,
+  onCommit = null,
+  deadline = Date.now() + numberRequestTimeoutMs,
+  options = {}
+) {
+  const cachedOnly = options.cachedOnly === true;
   return withServiceAllocationLock(service, async () => {
     throwIfAborted(signal);
     const store = await waitForAbortable(getRuntimeStore(), signal);
     const tryInventory = async () => {
       const metadata = await store.call("metadata");
       const claimCandidates = async (candidates) => {
-        for (const candidate of candidates) {
+        if (!candidates.length) return null;
+        throwIfAborted(signal);
+        const checks = await Promise.allSettled(candidates.map(async (candidate) => {
+          if (!await verifyInventoryCandidate(store, candidate, signal)) return null;
+          return candidate;
+        }));
+        throwIfAborted(signal);
+        const verified = checks
+          .filter((result) => result.status === "fulfilled" && result.value)
+          .map((result) => result.value);
+        if (!verified.length) {
+          const upstreamFailure = checks.find((result) => result.status === "rejected")?.reason;
+          if (upstreamFailure) throw upstreamFailure;
+          return null;
+        }
+        // Firebase status checks run in parallel; SQLite still serializes the
+        // final claim so concurrent callers cannot receive the same number.
+        for (const candidate of verified) {
           throwIfAborted(signal);
-          if (!await verifyInventoryCandidate(store, candidate, signal)) continue;
-          throwIfAborted(signal);
-          // Final upstream check is complete; reserve synchronously within the remaining API budget.
           onCommit?.();
           const order = await store.call("claim", {
             service, candidate, deadline: deadline - 100, now: Date.now(), duration: numberReservationDurationMs
@@ -1693,13 +1735,12 @@ async function findAvailableActiveNumber(service, signal = null, onCommit = null
             refillNumberPool(service);
             return order;
           }
-          const error = new Error("Number allocation is busy. Retry shortly.");
-          error.code = "ALLOCATION_CONTENTION";
-          error.status = 503;
-          error.retryAfterMs = 1000;
-          throw error;
         }
-        return null;
+        const error = new Error("Number allocation is busy. Retry shortly.");
+        error.code = "ALLOCATION_CONTENTION";
+        error.status = 503;
+        error.retryAfterMs = 1000;
+        throw error;
       };
       let result = await claimCandidates(await store.call("candidates", {
         service, databases: metadata.databaseUrls, limit: numberPoolSize
@@ -1714,21 +1755,18 @@ async function findAvailableActiveNumber(service, signal = null, onCommit = null
     let order = await tryInventory();
     if (order) return order;
     throwIfAborted(signal);
-    // Start/continue a full background refill, but do not make this request wait
-    // for the entire pool. A pool refill may discover dozens of numbers across
-    // many databases; this request only needs one. The shared Firebase inflight
-    // cache lets the focused scan reuse reads started by the refill.
-    refillNumberPool(service, signal);
-    order = await tryInventory();
-    if (order) return order;
-    throwIfAborted(signal);
-    const state = await store.call("allocationState", service);
-    const scan = await readActiveNumberInventories(service, state, 1, null, signal);
-    throwIfAborted(signal);
-    await rememberInventories(store, scan.inventories);
-    order = await tryInventory();
-    if (order) return order;
-    if (scan.failures.length) throw scan.failures[0].error;
+    // Number discovery is performed by the background sweeper. Keep this
+    // request path limited to the persisted candidate pool; never block a
+    // caller while scanning the rotating Firebase databases.
+    if (!cachedOnly) {
+      const state = await store.call("allocationState", service);
+      const scan = await readActiveNumberInventories(service, state, 1, null, signal);
+      throwIfAborted(signal);
+      await rememberInventories(store, scan.inventories);
+      order = await tryInventory();
+      if (order) return order;
+      if (scan.failures.length) throw scan.failures[0].error;
+    }
     return null;
   });
 }
@@ -1885,10 +1923,14 @@ async function handleLocalOtpRequest(requestUrl, response) {
       sendText(response, 200, "BAD_SERVICE");
       return;
     }
+    // Keep this service in the background sweep set. Discovery never runs on
+    // the request path; this only schedules/joins the persistent prefetch job.
+    requestedNumberPoolServices.add(service);
+    refillNumberPool(service);
     let reservation;
     try {
       reservation = await waitForAbortable(
-        findAvailableActiveNumber(service, allocationController.signal, beginReservationCommit, allocationDeadline),
+        findAvailableActiveNumber(service, allocationController.signal, beginReservationCommit, allocationDeadline, { cachedOnly: true }),
         allocationController.signal
       );
       throwIfAborted(allocationController.signal);
@@ -1925,6 +1967,16 @@ async function handleLocalOtpRequest(requestUrl, response) {
       clearTimeout(allocationTimer);
     }
     if (!reservation) {
+      const poolFailure = numberPoolFailures.get(service);
+      if (poolFailure && poolFailure.expiresAt > Date.now()) {
+        const error = poolFailure.error;
+        const retryAfterMs = Math.max(1000, error.retryAfterMs || 1000);
+        sendJson(response, 503, {
+          error: "The configured databases are temporarily unavailable. Retry shortly.",
+          code: "UPSTREAM_UNAVAILABLE"
+        }, { "Retry-After": String(Math.ceil(retryAfterMs / 1000)) });
+        return;
+      }
       sendText(response, 200, "NO_NUMBERS");
       return;
     }
