@@ -272,7 +272,7 @@ async function loadServiceMessages(isBackgroundRefresh = false) {
     if (!hasLoaded) {
       messageList.replaceChildren(...Array.from({ length: 4 }, () => {
         const skeleton = document.createElement("div");
-        skeleton.className = "message-skeleton";
+        skeleton.className = "message-skeleton data-loading-skeleton";
         skeleton.setAttribute("aria-hidden", "true");
         skeleton.innerHTML = "<span></span><span></span><span></span>";
         return skeleton;

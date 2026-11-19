@@ -453,6 +453,7 @@ function filterDeviceCards() {
     deviceCards.delete(id);
     messageLoadPromises.delete(id);
   }
+  deviceList.querySelectorAll(".device-loading-card").forEach((card) => card.remove());
   deviceList.querySelectorAll(".device-empty").forEach((empty) => empty.remove());
   for (const [index, record] of visibleRecords.entries()) {
     const card = deviceCards.get(record.id) || makeDeviceCard(record);
@@ -476,6 +477,18 @@ function filterDeviceCards() {
   showMoreButton.setAttribute("aria-label", `Show ${Math.min(DEVICE_BATCH_SIZE, matching.length - visible)} more devices`);
   loadVisibleDeviceDetails(visibleRecords, currentDatabaseUrl, dataGeneration)
     .catch((error) => setStatus(error.message, true));
+}
+
+function showDeviceSkeletons(count = DEVICE_BATCH_SIZE) {
+  const fragment = document.createDocumentFragment();
+  for (let index = 0; index < count; index += 1) {
+    const card = document.createElement("div");
+    card.className = "device-loading-card data-loading-skeleton";
+    card.setAttribute("aria-hidden", "true");
+    card.innerHTML = "<span></span><span></span><span></span><span></span><span></span>";
+    fragment.append(card);
+  }
+  deviceList.replaceChildren(fragment);
 }
 
 function renderDevices(clients, clientStatusAvailable) {
@@ -577,7 +590,9 @@ async function loadDevices(background = false) {
   currentDatabaseUrl = database;
   devicesLoading = true;
   refreshButton.disabled = true;
+  refreshButton.setAttribute("aria-busy", "true");
   deviceList.setAttribute("aria-busy", "true");
+  if (!background && (databaseChanged || !deviceCards.size)) showDeviceSkeletons();
   if (!background) setStatus("Loading devices…");
   try {
     const [clients, devices] = await Promise.allSettled([
@@ -609,12 +624,15 @@ async function loadDevices(background = false) {
     await Promise.allSettled(openedCards.map(([id, card]) => loadDeviceMessages(id, card, database, generation)));
   } catch (error) {
     if (generation !== dataGeneration) return;
+    deviceList.querySelectorAll(".device-loading-card").forEach((card) => card.remove());
     if (!deviceCards.size) deviceList.replaceChildren(emptyState("Could not load devices", "Try Refresh or choose another database."));
     setStatus(error.message, true);
   } finally {
     if (generation === dataGeneration) {
+      deviceList.querySelectorAll(".device-loading-card").forEach((card) => card.remove());
       devicesLoading = false;
       refreshButton.disabled = false;
+      refreshButton.removeAttribute("aria-busy");
       deviceList.setAttribute("aria-busy", "false");
     }
   }
@@ -624,7 +642,9 @@ async function loadDatabases() {
   if (databasesLoading) return;
   databasesLoading = true;
   refreshButton.disabled = true;
+  refreshButton.setAttribute("aria-busy", "true");
   dbUrlInput.disabled = true;
+  if (!deviceCards.size && !deviceList.children.length) showDeviceSkeletons();
   const preferred = dbUrlInput.value;
   try {
     const [config, rotation] = await Promise.allSettled([readJson("/api/config"), readJson("/api/rotation")]);
@@ -659,6 +679,7 @@ async function loadDatabases() {
   } finally {
     databasesLoading = false;
     refreshButton.disabled = false;
+    refreshButton.removeAttribute("aria-busy");
   }
 }
 

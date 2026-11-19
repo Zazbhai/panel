@@ -81,6 +81,10 @@
 .service-list-footer { display: flex; justify-content: center; margin-top: 22px; }
 .service-list-footer:has(> [hidden]) { display: none; }
 .service-empty { grid-column: 1 / -1; }
+.services-page .service-loading-card { min-height: 180px; padding: 18px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.services-page .service-loading-card span:nth-child(2) { width: 35%; height: 11px; margin-bottom: 24px; }
+.services-page .service-loading-card span:nth-child(3) { width: 100%; height: 50px; margin-bottom: 18px; }
+.services-page .service-loading-card span:nth-child(4) { width: 58%; }
 .service-dialog { width: min(760px, calc(100% - 32px)); max-height: min(840px, calc(100dvh - 32px)); margin: auto; padding: 0; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--ink); box-shadow: 0 24px 80px -20px #29292366; }
 .service-dialog::backdrop { background: rgb(33 33 28 / 48%); }
 .service-dialog form { display: flex; max-height: min(840px, calc(100dvh - 32px)); flex-direction: column; }

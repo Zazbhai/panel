@@ -148,6 +148,15 @@ async function initializeServices() {
   if (servicesSyncing || servicesSaving || servicesImporting) return;
   servicesSyncing = true;
   servicesReady = false;
+  serviceList.setAttribute("aria-busy", "true");
+  const showLoading = !services.length;
+  if (showLoading) {
+    serviceSearch.disabled = true;
+    showServiceSkeletons();
+    serviceActionStatus.textContent = "Loading services…";
+    serviceActionStatus.classList.remove("error");
+    serviceActionStatus.setAttribute("data-loading", "");
+  }
   updateEnableAllServicesButton();
   try {
     const response = await window.dashboardApiFetch("/api/services");
@@ -172,14 +181,26 @@ async function initializeServices() {
       }
     } else {
       await writeServicesToServer(services);
+      renderServices();
     }
     servicesReady = true;
     updateEnableAllServicesButton();
     setStatus("Services loaded.", false);
+    if (showLoading) serviceActionStatus.textContent = "";
   } catch (error) {
+    if (showLoading) {
+      renderServices();
+      serviceActionStatus.textContent = `Could not sync services: ${error.message}`;
+      serviceActionStatus.classList.add("error");
+    }
     setStatus(`Could not sync services: ${error.message}`, true);
   } finally {
     servicesSyncing = false;
+    serviceList.removeAttribute("aria-busy");
+    if (showLoading) {
+      serviceSearch.disabled = false;
+      serviceActionStatus.removeAttribute("data-loading");
+    }
     updateEnableAllServicesButton();
   }
 }
@@ -412,6 +433,18 @@ function renderServices() {
     serviceList.replaceChildren(...visible.map(makeServiceCard));
   }
   showMoreServices.hidden = visible.length >= filtered.length;
+}
+
+function showServiceSkeletons() {
+  const fragment = document.createDocumentFragment();
+  for (let index = 0; index < SERVICE_BATCH_SIZE; index += 1) {
+    const card = document.createElement("div");
+    card.className = "service-loading-card data-loading-skeleton";
+    card.setAttribute("aria-hidden", "true");
+    card.innerHTML = "<span></span><span></span><span></span><span></span>";
+    fragment.append(card);
+  }
+  serviceList.replaceChildren(fragment);
 }
 
 function addTemplateEditor(template = { text: "", enabled: true }) {
@@ -710,6 +743,6 @@ serviceEditorDialog.addEventListener("click", (event) => {
 cancelEditButton.addEventListener("click", resetForm);
 cancelEditTextButton.addEventListener("click", resetForm);
 renderTemplateEditors([{ text: "", enabled: true }]);
-renderServices();
+if (services.length) renderServices();
 initializeServices();
 setInterval(refreshServicesFromServer, 10000);

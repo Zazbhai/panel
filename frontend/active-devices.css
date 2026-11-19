@@ -6,7 +6,7 @@
 .device-heading-actions { display: flex; align-items: center; gap: 18px; }
 .device-heading-actions .refresh-note { padding: 0; }
 .device-control-panel { margin-bottom: 26px; padding: 18px; border: 1px solid var(--line); border-radius: 16px; background: color-mix(in srgb, var(--surface) 92%, var(--soft)); box-shadow: 0 12px 34px rgb(41 41 35 / 5%); }
-.database-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, .8fr); gap: 18px; align-items: end; }
+.database-toolbar { display: grid; grid-template-columns: minmax(220px, .9fr) minmax(260px, 1.1fr) minmax(260px, .9fr); gap: 18px; align-items: end; }
 .database-toolbar .field { gap: 8px; }
 .database-toolbar .field > label, .database-toolbar .field { font-weight: 600; }
 .device-search-control { display: flex; align-items: center; position: relative; }
@@ -32,6 +32,11 @@
 .device-list-footer { display: flex; justify-content: center; margin-top: 24px; }
 .device-list-footer:has(> [hidden]) { display: none; }
 #showMoreDevices { min-width: 154px; }
+.devices-page .device-loading-card { min-height: 238px; padding: 20px; border: 1px solid var(--line); border-top: 3px solid #d8d6cc; border-radius: 14px; background: var(--surface); }
+.devices-page .device-loading-card span:nth-child(2) { width: 40%; height: 10px; margin-bottom: 25px; }
+.devices-page .device-loading-card span:nth-child(3) { width: 100%; height: 56px; margin-bottom: 16px; }
+.devices-page .device-loading-card span:nth-child(4) { width: 85%; margin-bottom: 10px; }
+.devices-page .device-loading-card span:nth-child(5) { width: 62%; }
 .devices-page #status { margin: 0 0 18px; }
 .device-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: stretch; gap: 18px; }
 .devices-page .device-card { --card-line: #b9b9ab; --card-edge: #929385; display: flex; flex-direction: column; padding: 20px; min-width: 0; border: 1px solid var(--card-line); border-top: 3px solid var(--card-edge); border-radius: 14px; background: var(--surface); box-shadow: 0 2px 3px #29292305; animation: device-card-in 420ms cubic-bezier(.2,.8,.2,1) both; transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease; }

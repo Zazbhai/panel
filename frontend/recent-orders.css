@@ -58,6 +58,15 @@
 .order-dialog-header h2 { margin: 0; font-size: 1rem; }
 .order-dialog-header .icon-button { margin: -8px -8px -8px 0; }
 .order-dialog-content { overflow-y: auto; padding: 0 24px 24px; }
+.order-all-messages-trigger { min-height: 38px; margin: 0 0 20px; font-size: .75rem; }
+.device-messages-dialog { width: min(820px, calc(100% - 32px)); }
+.device-messages-context { margin: 0; padding: 12px 24px 0; color: var(--muted); font-size: .75rem; overflow-wrap: anywhere; }
+.device-messages-status { margin: 12px 24px 0; }
+.device-message-list { display: grid; max-height: min(62dvh, 640px); overflow-y: auto; padding: 4px 24px 24px; }
+.device-message-list .message { padding: 14px 0; border-bottom: 1px solid var(--line); }
+.device-message-list .message:last-child { border-bottom: 0; }
+.device-message-list .message-meta { display: flex; flex-wrap: wrap; gap: 5px 9px; margin-bottom: 6px; color: var(--muted); font-size: .6875rem; }
+.device-message-list .message-body { margin: 0; color: var(--ink); font-size: .8125rem; white-space: pre-wrap; overflow-wrap: anywhere; }
 .order-detail-panel { padding-top: 18px; }
 .order-detail-panel h3 { margin: 0 0 10px; font-size: .8125rem; }
 .order-detail-panel .data-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }
@@ -72,6 +81,12 @@
 .order-list-footer { display: flex; justify-content: center; margin-top: 24px; }
 .order-list-footer:has(> [hidden]) { display: none; }
 #showMoreOrders { min-width: 152px; }
+.orders-page .order-loading-card { min-height: 228px; padding: 20px; border: 1px solid var(--line); border-top: 3px solid #d8d6cc; border-radius: 12px; background: var(--surface); }
+.orders-page .order-loading-card span:nth-child(2) { width: 76%; margin-bottom: 28px; }
+.orders-page .order-loading-card span:nth-child(3) { width: 44%; height: 34px; margin-bottom: 20px; }
+.orders-page .order-loading-card span:nth-child(4) { width: 88%; margin-bottom: 11px; }
+.orders-page .order-loading-card span:nth-child(5) { width: 58%; }
+#showMoreOrders[aria-busy="true"] .icon { display: none; }
 .order-empty { grid-column: 1 / -1; padding: 48px 24px; border: 1px dashed #c7c5b7; border-radius: 12px; background: var(--surface); text-align: center; }
 .order-empty h3 { margin: 0 0 6px; color: var(--ink); font-size: .9375rem; }
 .order-empty p { margin: 0; font-size: .8125rem; }
@@ -102,4 +117,7 @@
   .order-dialog form { max-height: calc(100dvh - 20px); }
   .order-dialog-header { padding: 18px; }
   .order-dialog-content { padding: 0 18px 18px; }
+  .device-messages-context { padding-inline: 18px; }
+  .device-messages-status { margin-inline: 18px; }
+  .device-message-list { padding-inline: 18px; }
 }

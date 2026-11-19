@@ -21,6 +21,7 @@ function updateRotationControls() {
   databaseUrlsInput.disabled = rotationSaving || deviceStatsLoading;
   saveRotationButton.disabled = !rotationReady || busy;
   checkDeviceStatsButton.disabled = !rotationReady || busy || rotationDirty;
+  deviceStatsStatus.toggleAttribute("data-loading", deviceStatsLoading);
 }
 
 function setRotationStatus(message, isError = false) {
@@ -152,6 +153,7 @@ async function loadRotationSettings(isBackgroundRefresh = false) {
   rotationLoading = true;
   if (!isBackgroundRefresh) {
     rotationReady = false;
+    rotationStatus.setAttribute("data-loading", "");
   }
   updateRotationControls();
   try {
@@ -176,6 +178,7 @@ async function loadRotationSettings(isBackgroundRefresh = false) {
     setRotationStatus(`Could not load database rotation settings: ${error.message}`, true);
   } finally {
     rotationLoading = false;
+    if (!isBackgroundRefresh) rotationStatus.removeAttribute("data-loading");
     updateRotationControls();
   }
 }

@@ -438,6 +438,7 @@ function makeOrderEmpty(title, text) {
 }
 
 function renderOrders(orders, refreshExpandedMessages = false) {
+  orderList.querySelectorAll(".order-loading-card").forEach((card) => card.remove());
   displayedOrders = orders;
   const bounds = getDateBounds();
   const query = orderSearch.value.trim().toLocaleLowerCase();
@@ -480,6 +481,18 @@ function setRefreshStatus(text) {
   if (ordersRefreshStatus) ordersRefreshStatus.textContent = text;
 }
 
+function showOrderSkeletons(count = ORDER_BATCH_SIZE) {
+  const fragment = document.createDocumentFragment();
+  for (let index = 0; index < count; index += 1) {
+    const card = document.createElement("div");
+    card.className = "order-loading-card data-loading-skeleton";
+    card.setAttribute("aria-hidden", "true");
+    card.innerHTML = "<span></span><span></span><span></span><span></span><span></span>";
+    fragment.append(card);
+  }
+  orderList.append(fragment);
+}
+
 function isPageVisible() {
   return document.visibilityState !== "hidden";
 }
@@ -492,7 +505,9 @@ async function loadRecentOrders() {
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), ORDER_REQUEST_TIMEOUT);
   refreshOrdersButton.disabled = true;
+  refreshOrdersButton.setAttribute("aria-busy", "true");
   orderList.setAttribute("aria-busy", "true");
+  if (!orderList.children.length) showOrderSkeletons();
   setRefreshStatus("Updating...");
   try {
     const bounds = getDateBounds();
@@ -541,6 +556,7 @@ async function loadRecentOrders() {
     if (requestId === requestSequence) {
       ordersLoading = false;
       refreshOrdersButton.disabled = false;
+      refreshOrdersButton.removeAttribute("aria-busy");
       orderList.setAttribute("aria-busy", "false");
       if (ordersReloadPending) { ordersReloadPending = false; loadRecentOrders(); }
     }
@@ -557,6 +573,9 @@ async function loadMoreOrders() {
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), ORDER_REQUEST_TIMEOUT);
   showMoreOrders.disabled = true;
+  showMoreOrders.setAttribute("aria-busy", "true");
+  orderList.setAttribute("aria-busy", "true");
+  showOrderSkeletons();
   setRefreshStatus("Loading more...");
   try {
     const bounds = getDateBounds();
@@ -592,6 +611,9 @@ async function loadMoreOrders() {
     if (requestId === requestSequence) {
       ordersLoading = false;
       showMoreOrders.disabled = false;
+      showMoreOrders.removeAttribute("aria-busy");
+      orderList.setAttribute("aria-busy", "false");
+      orderList.querySelectorAll(".order-loading-card").forEach((card) => card.remove());
     }
   }
 }
@@ -636,13 +658,17 @@ customDates.addEventListener("submit", (event) => {
   selectRange("custom");
   applyOrderFilters();
 });
-showMoreOrders.addEventListener("click", () => {
+showMoreOrders.addEventListener("click", async () => {
   const count = orderCards.size;
+  const startingFocus = document.activeElement;
   visibleLimit += ORDER_BATCH_SIZE;
-  if (serverHasMore) loadMoreOrders();
+  if (serverHasMore) await loadMoreOrders();
   else { renderOrders(displayedOrders); loadRecentOrders(); }
-  const card = orderList.children[count];
-  if (card) { card.tabIndex = -1; card.focus(); }
+  const card = orderList.querySelectorAll(".order-card")[count];
+  if (card && (document.activeElement === startingFocus || document.activeElement === document.body)) {
+    card.tabIndex = -1;
+    card.focus();
+  }
 });
 let refreshTimer = window.setInterval(() => {
   if (isPageVisible()) loadRecentOrders();
