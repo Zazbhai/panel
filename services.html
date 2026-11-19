@@ -396,6 +396,9 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
 .service-heading-actions a { color: var(--accent); font-size: .75rem; }
 .service-heading-actions button { min-height: 36px; padding: 7px 12px; }
 .service-heading-actions button .icon { width: 14px; height: 14px; }
+.service-heading-actions .full-text-all-control { min-height: 36px; padding: 5px 10px; border: 1px solid var(--control-line); border-radius: 6px; background: var(--surface); font-size: .75rem; }
+.service-heading-actions .full-text-all-control:hover { border-color: #929285; background: var(--soft); }
+.service-full-text-control { margin-right: auto; min-height: 34px; font-size: .75rem; }
 .service-directory-toolbar { display: flex; align-items: end; gap: 16px; margin: 18px 0 20px; padding-bottom: 18px; border-bottom: 1px solid var(--line); }
 .service-directory-toolbar .field { flex: 1 1 320px; max-width: 520px; }
 .service-directory-toolbar > .count { padding-bottom: 10px; color: var(--muted); font-size: .75rem; }
@@ -468,7 +471,7 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
       
     </div>
     <section class="panel configured-services-panel" aria-labelledby="serviceListHeading">
-      <div class="panel-heading"><div class="configured-heading"><h2 id="serviceListHeading">Configured services</h2><span id="configuredServiceCount" class="count"></span></div><div class="service-heading-actions"><a href="/service-messages">View messages</a><button id="enableAllServicesButton" class="secondary" type="button">Enable all</button><button id="importSmsFormatsButton" class="secondary" type="button">Import SMS formats</button><button id="addServiceButton" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Add service</button></div></div>
+      <div class="panel-heading"><div class="configured-heading"><h2 id="serviceListHeading">Configured services</h2><span id="configuredServiceCount" class="count"></span></div><div class="service-heading-actions"><a href="/service-messages">View messages</a><label class="enabled-control full-text-all-control"><input id="enableAllFullTextToggle" type="checkbox" role="switch" aria-label="Enable full text responses for all services"><span>Full text for all</span></label><button id="enableAllServicesButton" class="secondary" type="button">Enable all</button><button id="importSmsFormatsButton" class="secondary" type="button">Import SMS formats</button><button id="addServiceButton" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Add service</button></div></div>
       <p id="serviceActionStatus" class="status" role="status" aria-live="polite"></p>
       <div class="service-directory-toolbar"><label class="field" for="serviceSearch">Search services<input id="serviceSearch" type="search" placeholder="Name, template or sender" autocomplete="off"></label><span id="serviceResultCount" class="count" role="status" aria-live="polite"></span></div>
       <div id="serviceList" class="service-list"></div>

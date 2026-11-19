@@ -408,12 +408,13 @@ BAD_SERVICE Missing service or not configured on the Services page.</pre>
         <pre class="response" aria-live="polite"></pre>
       </form>
       <h3>Responses</h3>
-      <pre>STATUS_OK:&lt;code&gt;  SMS received.
+      <pre>STATUS_OK:&lt;code or full SMS text&gt;  SMS received.
 STATUS_WAIT_CODE  Pending delivery.
 
 Errors:
 NO_ACTIVATION  Invalid order ID.
 STATUS_CANCEL  Order timed out or cancelled.</pre>
+      <p>Services with <strong>Full text</strong> enabled on the Services page return the complete received SMS after <code>STATUS_OK:</code>; otherwise only the OTP code is returned.</p>
     </section>
 
     <section class="panel" aria-labelledby="setStatusHeading">

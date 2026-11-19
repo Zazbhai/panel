@@ -340,7 +340,8 @@ function normalizeConfiguredServices(services) {
       templates,
       minOtpLength: service.minOtpLength === undefined ? 4 : service.minOtpLength,
       maxOtpLength: service.maxOtpLength === undefined ? 8 : service.maxOtpLength,
-      senderFilter: service.senderFilter === undefined ? "" : service.senderFilter
+      senderFilter: service.senderFilter === undefined ? "" : service.senderFilter,
+      sendFullText: service.sendFullText === true
     };
   });
   return normalizeServiceNames(normalized);
@@ -359,8 +360,9 @@ function validateServiceList(services) {
       || !Number.isInteger(service.minOtpLength) || service.minOtpLength < 1 || service.minOtpLength > 32
       || !Number.isInteger(service.maxOtpLength) || service.maxOtpLength < service.minOtpLength || service.maxOtpLength > 32
       || typeof service.senderFilter !== "string" || service.senderFilter.length > 100
+      || typeof service.sendFullText !== "boolean"
       || typeof service.enabled !== "boolean") {
-      return "Each service needs a name, enabled state, templates, OTP length range, and valid sender filter.";
+      return "Each service needs a name, enabled state, templates, OTP length range, sender filter, and full text setting.";
     }
     if (service.templates.some((template) => !template
       || typeof template !== "object" || Array.isArray(template)
@@ -1774,6 +1776,31 @@ function appendOrderMessage(order, match) {
   return true;
 }
 
+function getStoredOrderMessageText(order) {
+  const history = Array.isArray(order?.messageHistory) ? order.messageHistory : [];
+  const latestOtp = Array.isArray(order?.receivedOtps) ? order.receivedOtps.at(-1) : null;
+  const entry = latestOtp?.messageKey
+    ? history.find((item) => item && item.key === latestOtp.messageKey)
+    : history.find((item) => getMessageText(item?.message || {}).includes(order?.receivedOtp || ""));
+  return getMessageText(entry?.message || {});
+}
+
+async function getStatusOkText(order) {
+  let sendFullText = false;
+  try {
+    const configured = await readConfiguredServices();
+    const service = configured.services.find((item) => item
+      && typeof item.name === "string"
+      && normalizeServiceName(item.name).toLowerCase()
+        === normalizeServiceName(order.service).toLowerCase());
+    sendFullText = service?.sendFullText === true;
+  } catch {
+    // Keep the legacy OTP response if service settings cannot be read.
+  }
+  const value = sendFullText ? getStoredOrderMessageText(order) : "";
+  return `STATUS_OK:${value || order.receivedOtp}`;
+}
+
 async function handleLocalOtpRequest(requestUrl, response) {
   const actions = requestUrl.searchParams.getAll("action");
   if (actions.length !== 1) {
@@ -1923,7 +1950,7 @@ async function handleLocalOtpRequest(requestUrl, response) {
   }
   if (reservation.expiresAt <= Date.now()) {
     sendText(response, 200, reservation.receivedOtp !== null
-      ? `STATUS_OK:${reservation.receivedOtp}`
+      ? await getStatusOkText(reservation)
       : "STATUS_CANCEL");
     return;
   }
@@ -1942,7 +1969,7 @@ async function handleLocalOtpRequest(requestUrl, response) {
         console.error("Could not read messages for a number order:", error.message);
       }
       if (reservation.receivedOtp !== null) {
-        sendText(response, 200, `STATUS_OK:${reservation.receivedOtp}`);
+        sendText(response, 200, await getStatusOkText(reservation));
         return;
       }
       const headers = error.retryAfterMs > 0
@@ -1975,7 +2002,7 @@ async function handleLocalOtpRequest(requestUrl, response) {
     if (!orderService) {
       sendText(response, 200, reservation.receivedOtp === null
         ? "STATUS_WAIT_CODE"
-        : `STATUS_OK:${reservation.receivedOtp}`);
+        : await getStatusOkText(reservation));
       return;
     }
     const matches = findMatchingMessages(
@@ -1985,7 +2012,7 @@ async function handleLocalOtpRequest(requestUrl, response) {
       Math.min(Date.now(), reservation.expiresAt)
     );
     if (!matches.length && reservation.receivedOtp !== null) {
-      sendText(response, 200, `STATUS_OK:${reservation.receivedOtp}`);
+      sendText(response, 200, await getStatusOkText(reservation));
       return;
     }
     if (!matches.length) {
@@ -2004,7 +2031,7 @@ async function handleLocalOtpRequest(requestUrl, response) {
       return;
     }
     if (updatedOrder && updatedOrder.receivedOtp !== null) {
-      sendText(response, 200, `STATUS_OK:${updatedOrder.receivedOtp}`);
+      sendText(response, 200, await getStatusOkText(updatedOrder));
     } else {
       sendText(response, 200, "STATUS_CANCEL");
     }

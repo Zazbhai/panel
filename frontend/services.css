@@ -63,6 +63,9 @@
 .service-heading-actions a { color: var(--accent); font-size: .75rem; }
 .service-heading-actions button { min-height: 36px; padding: 7px 12px; }
 .service-heading-actions button .icon { width: 14px; height: 14px; }
+.service-heading-actions .full-text-all-control { min-height: 36px; padding: 5px 10px; border: 1px solid var(--control-line); border-radius: 6px; background: var(--surface); font-size: .75rem; }
+.service-heading-actions .full-text-all-control:hover { border-color: #929285; background: var(--soft); }
+.service-full-text-control { margin-right: auto; min-height: 34px; font-size: .75rem; }
 .service-directory-toolbar { display: flex; align-items: end; gap: 16px; margin: 18px 0 20px; padding-bottom: 18px; border-bottom: 1px solid var(--line); }
 .service-directory-toolbar .field { flex: 1 1 320px; max-width: 520px; }
 .service-directory-toolbar > .count { padding-bottom: 10px; color: var(--muted); font-size: .75rem; }

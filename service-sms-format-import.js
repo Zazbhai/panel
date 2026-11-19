@@ -102,6 +102,9 @@ function normalizeServiceNames(services) {
       && existing.senderFilter.trim().toLocaleLowerCase() !== normalized.senderFilter.trim().toLocaleLowerCase()) {
       existing.senderFilter = "";
     }
+    if (typeof existing.sendFullText === "boolean" && typeof normalized.sendFullText === "boolean") {
+      existing.sendFullText = existing.sendFullText || normalized.sendFullText;
+    }
 
     const templatesByKey = new Map(existing.templates
       .filter((template) => template && typeof template.text === "string")
@@ -187,7 +190,8 @@ function mergeSmsFormats(services, source) {
         templates: [],
         minOtpLength: 4,
         maxOtpLength: 8,
-        senderFilter: ""
+        senderFilter: "",
+        sendFullText: false
       });
       addedServices += 1;
     }

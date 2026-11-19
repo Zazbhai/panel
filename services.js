@@ -16,6 +16,7 @@ const serviceResultCount = document.getElementById("serviceResultCount");
 const showMoreServices = document.getElementById("showMoreServices");
 const addServiceButton = document.getElementById("addServiceButton");
 const enableAllServicesButton = document.getElementById("enableAllServicesButton");
+const enableAllFullTextToggle = document.getElementById("enableAllFullTextToggle");
 const importSmsFormatsButton = document.getElementById("importSmsFormatsButton");
 const serviceActionStatus = document.getElementById("serviceActionStatus");
 const serviceEditorDialog = document.getElementById("serviceEditorDialog");
@@ -49,7 +50,8 @@ function normalizeService(service) {
         : [],
     minOtpLength: Number.isInteger(service.minOtpLength) ? service.minOtpLength : 4,
     maxOtpLength: Number.isInteger(service.maxOtpLength) ? service.maxOtpLength : 8,
-    senderFilter: typeof service.senderFilter === "string" ? service.senderFilter : ""
+    senderFilter: typeof service.senderFilter === "string" ? service.senderFilter : "",
+    sendFullText: service.sendFullText === true
   };
   serviceSearchIndex.set(normalized, [normalized.name, normalized.senderFilter,
     ...normalized.templates.map((template) => template.text)]
@@ -86,6 +88,12 @@ let servicesSyncing = false;
 function updateEnableAllServicesButton() {
   enableAllServicesButton.disabled = !servicesReady || servicesSyncing || servicesSaving
     || servicesImporting || services.every((service) => service.enabled);
+  if (!enableAllFullTextToggle) return;
+  const allEnabled = services.length > 0 && services.every((service) => service.sendFullText === true);
+  const someEnabled = services.some((service) => service.sendFullText === true);
+  enableAllFullTextToggle.checked = allEnabled;
+  enableAllFullTextToggle.indeterminate = !allEnabled && someEnabled;
+  enableAllFullTextToggle.disabled = !servicesReady || servicesSyncing || servicesSaving || servicesImporting || services.length === 0;
 }
 
 async function writeServicesToServer(nextServices) {
@@ -323,6 +331,32 @@ function makeServiceCard(service) {
   enabledLabel.append(checkbox, document.createTextNode(service.enabled ? "Enabled" : "Disabled"));
   heading.append(name, enabledLabel);
 
+  const fullTextLabel = document.createElement("label");
+  fullTextLabel.className = "enabled-control service-full-text-control";
+  const fullTextCheckbox = document.createElement("input");
+  fullTextCheckbox.type = "checkbox";
+  fullTextCheckbox.setAttribute("role", "switch");
+  fullTextCheckbox.dataset.serviceAction = "full-text";
+  fullTextCheckbox.checked = service.sendFullText === true;
+  fullTextCheckbox.setAttribute("aria-label", `${service.sendFullText ? "Disable" : "Enable"} full text for ${service.name}`);
+  fullTextCheckbox.addEventListener("change", async () => {
+    const sendFullText = fullTextCheckbox.checked;
+    fullTextCheckbox.disabled = true;
+    const nextServices = services.map((item) => item.id === service.id
+      ? { ...item, sendFullText }
+      : item);
+    try {
+      await saveServices(nextServices);
+      setStatus(`${service.name} will ${sendFullText ? "return the full SMS text" : "return only the OTP"}.`, false);
+    } catch (error) {
+      fullTextCheckbox.checked = service.sendFullText === true;
+      setStatus(error.message, true);
+    } finally {
+      fullTextCheckbox.disabled = false;
+    }
+  });
+  fullTextLabel.append(fullTextCheckbox, document.createTextNode("Full text"));
+
   const templates = document.createElement("div");
   templates.className = "service-template-list";
   templates.hidden = true;
@@ -360,7 +394,11 @@ function makeServiceCard(service) {
   summary.append(templateCountLabel, preview);
   const settings = document.createElement("p");
   settings.className = "service-settings-summary";
-  settings.textContent = `OTP length: ${service.minOtpLength}–${service.maxOtpLength} digits${service.senderFilter ? ` · Sender contains: ${service.senderFilter}` : ""}`;
+  settings.textContent = [
+    `OTP length: ${service.minOtpLength}-${service.maxOtpLength} digits`,
+    service.senderFilter ? `Sender contains: ${service.senderFilter}` : "",
+    `Full text: ${service.sendFullText ? "On" : "Off"}`
+  ].filter(Boolean).join(" | ");
 
   const actions = document.createElement("div");
   actions.className = "service-actions";
@@ -390,7 +428,7 @@ function makeServiceCard(service) {
       setStatus(error.message, true);
     }
   });
-  actions.append(edit, remove);
+  actions.append(fullTextLabel, edit, remove);
   card.append(heading, summary, settings, actions);
   return card;
 }
@@ -611,7 +649,8 @@ serviceForm.addEventListener("submit", async (event) => {
         templates,
         minOtpLength,
         maxOtpLength,
-        senderFilter: senderFilterInput.value.trim()
+        senderFilter: senderFilterInput.value.trim(),
+        sendFullText: service.sendFullText === true
       }
       : service)
     : [...services, {
@@ -621,6 +660,7 @@ serviceForm.addEventListener("submit", async (event) => {
       minOtpLength,
       maxOtpLength,
       senderFilter: senderFilterInput.value.trim(),
+      sendFullText: false,
       enabled: false
     }];
 
@@ -634,6 +674,26 @@ serviceForm.addEventListener("submit", async (event) => {
 });
 
 addServiceButton.addEventListener("click", () => openEditor());
+enableAllFullTextToggle?.addEventListener("change", async () => {
+  if (!servicesReady || servicesSyncing || servicesSaving || servicesImporting || services.length === 0) {
+    updateEnableAllServicesButton();
+    return;
+  }
+  const sendFullText = enableAllFullTextToggle.checked;
+  enableAllFullTextToggle.disabled = true;
+  try {
+    await saveServices(services.map((service) => ({ ...service, sendFullText })));
+    serviceActionStatus.textContent = sendFullText
+      ? "Full text responses enabled for all services."
+      : "Full text responses disabled for all services.";
+    serviceActionStatus.classList.remove("error");
+  } catch (error) {
+    serviceActionStatus.textContent = `Could not update full text responses: ${error.message}`;
+    serviceActionStatus.classList.add("error");
+  } finally {
+    updateEnableAllServicesButton();
+  }
+});
 enableAllServicesButton.addEventListener("click", async () => {
   if (!servicesReady || servicesSyncing || servicesSaving || servicesImporting) {
     serviceActionStatus.textContent = "Services are still syncing. Try again shortly.";
