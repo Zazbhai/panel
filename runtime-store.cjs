@@ -6,6 +6,7 @@ const { Worker } = require("node:worker_threads");
 class AsyncRuntimeStore {
   constructor(filename) {
     this.pending = new Map();
+    this.inflightReads = new Map();
     this.sequence = 0;
     this.failure = null;
     this.worker = new Worker(path.join(__dirname, "runtime-store-worker.cjs"), { workerData: { filename } });
@@ -28,11 +29,24 @@ class AsyncRuntimeStore {
     this.worker.unref();
   }
   call(method, ...args) {
-    return this.send(method, args);
+    // Status polling can produce many identical reads for the same order.
+    // Share one worker request among concurrent callers instead of filling the
+    // IPC queue with duplicate SQLite work.
+    const key = method === "getOrder" && typeof args[0] === "string"
+      ? `${method}:${args[0]}`
+      : null;
+    if (key && this.inflightReads.has(key)) return this.inflightReads.get(key);
+    const request = this.send(method, args);
+    if (!key) return request;
+    const shared = request.finally(() => {
+      if (this.inflightReads.get(key) === shared) this.inflightReads.delete(key);
+    });
+    this.inflightReads.set(key, shared);
+    return shared;
   }
   send(method, args) {
     if (this.failure) return Promise.reject(this.failure);
-    if (this.pending.size >= 256) return Promise.reject(Object.assign(new Error("Runtime storage is busy."), { status: 503 }));
+    if (this.pending.size >= 2048) return Promise.reject(Object.assign(new Error("Runtime storage is busy."), { status: 503 }));
     return new Promise((resolve, reject) => {
       const id = ++this.sequence;
       this.pending.set(id, { resolve, reject });

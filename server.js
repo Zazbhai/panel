@@ -64,6 +64,7 @@ const maximumSharedDatabaseJsonEntryBytes = 1024 * 1024;
 const maximumSharedDatabaseJsonCacheBytes = 8 * 1024 * 1024;
 const sharedDatabaseJsonCacheLimit = 256;
 const maximumConcurrentDatabaseReads = readPositiveIntegerEnv("MAX_CONCURRENT_DATABASE_READS", 6, 1, 64);
+const maximumConcurrentProviderReads = readPositiveIntegerEnv("MAX_CONCURRENT_PROVIDER_READS", 16, 1, 64);
 const slowDatabaseCooldownMs = 30000;
 const recentOrdersCacheTtlMs = 3000;
 const servicesCacheTtlMs = 5000;
@@ -98,6 +99,8 @@ const sharedDatabaseJsonErrors = new Map();
 let sharedDatabaseJsonCacheBytes = 0;
 let activeDatabaseReads = 0;
 const queuedDatabaseReads = [];
+let activeProviderReads = 0;
+const queuedProviderReads = [];
 let rotationSettingsCache = null;
 let rotationStateCache = null;
 let rotationOperation = Promise.resolve();
@@ -966,7 +969,7 @@ function startNumberPoolSweeper() {
 async function withDatabaseReadSlot(operation, signal = null) {
   throwIfAborted(signal);
   if (activeDatabaseReads >= maximumConcurrentDatabaseReads || queuedDatabaseReads.length > 0) {
-    if (queuedDatabaseReads.length >= 256) {
+    if (queuedDatabaseReads.length >= 2048) {
       const error = new Error("Firebase request capacity is full.");
       error.status = 503;
       error.retryAfterMs = 1000;
@@ -998,6 +1001,46 @@ async function withDatabaseReadSlot(operation, signal = null) {
     const next = queuedDatabaseReads.shift();
     if (next) next();
     else activeDatabaseReads = Math.max(0, activeDatabaseReads - 1);
+  }
+}
+
+// Provider traffic has its own small pool so a burst of Firebase message
+// polling cannot consume every slot and return local 503s to API clients.
+async function withProviderReadSlot(operation, signal = null) {
+  throwIfAborted(signal);
+  if (activeProviderReads >= maximumConcurrentProviderReads || queuedProviderReads.length > 0) {
+    if (queuedProviderReads.length >= 2048) {
+      const error = new Error("Provider request capacity is full.");
+      error.status = 503;
+      error.retryAfterMs = 1000;
+      throw error;
+    }
+    await new Promise((resolve, reject) => {
+      const resume = () => {
+        signal?.removeEventListener("abort", abort);
+        resolve();
+      };
+      const abort = () => {
+        const index = queuedProviderReads.indexOf(resume);
+        if (index < 0) return;
+        queuedProviderReads.splice(index, 1);
+        signal.removeEventListener("abort", abort);
+        reject(makeAbortError("The provider request timed out while waiting for capacity."));
+      };
+      queuedProviderReads.push(resume);
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) abort();
+    });
+  } else {
+    activeProviderReads += 1;
+  }
+  try {
+    throwIfAborted(signal);
+    return await operation();
+  } finally {
+    const next = queuedProviderReads.shift();
+    if (next) next();
+    else activeProviderReads = Math.max(0, activeProviderReads - 1);
   }
 }
 
@@ -2476,7 +2519,7 @@ async function proxyOtpProvider(request, response) {
   const endpoint = new URL("https://otpsell.com/stubs/handler_api.php");
   endpoint.search = parameters.toString();
   try {
-    const result = await withDatabaseReadSlot(async () => {
+    const result = await withProviderReadSlot(async () => {
       const upstream = await fetch(endpoint, {
         redirect: "error",
         signal: AbortSignal.timeout(15000)

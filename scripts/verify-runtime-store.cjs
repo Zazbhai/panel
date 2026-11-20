@@ -69,6 +69,14 @@ const state = { initialized: true, databaseUrls: [database], orders: [], service
     const filtered = await a.call("getRecentOrders", { search: "9000000002" });
     assert.equal(filtered.stats.total, 1);
     assert.equal(filtered.orders[0].number, "9000000002");
+    const originalSend = a.send.bind(a);
+    let orderReads = 0;
+    a.send = (method, args) => {
+      if (method === "getOrder") orderReads += 1;
+      return originalSend(method, args);
+    };
+    await Promise.all(Array.from({ length: 500 }, () => a.call("getOrder", "missing-order")));
+    assert.equal(orderReads, 1, "Concurrent reads for one order should share one SQLite worker request");
     const cycleStore = new RuntimeStore(":memory:");
     cycleStore.initialize(state);
     const only = { ...candidate, deviceId: "cycle-device", number: "9000000003" };
