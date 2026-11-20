@@ -273,52 +273,62 @@ class RuntimeStore {
       + "LEFT JOIN service_usage u ON u.service=? AND u.number=n.number "
       + "WHERE (n.online=1 OR n.checked_at<=?) AND n.verified_at>? AND n.database_url IN (SELECT value FROM json_each(?)) "
       + "AND NOT EXISTS(SELECT 1 FROM service_locks l WHERE l.service=? AND l.number=n.number) "
-      + "AND NOT EXISTS(SELECT 1 FROM service_usage used JOIN service_cycles cycle ON cycle.service=used.service WHERE used.service=? AND used.number=n.number AND used.cycle=cycle.cycle) "
+      + "AND (u.cycle IS NULL OR u.cycle<>COALESCE(c.cycle,0)) "
       + "AND NOT EXISTS(SELECT 1 FROM leases r WHERE r.number=n.number AND r.expires_at>?) "
       // Fresh numbers (no service_usage row) always precede numbers recycled
       // from an earlier cycle. Recycled no-OTP numbers are the final fallback.
       + "ORDER BY CASE WHEN u.cycle IS NULL THEN 0 ELSE 1 END,n.checked_at DESC LIMIT ?";
-    return this.sql(query).all(service, service, now - onlineTtl, now - mappingTtl, JSON.stringify(databases), service, service, now, limit)
+    return this.sql(query).all(service, service, now - onlineTtl, now - mappingTtl, JSON.stringify(databases), service, now, limit)
       .map((row) => ({ database: row.database_url, deviceId: row.device_id, number: row.number,
         verifiedAt: row.verified_at, checkedAt: row.checked_at,
         // A number used in an earlier cycle is a fallback. It is deliberately
         // returned after unused numbers and must be rechecked online at claim.
         reused: row.used_cycle !== null && row.used_cycle !== row.current_cycle }));
   }
-  claim({ service, candidate, now = Date.now(), duration = 600000, deadline = Infinity, mappingTtl = 86400000, onlineTtl = 3000 }) {
+  claim(options) {
+    return this.transaction(() => this.claimWithinTransaction(options));
+  }
+  claimAny({ service, candidates = [], ...options }) {
     return this.transaction(() => {
-      if (Date.now() >= deadline) {
-        const error = new Error("Number allocation deadline exceeded.");
-        error.code = "ALLOCATION_TIMEOUT"; throw error;
+      for (const candidate of candidates) {
+        const order = this.claimWithinTransaction({ ...options, service, candidate });
+        if (order) return order;
       }
-      const meta = this.metadata();
-      if (!meta?.databaseUrls.includes(candidate.database)) return null;
-      if (this.sql("SELECT 1 FROM service_locks WHERE service=? AND number=?").get(service, candidate.number)) return null;
-      const currentCycle = this.sql("SELECT cycle FROM service_cycles WHERE service=?").get(service)?.cycle || 0;
-      const used = this.sql("SELECT cycle FROM service_usage WHERE service=? AND number=?").get(service, candidate.number);
-      if (used?.cycle === currentCycle) return null;
-      if (this.sql("SELECT 1 FROM leases WHERE number=? AND expires_at>?").get(candidate.number, now)) return null;
-      const stored = this.sql("SELECT * FROM numbers WHERE database_url=? AND device_id=?").get(candidate.database, candidate.deviceId);
-      if (!stored || stored.number !== candidate.number || !stored.online
-        || stored.verified_at <= now - mappingTtl || stored.checked_at <= now - onlineTtl) return null;
-      const cycleState = this.sql("SELECT * FROM service_cycles WHERE service=?").get(service);
-      const cycle = cycleState?.cycle || 0;
-      const id = randomBytes(12).toString("hex");
-      this.sql("DELETE FROM leases WHERE number=? AND expires_at<=?").run(candidate.number, now);
-      this.sql("INSERT INTO orders VALUES(?,?,?,?,?,?,?,'active',NULL,NULL,1)")
-        .run(id, service, candidate.number, candidate.database, candidate.deviceId, now, now + duration);
-      this.sql("INSERT INTO leases VALUES(?,?,?)").run(candidate.number, id, now + duration);
-      this.sql("INSERT INTO service_cycles VALUES(?,?,?) ON CONFLICT(service) DO UPDATE SET cycle=excluded.cycle,cursor_url=excluded.cursor_url")
-        .run(service, cycle, candidate.database);
-      this.sql("INSERT INTO service_usage VALUES(?,?,?) ON CONFLICT(service,number) DO UPDATE SET cycle=excluded.cycle")
-        .run(service, candidate.number, cycle);
-      const order = this.getOrder(id);
-      if (Date.now() >= deadline) {
-        const error = new Error("Number allocation deadline exceeded.");
-        error.code = "ALLOCATION_TIMEOUT"; throw error;
-      }
-      return order;
+      return null;
     });
+  }
+  claimWithinTransaction({ service, candidate, now = Date.now(), duration = 600000, deadline = Infinity, mappingTtl = 86400000, onlineTtl = 3000 }) {
+    if (Date.now() >= deadline) {
+      const error = new Error("Number allocation deadline exceeded.");
+      error.code = "ALLOCATION_TIMEOUT"; throw error;
+    }
+    const meta = this.metadata();
+    if (!meta?.databaseUrls.includes(candidate.database)) return null;
+    if (this.sql("SELECT 1 FROM service_locks WHERE service=? AND number=?").get(service, candidate.number)) return null;
+    const currentCycle = this.sql("SELECT cycle FROM service_cycles WHERE service=?").get(service)?.cycle || 0;
+    const used = this.sql("SELECT cycle FROM service_usage WHERE service=? AND number=?").get(service, candidate.number);
+    if (used?.cycle === currentCycle) return null;
+    if (this.sql("SELECT 1 FROM leases WHERE number=? AND expires_at>?").get(candidate.number, now)) return null;
+    const stored = this.sql("SELECT * FROM numbers WHERE database_url=? AND device_id=?").get(candidate.database, candidate.deviceId);
+    if (!stored || stored.number !== candidate.number || !stored.online
+      || stored.verified_at <= now - mappingTtl || stored.checked_at <= now - onlineTtl) return null;
+    const cycleState = this.sql("SELECT * FROM service_cycles WHERE service=?").get(service);
+    const cycle = cycleState?.cycle || 0;
+    const id = randomBytes(12).toString("hex");
+    this.sql("DELETE FROM leases WHERE number=? AND expires_at<=?").run(candidate.number, now);
+    this.sql("INSERT INTO orders VALUES(?,?,?,?,?,?,?,'active',NULL,NULL,1)")
+      .run(id, service, candidate.number, candidate.database, candidate.deviceId, now, now + duration);
+    this.sql("INSERT INTO leases VALUES(?,?,?)").run(candidate.number, id, now + duration);
+    this.sql("INSERT INTO service_cycles VALUES(?,?,?) ON CONFLICT(service) DO UPDATE SET cycle=excluded.cycle,cursor_url=excluded.cursor_url")
+      .run(service, cycle, candidate.database);
+    this.sql("INSERT INTO service_usage VALUES(?,?,?) ON CONFLICT(service,number) DO UPDATE SET cycle=excluded.cycle")
+      .run(service, candidate.number, cycle);
+    const order = this.getOrder(id);
+    if (Date.now() >= deadline) {
+      const error = new Error("Number allocation deadline exceeded.");
+      error.code = "ALLOCATION_TIMEOUT"; throw error;
+    }
+    return order;
   }
   receive({ id, matches, now = Date.now() }) {
     return this.transaction(() => {

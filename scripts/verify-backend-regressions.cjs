@@ -187,13 +187,20 @@ function completedOrder() {
     order.expiresAt = Date.now() + 600000;
     f.setRotation({ databaseUrls: ["https://fixture.firebaseio.com"], serviceUsage: {}, orders: [order] });
     f.context.fetchSharedDatabaseJson = async () => {
-      throw Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
+      throw new TypeError("fetch failed");
     };
+    const healthSignals = [];
+    f.context.recordSlowDatabase = (...args) => healthSignals.push(["slow", ...args]);
+    f.context.requestNumberPoolRefresh = (...args) => healthSignals.push(["refresh", ...args]);
     const logs = [];
     f.context.console = { error: (...args) => logs.push(args) };
     const result = await f.request("/stubs/handler_api.php?action=getStatus&id=" + order.orderId + "&api_key=" + f.apiKey);
-    assert.equal(result.status, 503, "An aborted Firebase read should remain a temporary API failure");
-    assert.equal(logs.length, 0, "Expected aborted reads must not flood the server error log");
+    assert.equal(result.status, 503, "A network fetch failure should be retryable");
+    assert.equal(result.headers["Retry-After"], "1");
+    assert.equal(logs.length, 1, "A fetch failure should be logged once to trigger operator visibility");
+    assert.deepEqual(healthSignals.map(([type]) => type), ["slow", "refresh"],
+      "A failed order message fetch should record the database issue and trigger one event-driven pool refresh");
+    assert.equal(healthSignals[1][1], order.service);
   }
   {
     const f = serverFixture();
@@ -214,6 +221,38 @@ function completedOrder() {
       "Concurrent identical Firebase reads must share one upstream request");
     await f.context.fetchSharedDatabaseJson(sharedEndpoint, 1000, 1000);
     assert.equal(sharedReads, 1, "Short-lived Firebase read cache should prevent repeat requests");
+  }
+  {
+    const f = serverFixture();
+    const endpoint = "https://fixture.firebaseio.com/messages/shared-device.json";
+    let readCount = 0;
+    let backgroundAborted = false;
+    let releaseLiveRead;
+    f.fetch = async (_url, { signal }) => {
+      readCount++;
+      if (readCount === 1) return new Promise((_resolve, reject) => {
+        const abort = () => {
+          backgroundAborted = true;
+          reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" }));
+        };
+        if (signal.aborted) abort();
+        else signal.addEventListener("abort", abort, { once: true });
+      });
+      return new Promise((resolve) => {
+        releaseLiveRead = () => resolve({ ok: true, status: 200, json: async () => ({ live: true }) });
+      });
+    };
+    const controller = new AbortController();
+    const background = f.context.fetchSharedDatabaseJson(endpoint, 1000, 1000, controller.signal);
+    await new Promise(setImmediate);
+    controller.abort();
+    await assert.rejects(background, { name: "AbortError" });
+    assert(backgroundAborted);
+    const apiRead = f.context.fetchSharedDatabaseJson(endpoint, 1000, 1000);
+    await new Promise(setImmediate);
+    assert.equal(readCount, 2, "An API caller must start a new read instead of joining an aborted background read");
+    releaseLiveRead();
+    assert.deepEqual(await apiRead, { live: true });
   }
   {
     const f = serverFixture();

@@ -40,11 +40,32 @@ function configureService(f) {
     const warmed = [];
     f.context.refillNumberPool = async (service) => { warmed.push(service); };
     await f.context.warmNumberPools();
-    await f.context.warmNumberPools();
-    await f.context.warmNumberPools();
     assert.equal(new Set(warmed).size, names.length,
-      "Round-robin background warming must reach services beyond the first configured batch");
+      "One-time startup warming should cover every enabled service without recurring polling");
     assert(names.every((name) => warmed.includes(name)));
+    assert.equal(warmed.length, names.length);
+  }
+  {
+    const f = serverFixture();
+    let timerIntervals = 0;
+    let warmups = 0;
+    f.context.setInterval = () => { timerIntervals++; return { unref() {} }; };
+    f.context.readConfiguredServices = async () => ({ services: [] });
+    f.context.readRotationMetadata = async () => ({ databaseUrls: [database] });
+    f.context.warmNumberPools = async () => { warmups++; };
+    f.context.startNumberPoolWarmup();
+    await turn();
+    await turn();
+    assert.equal(warmups, 1, "Startup warming runs once rather than continuously polling databases");
+    assert.equal(timerIntervals, 0, "Number inventory must not use a periodic scan timer");
+  }
+  {
+    const f = serverFixture();
+    let refills = 0;
+    f.context.fillNumberPool = async () => { refills++; return 1; };
+    await f.context.refillNumberPool("event-service");
+    await f.context.refillNumberPool("event-service");
+    assert.equal(refills, 1, "A refill below the ready-stock threshold should cool down instead of rescanning repeatedly");
   }
   {
     const f = serverFixture();
@@ -71,6 +92,32 @@ function configureService(f) {
       await Promise.all([first, last]);
     }
     assert.equal(lastRan, true, "The queue must progress after the active allocation finishes");
+  }
+  {
+    const f = serverFixture();
+    let release;
+    const hold = new Promise((resolve) => { release = resolve; });
+    const first = f.context.withServiceAllocationLock("fixture", () => hold);
+    await turn();
+    const controller = new AbortController();
+    let cancelledRan = false;
+    const cancelled = f.context.withServiceAllocationLock("fixture", async () => {
+      cancelledRan = true;
+    }, controller.signal);
+    const rejection = assert.rejects(cancelled, { code: "ALLOCATION_TIMEOUT" });
+    controller.abort();
+    await rejection;
+    let lastRan = false;
+    const last = f.context.withServiceAllocationLock("fixture", async () => { lastRan = true; });
+    try {
+      await turn();
+      assert.equal(lastRan, false, "Cancelling a cold-scan waiter must not unlock the active scan");
+      assert.equal(cancelledRan, false, "A cancelled cold-scan waiter must never run");
+    } finally {
+      release();
+      await Promise.all([first, last]);
+    }
+    assert.equal(lastRan, true, "The cold-scan queue must progress after the active scan finishes");
   }
   {
     const f = serverFixture();
@@ -143,6 +190,23 @@ function configureService(f) {
     assert.equal(new Set(orders.map((order) => order.number)).size, 4,
       "Parallel services must not issue duplicate number leases");
     assert.equal(f.requests.length, 4, "Parallel services must share identical upstream checks");
+  }
+  {
+    const f = await inventoryFixture(128, 0);
+    const devices = Object.fromEntries(Array.from({ length: 128 }, (_, index) => [
+      `device-${index}`, { status: true }
+    ]));
+    f.fetch = async (url) => {
+      assert.equal(url, database + "/clients.json");
+      return { ok: true, status: 200, json: async () => devices };
+    };
+    await f.context.readActiveNumbers(database, () => true, null, 128);
+    const orders = await Promise.all(Array.from({ length: 128 }, () =>
+      f.context.findAvailableActiveNumber("fixture", null, null, Date.now() + 4500, { cachedOnly: true })));
+    assert(orders.every(Boolean), "Concurrent same-service calls must move past candidates another call just claimed");
+    assert.equal(new Set(orders.map((order) => order.number)).size, 128,
+      "Atomic claims should issue a unique number to each parallel request");
+    assert.equal(f.requests.length, 1, "Concurrent warm allocations should not scan Firebase");
   }
   {
     const f = await inventoryFixture(128, 0);

@@ -42,6 +42,3 @@ async function loadStock() {
 
 stockButton.addEventListener("click", loadStock);
 void loadStock();
-setInterval(() => {
-  if (document.visibilityState === "visible") void loadStock();
-}, 15000);
