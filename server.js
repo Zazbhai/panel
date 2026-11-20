@@ -72,11 +72,9 @@ const numberPoolSize = readPositiveIntegerEnv("NUMBER_POOL_SIZE", 32, 1, 500);
 const numberPoolRefillThreshold = Math.max(1, Math.floor(numberPoolSize / 4));
 const numberPoolWarmServices = readPositiveIntegerEnv("NUMBER_POOL_WARM_SERVICES", 4, 0, 32);
 const numberPoolSweepIntervalMs = readPositiveIntegerEnv("NUMBER_POOL_SWEEP_INTERVAL_MS", 5000, 1000, 60000);
-// Keep enough time for a cold inventory lookup while still bounding a client request.
-// The previous 4 second budget was shorter than a first-pass scan across rotating
-// Firebase databases, which caused repeated ALLOCATION_TIMEOUT responses before the
-// background inventory could be persisted.
-const numberRequestTimeoutMs = readPositiveIntegerEnv("NUMBER_REQUEST_TIMEOUT_MS", 10000, 1000, 10000);
+// Discovery runs in the background. Leave headroom below five seconds for the
+// HTTP response rather than allowing a foreground lookup to occupy ten seconds.
+const numberRequestTimeoutMs = readPositiveIntegerEnv("NUMBER_REQUEST_TIMEOUT_MS", 4500, 1000, 4500);
 const failedLoginAttempts = new Map();
 const activeNumberCache = new Map();
 const numberPools = new Map();
@@ -85,6 +83,10 @@ const numberPoolFailures = new Map();
 const requestedNumberPoolServices = new Set();
 let numberPoolSweepRunning = false;
 const slowDatabases = new Map();
+// A compact freshness marker for clients.json. Large clients.json payloads are
+// intentionally excluded from the shared object cache, but their online state
+// still remains valid for the short allocation window after a pool scan.
+const activeClientsSnapshotFreshUntil = new Map();
 const serviceAllocationOperations = new Map();
 let recentOrdersCache = null;
 let configuredServicesCache = null;
@@ -476,6 +478,7 @@ async function validateAndPingRotatingDatabases(values) {
   const databaseUrls = [];
   const seen = new Set();
   const removed = [];
+  const deferred = [];
   for (let index = 0; index < values.length; index += 1) {
     const value = values[index];
     const label = typeof value === "string" ? value.trim() : "";
@@ -529,10 +532,16 @@ async function validateAndPingRotatingDatabases(values) {
     if (check.working) {
       workingUrls.push(check.url);
     } else {
-      removed.push({ url: check.url, reason: check.reason });
+      // A database can be temporarily unavailable and recover later. Keep it
+      // in rotation, but place it after currently working databases.
+      deferred.push({ url: check.url, reason: check.reason });
     }
   }
-  return { databaseUrls: workingUrls, removed };
+  return {
+    databaseUrls: [...workingUrls, ...deferred.map((item) => item.url)],
+    removed,
+    deferred
+  };
 }
 
 async function pingDatabaseUrl(url) {
@@ -954,7 +963,8 @@ function startNumberPoolSweeper() {
   timer.unref();
 }
 
-async function withDatabaseReadSlot(operation) {
+async function withDatabaseReadSlot(operation, signal = null) {
+  throwIfAborted(signal);
   if (activeDatabaseReads >= maximumConcurrentDatabaseReads || queuedDatabaseReads.length > 0) {
     if (queuedDatabaseReads.length >= 256) {
       const error = new Error("Firebase request capacity is full.");
@@ -962,14 +972,32 @@ async function withDatabaseReadSlot(operation) {
       error.retryAfterMs = 1000;
       throw error;
     }
-    await new Promise((resolve) => queuedDatabaseReads.push(resolve));
+    await new Promise((resolve, reject) => {
+      const resume = () => {
+        signal?.removeEventListener("abort", abort);
+        resolve();
+      };
+      const abort = () => {
+        const index = queuedDatabaseReads.indexOf(resume);
+        if (index < 0) return;
+        queuedDatabaseReads.splice(index, 1);
+        signal.removeEventListener("abort", abort);
+        reject(makeAbortError());
+      };
+      queuedDatabaseReads.push(resume);
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) abort();
+    });
+  } else {
+    activeDatabaseReads += 1;
   }
-  activeDatabaseReads += 1;
   try {
+    throwIfAborted(signal);
     return await operation();
   } finally {
-    activeDatabaseReads = Math.max(0, activeDatabaseReads - 1);
-    queuedDatabaseReads.shift()?.();
+    const next = queuedDatabaseReads.shift();
+    if (next) next();
+    else activeDatabaseReads = Math.max(0, activeDatabaseReads - 1);
   }
 }
 
@@ -1106,7 +1134,7 @@ async function fetchDatabaseJson(endpoint, timeoutMs = 15000, parentSignal = nul
       clearTimeout(timeout);
       if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
     }
-  });
+  }, parentSignal);
 }
 
 function deleteSharedDatabaseCacheEntry(key) {
@@ -1240,6 +1268,10 @@ async function readActiveNumbers(database, isAvailable = () => true, parentSigna
     activeClientsCacheTtlMs,
     parentSignal
   );
+  const cachedClients = sharedDatabaseJsonCache.get(`${database}/clients.json`);
+  const snapshotExpiresAt = cachedClients?.expiresAt > Date.now()
+    ? cachedClients.expiresAt
+    : Date.now() + activeClientsCacheTtlMs;
   throwIfAborted(parentSignal);
   if (parentSignal?.aborted) return { numbers: [], messageReadFailures: 0 };
   if (!clients || typeof clients !== "object" || Array.isArray(clients)) {
@@ -1251,8 +1283,6 @@ async function readActiveNumbers(database, isAvailable = () => true, parentSigna
       && typeof client === "object"
       && !Array.isArray(client)
       && client.status === true);
-  if (activeClients.length === 0) return { numbers: [], messageReadFailures: 0 };
-
   const numbers = new Map();
   let messageReadFailures = 0;
   let upstreamError = null;
@@ -1270,12 +1300,15 @@ async function readActiveNumbers(database, isAvailable = () => true, parentSigna
   const knownMappings = await store.call("mappings", database);
   if (knownMappings.length) {
     const checkedAt = Date.now();
-    const activeIds = new Set(Object.entries(clients)
-      .filter(([id, client]) => isValidDatabaseKey(id) && client?.status === true)
-      .map(([id]) => id));
+    const activeIds = new Set(activeClients.map(([id]) => id));
     await store.call("markOnlineBatch", knownMappings.map(({ deviceId }) => ({
       database, deviceId, online: activeIds.has(deviceId), now: checkedAt
     })));
+  }
+  activeClientsSnapshotFreshUntil.set(database, snapshotExpiresAt);
+  if (activeClients.length === 0) {
+    if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
+    return { numbers: [], messageReadFailures: 0 };
   }
   const durableMappings = new Map(knownMappings
     .map((item) => [item.deviceId, { number: item.number, verifiedAt: item.verifiedAt, expiresAt: item.verifiedAt + 86400000 }]));
@@ -1379,7 +1412,7 @@ async function readRotatingDeviceStats() {
     return [...state.databaseUrls];
   });
   const failedDatabases = [];
-  const missingDatabaseUrls = [];
+  const failedDatabaseUrls = [];
   let scannedDatabases = 0;
   let deviceCount = 0;
   let activeDeviceCount = 0;
@@ -1396,19 +1429,21 @@ async function readRotatingDeviceStats() {
       if (result.status === "rejected") {
         const status = result.reason && result.reason.status;
         const reason = status === 404
-          ? "clients.json was not found (HTTP 404); removed from rotation."
+          ? "clients.json was not found (HTTP 404); deferred to the end of rotation."
           : result.reason.message;
         failedDatabases.push({ url, reason });
-        if (status === 404) missingDatabaseUrls.push(url);
+        failedDatabaseUrls.push(url);
         continue;
       }
       const records = result.value.records;
       if (records === null) {
-        missingDatabaseUrls.push(url);
+        failedDatabaseUrls.push(url);
+        failedDatabases.push({ url, reason: "clients.json is missing; deferred to the end of rotation." });
         continue;
       }
       if (records !== null && (typeof records !== "object" || Array.isArray(records))) {
         failedDatabases.push({ url, reason: "Firebase returned an invalid clients list." });
+        failedDatabaseUrls.push(url);
         continue;
       }
       scannedDatabases += 1;
@@ -1424,24 +1459,29 @@ async function readRotatingDeviceStats() {
     }
   }
 
-  const removedDatabases = missingDatabaseUrls.length
+  const deferredDatabaseUrls = failedDatabaseUrls.length
     ? await withRotationLock(async () => {
       const state = await readRotationMetadata();
-      const missing = new Set(missingDatabaseUrls);
-      const removed = state.databaseUrls.filter((url) => missing.has(url));
-      if (!removed.length) return [];
-      state.databaseUrls = state.databaseUrls.filter((url) => !missing.has(url));
-      await saveRotationMetadata(state);
-      return removed;
+      const failed = new Set(failedDatabaseUrls);
+      const reordered = [
+        ...state.databaseUrls.filter((url) => !failed.has(url)),
+        ...state.databaseUrls.filter((url) => failed.has(url))
+      ];
+      if (reordered.join("\n") !== state.databaseUrls.join("\n")) {
+        state.databaseUrls = reordered;
+        await saveRotationMetadata(state);
+      }
+      return state.databaseUrls.filter((url) => failed.has(url));
     })
     : [];
 
   return {
     databaseCount: databaseUrls.length,
-    remainingDatabaseCount: databaseUrls.length - removedDatabases.length,
+    remainingDatabaseCount: databaseUrls.length,
     scannedDatabases,
     failedDatabases,
-    removedDatabases,
+    removedDatabases: [],
+    deferredDatabases: deferredDatabaseUrls,
     deviceCount,
     activeDeviceCount,
     offlineDeviceCount: deviceCount - activeDeviceCount
@@ -1612,19 +1652,25 @@ function findAvailableNumberCandidate(service, rotationState, inventories, allow
   return null;
 }
 
-async function withServiceAllocationLock(service, operation) {
+async function withServiceAllocationLock(service, operation, signal = null) {
   const previous = serviceAllocationOperations.get(service) || Promise.resolve();
   let release;
-  const current = new Promise((resolve) => { release = resolve; });
+  const turn = new Promise((resolve) => { release = resolve; });
+  // An aborted waiter can return immediately, but its place in the queue must
+  // still depend on the preceding allocation before later callers can enter.
+  const current = previous.then(() => turn);
   serviceAllocationOperations.set(service, current);
-  await previous;
-  try {
-    return await operation();
-  } finally {
-    release();
+  current.then(() => {
     if (serviceAllocationOperations.get(service) === current) {
       serviceAllocationOperations.delete(service);
     }
+  });
+  try {
+    await waitForAbortable(previous, signal);
+    throwIfAborted(signal);
+    return await operation();
+  } finally {
+    release();
   }
 }
 
@@ -1678,10 +1724,10 @@ function refillNumberPool(service, parentSignal = null) {
   return refill;
 }
 
-async function verifyInventoryCandidate(store, candidate, signal) {
+async function verifyInventoryCandidate(store, candidate, signal, options = {}) {
   const cached = sharedDatabaseJsonCache.get(candidate.database + "/clients.json");
   let online;
-  if (cached?.expiresAt > Date.now()) online = cached.value?.[candidate.deviceId]?.status === true;
+  if (!options.forceRefresh && cached?.expiresAt > Date.now()) online = cached.value?.[candidate.deviceId]?.status === true;
   else {
     const client = await fetchSharedDatabaseJson(
       candidate.database + "/clients/" + encodeURIComponent(candidate.deviceId) + ".json",
@@ -1704,38 +1750,91 @@ async function findAvailableActiveNumber(
   return withServiceAllocationLock(service, async () => {
     throwIfAborted(signal);
     const store = await waitForAbortable(getRuntimeStore(), signal);
+    const claimCandidate = async (candidate) => {
+      throwIfAborted(signal);
+      const finishCommit = onCommit?.();
+      let order;
+      try {
+        order = await store.call("claim", {
+          service, candidate, deadline: deadline - 100, now: Date.now(),
+          duration: numberReservationDurationMs, onlineTtl: activeClientsCacheTtlMs
+        });
+      } finally {
+        if (typeof finishCommit === "function") finishCommit(Boolean(order));
+      }
+      if (order) {
+        recentOrdersCache = null;
+        refillNumberPool(service);
+      }
+      return order;
+    };
     const tryInventory = async () => {
       const metadata = await store.call("metadata");
       const claimCandidates = async (candidates) => {
         if (!candidates.length) return null;
         throwIfAborted(signal);
-        const checks = await Promise.allSettled(candidates.map(async (candidate) => {
-          if (!await verifyInventoryCandidate(store, candidate, signal)) return null;
-          return candidate;
-        }));
-        throwIfAborted(signal);
-        const verified = checks
-          .filter((result) => result.status === "fulfilled" && result.value)
-          .map((result) => result.value);
-        if (!verified.length) {
-          const upstreamFailure = checks.find((result) => result.status === "rejected")?.reason;
-          if (upstreamFailure) throw upstreamFailure;
-          return null;
-        }
-        // Firebase status checks run in parallel; SQLite still serializes the
-        // final claim so concurrent callers cannot receive the same number.
-        for (const candidate of verified) {
-          throwIfAborted(signal);
-          onCommit?.();
-          const order = await store.call("claim", {
-            service, candidate, deadline: deadline - 100, now: Date.now(), duration: numberReservationDurationMs
-          });
-          if (order) {
-            recentOrdersCache = null;
-            refillNumberPool(service);
-            return order;
+
+        // A fresh pool snapshot already confirmed these devices are online.
+        const freshCutoff = Date.now() - activeClientsCacheTtlMs;
+        const freshCandidates = candidates.filter((candidate) => {
+          const snapshotExpiresAt = activeClientsSnapshotFreshUntil.get(candidate.database) || 0;
+          if (snapshotExpiresAt <= Date.now()) {
+            activeClientsSnapshotFreshUntil.delete(candidate.database);
+            return false;
           }
+          return candidate.reused !== true && Number(candidate.checkedAt) > freshCutoff;
+        });
+        for (const candidate of freshCandidates) {
+          const order = await claimCandidate(candidate);
+          if (order) return order;
         }
+
+        // Race a small set of status checks. A slow device must not hold up an
+        // already-confirmed candidate, and losing reads should leave the queue.
+        const staleCandidates = candidates
+          .filter((candidate) => !freshCandidates.includes(candidate))
+          .slice(0, 4);
+        if (!staleCandidates.length) return null;
+        const verificationController = new AbortController();
+        const abortVerification = () => verificationController.abort();
+        signal?.addEventListener("abort", abortVerification, { once: true });
+        if (signal?.aborted) abortVerification();
+        const failures = [];
+        let verifiedAny = false;
+        try {
+          const checks = new Map(staleCandidates.map((candidate, index) => [index, (async () => {
+            try {
+              if (await verifyInventoryCandidate(store, candidate, verificationController.signal, {
+                forceRefresh: candidate.reused === true
+              })) {
+                return { candidate, index };
+              }
+            } catch (error) {
+              if (!verificationController.signal.aborted) failures.push(error);
+            }
+            throw new Error("No eligible online number in this device record.");
+          })()]));
+          while (checks.size) {
+            let verified;
+            try {
+              verified = await Promise.any(checks.values());
+            } catch {
+              throwIfAborted(signal);
+              if (!verifiedAny && failures.length) throw failures[0];
+              break;
+            }
+            checks.delete(verified.index);
+            verifiedAny = true;
+            // Claims remain serial and atomic. If another service wins this
+            // number, consume the next ready check instead of failing early.
+            const order = await claimCandidate(verified.candidate);
+            if (order) return order;
+          }
+        } finally {
+          signal?.removeEventListener("abort", abortVerification);
+          verificationController.abort();
+        }
+        if (!verifiedAny) return null;
         const error = new Error("Number allocation is busy. Retry shortly.");
         error.code = "ALLOCATION_CONTENTION";
         error.status = 503;
@@ -1768,7 +1867,7 @@ async function findAvailableActiveNumber(
       if (scan.failures.length) throw scan.failures[0].error;
     }
     return null;
-  });
+  }, signal);
 }
 
 function findMatchingMessages(messages, afterTimestamp, service, untilTimestamp = Infinity) {
@@ -1895,10 +1994,18 @@ async function handleLocalOtpRequest(requestUrl, response) {
     const service = normalizeServiceName(services[0].trim()).toLowerCase();
     const allocationDeadline = Date.now() + numberRequestTimeoutMs;
     const allocationController = new AbortController();
-    const allocationTimer = setTimeout(() => allocationController.abort(), numberRequestTimeoutMs);
+    let allocationTimer = setTimeout(() => allocationController.abort(), numberRequestTimeoutMs);
     const beginReservationCommit = () => {
       throwIfAborted(allocationController.signal);
       clearTimeout(allocationTimer);
+      // Do not report a timeout while an atomic claim is committing. If the
+      // claim loses a race, restore the original deadline before trying again.
+      return (committed) => {
+        if (committed) return;
+        const remainingMs = allocationDeadline - Date.now();
+        if (remainingMs <= 0) allocationController.abort();
+        else allocationTimer = setTimeout(() => allocationController.abort(), remainingMs);
+      };
     };
     let configuredServices;
     try {
@@ -2692,7 +2799,7 @@ async function handleRequest(request, response) {
       }
       if (validated.databaseUrls.length === 0) {
         sendJson(response, 400, {
-          error: "No working Firebase databases were found; the saved rotation was not changed.",
+          error: "No valid Firebase database URLs were provided; the saved rotation was not changed.",
           removed: validated.removed
         });
         return;
@@ -2707,7 +2814,8 @@ async function handleRequest(request, response) {
         sendJson(response, 200, {
           initialized: true,
           databaseUrls: validated.databaseUrls,
-          removed: validated.removed
+          removed: validated.removed,
+          deferred: validated.deferred
         });
       } catch (error) {
         console.error("Could not save database rotation settings:", error.message);

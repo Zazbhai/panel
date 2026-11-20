@@ -81,6 +81,35 @@ const state = { initialized: true, databaseUrls: [database], orders: [], service
     assert.equal(cycleStore.candidates({ service: "once", databases: [database] }).length, 1,
       "A non-OTP number can be reused after every online number in the service cycle was tried");
     cycleStore.close();
+
+    const fallbackStore = new RuntimeStore(":memory:");
+    fallbackStore.initialize(state);
+    const unused = { ...candidate, deviceId: "unused-device", number: "9000000004" };
+    const attempted = { ...candidate, deviceId: "attempted-device", number: "9000000005" };
+    fallbackStore.remember(unused);
+    fallbackStore.remember(attempted);
+    const firstAttempt = fallbackStore.claim({ service: "ordered", candidate: attempted });
+    assert(firstAttempt);
+    assert.equal(fallbackStore.claim({ service: "ordered", candidate: attempted }), null,
+      "An attempted no-OTP number must not be returned again in the same cycle");
+    assert.equal(fallbackStore.candidates({ service: "ordered", databases: [database] })
+      .map((item) => item.number).includes(unused.number), true,
+      "Unused online numbers must remain ahead of prior no-OTP attempts");
+    fallbackStore.setStatus({ id: firstAttempt.orderId, status: "8" });
+    const nextAttempt = fallbackStore.claim({ service: "ordered", candidate: unused });
+    assert(nextAttempt);
+    fallbackStore.setStatus({ id: nextAttempt.orderId, status: "8" });
+    assert.equal(fallbackStore.advanceCycle({ service: "ordered", databases: [database] }), true);
+    const freshAfterCycle = { ...candidate, deviceId: "fresh-after-cycle", number: "9000000006" };
+    fallbackStore.remember(freshAfterCycle);
+    const orderedCandidates = fallbackStore.candidates({ service: "ordered", databases: [database] });
+    assert.equal(orderedCandidates.length, 3,
+      "Only after all numbers were attempted may no-OTP numbers re-enter as fallbacks");
+    assert.equal(orderedCandidates[0].number, freshAfterCycle.number,
+      "Fresh numbers must be returned before recycled no-OTP numbers");
+    assert.equal(orderedCandidates.slice(1).every((item) => item.reused === true), true,
+      "Numbers re-entering after a no-OTP attempt must be marked for an online recheck");
+    fallbackStore.close();
   } finally {
     if (core) core.close();
     for (const store of stores) await store.close();

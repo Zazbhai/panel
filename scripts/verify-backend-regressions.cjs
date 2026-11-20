@@ -426,17 +426,37 @@ function completedOrder() {
     const f = serverFixture();
     f.fetch = async () => ({ ok: true, status: 200, json: async () => null });
     const result = await f.context.readRotatingDeviceStats();
-    assert.equal(f.rotation().databaseUrls.length, 0, "Firebase HTTP 200/null means clients is missing");
-    assert.equal(result.removedDatabases.length, 1);
+    assert.equal(f.rotation().databaseUrls.length, 1, "Missing clients must remain in rotation");
+    assert.equal(result.removedDatabases.length, 0);
+    assert.equal(result.deferredDatabases.length, 1);
     assert.equal(result.databaseCount, 1, "Scan denominator must describe the original snapshot");
-    assert.equal(result.remainingDatabaseCount, 0);
-    assert.equal((await f.context.readRotationState()).databaseUrls.length, 0);
+    assert.equal(result.remainingDatabaseCount, 1);
+    assert.equal((await f.context.readRotationState()).databaseUrls.length, 1);
   }
   {
     const f = serverFixture();
     f.fetch = async () => ({ ok: false, status: 403 });
     await f.context.readRotatingDeviceStats();
     assert.equal(f.rotation().databaseUrls.length, 1, "Permission errors must not remove databases");
+  }
+  {
+    const f = serverFixture();
+    const working = "https://working.firebaseio.com";
+    const unavailable = "https://later.firebaseio.com";
+    f.fetch = async (url) => {
+      if (url.startsWith(unavailable)) return { ok: false, status: 503, text: async () => "" };
+      return { ok: true, status: 200, text: async () => "{}" };
+    };
+    const result = await f.request("/api/rotation", {
+      method: "PUT", admin: true,
+      body: { databaseUrls: [unavailable, working] }
+    });
+    assert.equal(result.status, 200);
+    const body = JSON.parse(result.body);
+    assert.deepEqual(body.databaseUrls, [working, unavailable],
+      "Unavailable URLs must be retained at the end of rotation");
+    assert.equal(body.deferred.length, 1);
+    assert.equal(body.removed.length, 0);
   }
   {
     const f = serverFixture();

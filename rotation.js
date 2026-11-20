@@ -81,7 +81,11 @@ function renderDeviceStats(result) {
   const failures = [];
   const removedDatabases = Array.isArray(result.removedDatabases) ? result.removedDatabases : [];
   if (removedDatabases.length) {
-    failures.push(`Removed ${removedDatabases.length} missing database${removedDatabases.length === 1 ? "" : "s"} from rotation.`);
+    failures.push(`Removed ${removedDatabases.length} invalid database${removedDatabases.length === 1 ? "" : "s"} from rotation.`);
+  }
+  const deferredDatabases = Array.isArray(result.deferredDatabases) ? result.deferredDatabases : [];
+  if (deferredDatabases.length) {
+    failures.push(`${deferredDatabases.length} database${deferredDatabases.length === 1 ? "" : "s"} deferred to the end and will be retried later.`);
   }
   if (result.failedDatabases.length) {
     const databaseDetails = result.failedDatabases.slice(0, 3).map((item) => {
@@ -202,7 +206,7 @@ rotationForm.addEventListener("submit", async (event) => {
     .filter(Boolean);
   rotationSaving = true;
   updateRotationControls();
-  setRotationStatus("Checking Firebase databases and removing duplicates.");
+  setRotationStatus("Checking Firebase databases and moving unavailable ones to the end.");
   try {
     const response = await window.dashboardApiFetch("/api/rotation", {
       method: "PUT",
@@ -215,6 +219,7 @@ rotationForm.addEventListener("submit", async (event) => {
     lastSavedDatabaseUrls = result.databaseUrls.join("\n");
     rotationDirty = false;
     const removed = Array.isArray(result.removed) ? result.removed : [];
+    const deferred = Array.isArray(result.deferred) ? result.deferred : [];
     const removalMessage = removed.length
       ? ` Removed ${removed.length}: ${removed.slice(0, 3).map((item) => {
         const url = typeof item.url === "string" ? item.url : "Database URL";
@@ -222,7 +227,10 @@ rotationForm.addEventListener("submit", async (event) => {
         return `${displayUrl} (${item.reason})`;
       }).join("; ")}${removed.length > 3 ? `; and ${removed.length - 3} more` : ""}.`
       : "";
-    setRotationStatus(`Saved ${result.databaseUrls.length} working database URL${result.databaseUrls.length === 1 ? "" : "s"}.${removalMessage}`);
+    const deferredMessage = deferred.length
+      ? ` Deferred ${deferred.length} unavailable URL${deferred.length === 1 ? "" : "s"} to the end for retry.`
+      : "";
+    setRotationStatus(`Saved ${result.databaseUrls.length} database URL${result.databaseUrls.length === 1 ? "" : "s"}.${removalMessage}${deferredMessage}`);
   } catch (error) {
     setRotationStatus(`Could not save database rotation settings: ${error.message}`, true);
   } finally {

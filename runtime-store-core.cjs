@@ -228,17 +228,26 @@ class RuntimeStore {
     this.sql("DELETE FROM leases WHERE order_id=?").run(orderId);
   }
   candidates({ service, databases, now = Date.now(), mappingTtl = 86400000, onlineTtl = 30000, limit = 32 }) {
-    const query = "SELECT n.* FROM numbers n "
+    // Numbers already attempted in the current service cycle are excluded.
+    // Once every eligible number has been attempted, advanceCycle moves to a
+    // new cycle and these no-OTP numbers become the final fallback candidates.
+    // OTP-bearing numbers remain excluded forever by service_locks.
+    const query = "SELECT n.*,c.cycle AS current_cycle,u.cycle AS used_cycle FROM numbers n "
       + "LEFT JOIN service_cycles c ON c.service=? "
       + "LEFT JOIN service_usage u ON u.service=? AND u.number=n.number "
       + "WHERE (n.online=1 OR n.checked_at<=?) AND n.verified_at>? AND n.database_url IN (SELECT value FROM json_each(?)) "
       + "AND NOT EXISTS(SELECT 1 FROM service_locks l WHERE l.service=? AND l.number=n.number) "
       + "AND NOT EXISTS(SELECT 1 FROM service_usage used JOIN service_cycles cycle ON cycle.service=used.service WHERE used.service=? AND used.number=n.number AND used.cycle=cycle.cycle) "
       + "AND NOT EXISTS(SELECT 1 FROM leases r WHERE r.number=n.number AND r.expires_at>?) "
-      + "ORDER BY (COALESCE(u.cycle,-1)=COALESCE(c.cycle,0)),n.checked_at DESC LIMIT ?";
+      // Fresh numbers (no service_usage row) always precede numbers recycled
+      // from an earlier cycle. Recycled no-OTP numbers are the final fallback.
+      + "ORDER BY CASE WHEN u.cycle IS NULL THEN 0 ELSE 1 END,n.checked_at DESC LIMIT ?";
     return this.sql(query).all(service, service, now - onlineTtl, now - mappingTtl, JSON.stringify(databases), service, service, now, limit)
       .map((row) => ({ database: row.database_url, deviceId: row.device_id, number: row.number,
-        verifiedAt: row.verified_at, checkedAt: row.checked_at }));
+        verifiedAt: row.verified_at, checkedAt: row.checked_at,
+        // A number used in an earlier cycle is a fallback. It is deliberately
+        // returned after unused numbers and must be rechecked online at claim.
+        reused: row.used_cycle !== null && row.used_cycle !== row.current_cycle }));
   }
   claim({ service, candidate, now = Date.now(), duration = 600000, deadline = Infinity, mappingTtl = 86400000, onlineTtl = 3000 }) {
     return this.transaction(() => {
