@@ -32,6 +32,22 @@ function configureService(f) {
 (async () => {
   {
     const f = serverFixture();
+    const names = Array.from({ length: 10 }, (_, index) => "service-" + index);
+    f.context.readConfiguredServices = async () => ({ services: names.map((name) => ({
+      name, enabled: true, template: "code [OTP]"
+    })) });
+    f.context.readRotationMetadata = async () => ({ databaseUrls: [database] });
+    const warmed = [];
+    f.context.refillNumberPool = async (service) => { warmed.push(service); };
+    await f.context.warmNumberPools();
+    await f.context.warmNumberPools();
+    await f.context.warmNumberPools();
+    assert.equal(new Set(warmed).size, names.length,
+      "Round-robin background warming must reach services beyond the first configured batch");
+    assert(names.every((name) => warmed.includes(name)));
+  }
+  {
+    const f = serverFixture();
     let release;
     const hold = new Promise((resolve) => { release = resolve; });
     const first = f.context.withServiceAllocationLock("fixture", () => hold);

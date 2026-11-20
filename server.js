@@ -30,6 +30,8 @@ const servicesPath = path.join(__dirname, "services.html");
 const servicesScriptPath = path.join(__dirname, "services.js");
 const rotationPath = path.join(__dirname, "rotation.html");
 const rotationScriptPath = path.join(__dirname, "rotation.js");
+const stocksPath = path.join(__dirname, "stocks.html");
+const stocksScriptPath = path.join(__dirname, "stocks.js");
 const serviceMessagesPath = path.join(__dirname, "service-messages.html");
 const serviceMessagesScriptPath = path.join(__dirname, "service-messages.js");
 const serviceMatchingScriptPath = path.join(__dirname, "service-matching.js");
@@ -83,6 +85,7 @@ const activeNumberPoolRefills = new Map();
 const numberPoolFailures = new Map();
 const requestedNumberPoolServices = new Set();
 let numberPoolSweepRunning = false;
+let numberPoolWarmCursor = 0;
 const slowDatabases = new Map();
 // A compact freshness marker for clients.json. Large clients.json payloads are
 // intentionally excluded from the shared object cache, but their online state
@@ -90,6 +93,8 @@ const slowDatabases = new Map();
 const activeClientsSnapshotFreshUntil = new Map();
 const serviceAllocationOperations = new Map();
 let recentOrdersCache = null;
+let stockSummaryCache = null;
+let stockSummaryPending = null;
 let configuredServicesCache = null;
 let configuredServicesReadPromise = null;
 const compressedStaticAssets = new Map();
@@ -940,16 +945,26 @@ async function warmNumberPools() {
   ]);
   if (numberPoolWarmServices === 0) return;
   if (!rotationState.databaseUrls.length) return;
-  const services = configured.services
+  const configuredNames = configured.services
     .filter((service) => service?.enabled === true && getEnabledTemplates(service).length > 0)
-    .slice(0, numberPoolWarmServices)
     .map((service) => normalizeServiceName(service.name).toLowerCase());
+  const services = [];
   for (const service of requestedNumberPoolServices) {
     if (!services.includes(service)) services.push(service);
   }
-  // Start the selected service refills together. Each service has its own
-  // in-flight promise, while the shared database-read gate still bounds total
-  // upstream concurrency.
+  // Visit every configured service instead of repeatedly warming only the first
+  // few. Each tick processes one bounded batch in parallel; Firebase read slots
+  // remain globally capped and each service still has a single-flight refill.
+  const remaining = configuredNames.filter((service) => !services.includes(service));
+  if (numberPoolWarmServices > 0 && remaining.length) {
+    const start = numberPoolWarmCursor % remaining.length;
+    const batch = remaining.slice(start, start + numberPoolWarmServices);
+    if (batch.length < numberPoolWarmServices) {
+      batch.push(...remaining.slice(0, numberPoolWarmServices - batch.length));
+    }
+    for (const service of batch) if (!services.includes(service)) services.push(service);
+    numberPoolWarmCursor = (start + numberPoolWarmServices) % remaining.length;
+  }
   await Promise.all(services.map((service) => refillNumberPool(service)));
 }
 
@@ -1729,6 +1744,11 @@ async function fillNumberPool(service, parentSignal = null) {
   const state = await store.call("allocationState", service);
   const prepared = await store.call("candidates", { service, databases: state.databaseUrls, limit: numberPoolSize });
   if (prepared.length >= numberPoolRefillThreshold) return prepared.length;
+  // Advance service cycles during background preparation, so a pool of used
+  // but unlocked numbers is ready for fallback before an API call arrives.
+  await store.call("advanceCycle", { service, databases: state.databaseUrls });
+  const recycled = await store.call("candidates", { service, databases: state.databaseUrls, limit: numberPoolSize });
+  if (recycled.length >= numberPoolRefillThreshold) return recycled.length;
   const scan = await readActiveNumberInventories(service, state, numberPoolSize, null, parentSignal);
   await rememberInventories(store, scan.inventories);
   return scan.inventories.reduce((total, inventory) => total + inventory.numbers.length, 0);
@@ -2700,6 +2720,26 @@ async function handleRequest(request, response) {
     await handleLocalOtpRequest(requestUrl, response);
     return;
   }
+  if (requestUrl.pathname === "/api/stocks") {
+    if (request.method !== "GET") {
+      response.writeHead(405, { Allow: "GET" });
+      response.end("Method Not Allowed");
+      return;
+    }
+    try {
+      if (!stockSummaryCache || stockSummaryCache.expiresAt <= Date.now()) {
+        stockSummaryPending ||= getRuntimeStore()
+          .then((store) => store.call("stockSummary", { onlineTtl: activeClientsCacheTtlMs }))
+          .then((value) => { stockSummaryCache = { value, expiresAt: Date.now() + 3000 }; })
+          .finally(() => { stockSummaryPending = null; });
+        await stockSummaryPending;
+      }
+      sendJson(response, 200, stockSummaryCache.value);
+    } catch {
+      sendJson(response, 503, { error: "Stock totals are temporarily unavailable." }, { "Retry-After": "3" });
+    }
+    return;
+  }
   if (requestUrl.pathname === "/api/recent-orders") {
     if (request.method !== "GET") {
       response.writeHead(405, { Allow: "GET" });
@@ -2711,7 +2751,7 @@ async function handleRequest(request, response) {
       const params = requestUrl.searchParams;
       const options = {
         limit: Math.min(2000, Math.max(1, Number(params.get("limit")) || 6)),
-        search: (params.get("search") || "").slice(0, 200), status: params.get("status") || "",
+        search: (params.get("search") || "").trim().slice(0, 200), status: params.get("status") || "",
         from: params.has("from") ? Number(params.get("from")) : null,
         to: params.has("to") ? Number(params.get("to")) : null,
         before: params.has("before") ? JSON.parse(params.get("before")) : null
@@ -2969,6 +3009,9 @@ async function handleRequest(request, response) {
     "/rotation": { path: rotationPath, contentType: "text/html; charset=utf-8" },
     "/rotation.html": { path: rotationPath, contentType: "text/html; charset=utf-8" },
     "/rotation.js": { path: rotationScriptPath, contentType: "text/javascript; charset=utf-8" },
+    "/stocks": { path: stocksPath, contentType: "text/html; charset=utf-8" },
+    "/stocks.html": { path: stocksPath, contentType: "text/html; charset=utf-8" },
+    "/stocks.js": { path: stocksScriptPath, contentType: "text/javascript; charset=utf-8" },
     "/service-messages": { path: serviceMessagesPath, contentType: "text/html; charset=utf-8" },
     "/service-messages.html": { path: serviceMessagesPath, contentType: "text/html; charset=utf-8" },
     "/service-messages.js": { path: serviceMessagesScriptPath, contentType: "text/javascript; charset=utf-8" },

@@ -537,5 +537,19 @@ function completedOrder() {
     assert.equal(reservation?.number, "9000000001",
       "Allocation must reserve a usable number without scanning later databases");
   }
-  console.log("PASS: expiry, missing clients cleanup, permission failures, history limits, out-of-order OTPs and saved-only feed.");
+  {
+    const f = serverFixture();
+    const denied = await f.request("/api/stocks");
+    assert.equal(denied.status, 401, "Stocks summary must require an admin session");
+    const result = await f.request("/api/stocks", { admin: true });
+    assert.equal(result.status, 200);
+    const summary = JSON.parse(result.body);
+    assert.deepEqual(
+      [summary.total, summary.online, summary.reserved, summary.offline, summary.needsCheck],
+      [0, 0, 0, 0, 0],
+      "An empty local stock inventory returns zero counts"
+    );
+    assert.equal(f.requests.length, 0, "Stocks summary must not fetch from Firebase");
+  }
+  console.log("PASS: expiry, missing clients cleanup, permission failures, history limits, out-of-order OTPs, saved-only feed and admin-only local stock summary.");
 })().catch((error) => { console.error(error); process.exitCode = 1; });

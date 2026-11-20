@@ -11,6 +11,9 @@ class RuntimeStore {
     this.db.exec("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);"
       + "CREATE TABLE IF NOT EXISTS orders(id TEXT PRIMARY KEY,service TEXT NOT NULL,number TEXT NOT NULL,database_url TEXT NOT NULL,device_id TEXT NOT NULL,created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,status TEXT NOT NULL,received_otp TEXT,received_at INTEGER,number_active INTEGER NOT NULL DEFAULT 0);"
       + "CREATE INDEX IF NOT EXISTS orders_recent ON orders(created_at DESC,id DESC);"
+      + "CREATE INDEX IF NOT EXISTS orders_number ON orders(number);"
+      + "CREATE INDEX IF NOT EXISTS orders_service ON orders(service);"
+      + "CREATE INDEX IF NOT EXISTS orders_device ON orders(device_id);"
       + "CREATE INDEX IF NOT EXISTS orders_expiry ON orders(status,expires_at);"
       + "CREATE INDEX IF NOT EXISTS orders_received ON orders(received_at DESC);"
       + "CREATE TABLE IF NOT EXISTS otps(order_id TEXT NOT NULL REFERENCES orders(id),key TEXT NOT NULL,code TEXT NOT NULL,received_at INTEGER NOT NULL,message_key TEXT,PRIMARY KEY(order_id,key));"
@@ -137,8 +140,21 @@ class RuntimeStore {
   orderFilter({ search = "", status = "", from = null, to = null } = {}) {
     const parts = ["1=1"], args = [];
     if (search) {
-      parts.push("instr(lower(id||' '||service||' '||number||' '||device_id),?)>0");
-      args.push(search.toLowerCase());
+      const term = String(search).trim();
+      const lowerTerm = term.toLowerCase();
+      // Number and order-ID lookups are the common search cases. Use indexed
+      // equality instead of scanning and lowercasing every order row. Keep the
+      // contains search for service/device fragments and multi-word queries.
+      if (/^\d{7,15}$/.test(term)) {
+        parts.push("number=?");
+        args.push(term);
+      } else if (/^[a-f0-9]{24,64}$/i.test(term)) {
+        parts.push("id=?");
+        args.push(term);
+      } else {
+        parts.push("instr(lower(id||' '||service||' '||number||' '||device_id),?)>0");
+        args.push(lowerTerm);
+      }
     }
     if (status === "number-active") { parts.push("number_active=1 AND status IN ('active','completed') AND expires_at>?"); args.push(Date.now()); }
     else if (status === "expired") { parts.push("(status='expired' OR (status='active' AND expires_at<=?))"); args.push(Date.now()); }
@@ -218,14 +234,34 @@ class RuntimeStore {
     });
   }
   markOnline({ database, deviceId, online, now = Date.now() }) {
-    this.sql("UPDATE numbers SET online=?,checked_at=? WHERE database_url=? AND device_id=?")
-      .run(Number(online), now, database, deviceId);
+    // Device sweeps often see the same status repeatedly. Avoid rewriting the
+    // row more than once per freshness window unless the online flag changed.
+    const refreshBefore = now - 8000;
+    this.sql("UPDATE numbers SET online=?,checked_at=? WHERE database_url=? AND device_id=? AND (online!=? OR checked_at<=?)")
+      .run(Number(online), now, database, deviceId, Number(online), refreshBefore);
   }
   markOnlineBatch(entries) {
     return this.transaction(() => { for (const entry of entries) this.markOnline(entry); });
   }
   releaseOrder(orderId) {
     this.sql("DELETE FROM leases WHERE order_id=?").run(orderId);
+  }
+  stockSummary({ now = Date.now(), onlineTtl = 10000 } = {}) {
+    const databases = this.metadata()?.databaseUrls || [];
+    // Multiple device records can report the same number. Count it once and
+    // prefer a current online observation over offline or stale observations.
+    const counts = this.sql("WITH stock AS ("
+      + "SELECT n.number,MAX(CASE WHEN l.number IS NOT NULL THEN 4 "
+      + "WHEN n.verified_at<=? OR n.checked_at<=? THEN 1 "
+      + "WHEN n.online=1 THEN 3 ELSE 2 END) AS state "
+      + "FROM numbers n LEFT JOIN leases l ON l.number=n.number AND l.expires_at>? "
+      + "WHERE n.database_url IN (SELECT value FROM json_each(?)) GROUP BY n.number) "
+      + "SELECT COUNT(*) AS total,COUNT(CASE WHEN state=3 THEN 1 END) AS online,"
+      + "COUNT(CASE WHEN state=4 THEN 1 END) AS reserved,"
+      + "COUNT(CASE WHEN state=2 THEN 1 END) AS offline,"
+      + "COUNT(CASE WHEN state=1 THEN 1 END) AS needsCheck FROM stock")
+      .get(now - 86400000, now - onlineTtl, now, JSON.stringify(databases));
+    return { ...counts, databaseCount: databases.length, checkedAt: now };
   }
   candidates({ service, databases, now = Date.now(), mappingTtl = 86400000, onlineTtl = 30000, limit = 32 }) {
     // Numbers already attempted in the current service cycle are excluded.

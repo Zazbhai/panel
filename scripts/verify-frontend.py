@@ -14,7 +14,7 @@ from playwright.sync_api import sync_playwright, expect
 ROOT = Path(__file__).resolve().parent.parent
 OUTPUT = ROOT / '.preview'
 OUTPUT.mkdir(exist_ok=True)
-ROUTES = {'/': 'active-devices', '/active-devices': 'active-devices', '/services': 'services', '/rotation': 'rotation', '/service-messages': 'service-messages', '/recent-orders': 'recent-orders', '/api-docs': 'api-docs'}
+ROUTES = {'/': 'active-devices', '/active-devices': 'active-devices', '/services': 'services', '/rotation': 'rotation', '/service-messages': 'service-messages', '/recent-orders': 'recent-orders', '/api-docs': 'api-docs', '/stocks': 'stocks'}
 DATABASE = 'https://preview-only.firebaseio.com'
 SERVICES = [
     {'id': 'fixture-1', 'name': 'Flipkart', 'template': 'Your verification code is {{OTP}}. Do not share it.', 'enabled': True},
@@ -67,6 +67,7 @@ class Fixture:
             elif path == '/api/health': data = {'status': 'ok'}
             elif path == '/api/services': data = {'initialized': True, 'services': [] if self.empty else self.services}
             elif path == '/api/rotation': data = {'initialized': True, 'databaseUrls': self.rotation}
+            elif path == '/api/stocks': data = {'total': 12, 'online': 6, 'reserved': 3, 'offline': 2, 'needsCheck': 1, 'databaseCount': 2, 'checkedAt': 1794921000000}
             elif path == '/api/sections': data = {'devices': True, 'clients': True}
             elif path == '/api/data': data = {} if self.empty else CLIENTS if section == 'clients' else DEVICES
             elif path == '/api/device-record': data = DEVICES['test-device-01']
@@ -117,13 +118,21 @@ def main():
                 if width in (1440,390): snapshot(page, name+f'-{width}')
                 if width <= 768:
                     expect(page.locator('.mobile-bottom-nav')).to_be_visible()
-                    expect(page.locator('.mobile-bottom-nav a')).to_have_count(6)
+                    expect(page.locator('.mobile-bottom-nav a')).to_have_count(7)
                     expect(page.locator('.mobile-bottom-nav a[aria-current="page"]')).to_have_count(1)
                     expect(page.locator('.nav-toggle')).not_to_be_visible()
                     expect(page.locator('.page-nav')).not_to_be_visible()
-        print('PASS: all seven pages at 1440, 1024, 768, 390 and 320px; mobile navigation.')
+        print('PASS: dashboard pages at 1440, 1024, 768, 390 and 320px; mobile navigation.')
 
         page.set_viewport_size({'width':1440,'height':1000})
+        ready(page, '/stocks')
+        expect(page.locator('#stockTotal')).to_have_text('12')
+        expect(page.locator('#stockOnline')).to_have_text('6')
+        fixture.failure = '/api/stocks'
+        page.locator('#refreshStock').click()
+        expect(page.locator('#stockStatus')).to_contain_text('Could not refresh')
+        expect(page.locator('#stockTotal')).to_have_text('12')
+        fixture.failure = None
         ready(page, '/')
         page.locator('#refreshSmsDevicesButton').click()
         expect(page.locator('#sendSmsButton')).to_be_enabled()

@@ -77,6 +77,27 @@ const state = { initialized: true, databaseUrls: [database], orders: [], service
     };
     await Promise.all(Array.from({ length: 500 }, () => a.call("getOrder", "missing-order")));
     assert.equal(orderReads, 1, "Concurrent reads for one order should share one SQLite worker request");
+    const summaryStore = new RuntimeStore(":memory:");
+    summaryStore.initialize(state);
+    const summaryNumbers = [
+      { ...candidate, deviceId: "summary-online", number: "9111111111" },
+      { ...candidate, deviceId: "summary-offline", number: "9222222222", online: false },
+      { ...candidate, deviceId: "summary-stale", number: "9333333333" },
+      { ...candidate, deviceId: "summary-reserved", number: "9444444444" },
+      { ...candidate, deviceId: "summary-duplicate", number: "9111111111", online: false }
+    ];
+    summaryStore.rememberBatch(summaryNumbers);
+    summaryStore.sql("UPDATE numbers SET checked_at=? WHERE number=?").run(Date.now() - 20000, "9333333333");
+    const heldNumber = summaryNumbers[3];
+    const heldOrder = summaryStore.claim({ service: "stock-test", candidate: heldNumber });
+    assert(heldOrder);
+    const stock = summaryStore.stockSummary({ onlineTtl: 10000 });
+    assert.deepEqual(
+      [stock.total, stock.online, stock.reserved, stock.offline, stock.needsCheck, stock.databaseCount],
+      [4, 1, 1, 1, 1, 1],
+      "Stock totals should deduplicate phone numbers and classify recent, reserved, offline, and stale inventory"
+    );
+    summaryStore.close();
     const cycleStore = new RuntimeStore(":memory:");
     cycleStore.initialize(state);
     const only = { ...candidate, deviceId: "cycle-device", number: "9000000003" };
