@@ -1748,7 +1748,15 @@ async function fillNumberPool(service, parentSignal = null) {
   const state = await store.call("allocationState", service);
   const scan = await readActiveNumberInventories(service, state, numberPoolSize, null, parentSignal);
   await rememberInventories(store, scan.inventories);
-  return (await store.call("candidates", options)).length;
+  const readyCount = (await store.call("candidates", options)).length;
+  if (scan.failures.length) {
+    const error = scan.failures[0].error || new Error("The configured databases could not be checked.");
+    error.status ||= 503;
+    error.code ||= "UPSTREAM_UNAVAILABLE";
+    error.retryAfterMs ||= 1000;
+    throw error;
+  }
+  return readyCount;
 }
 
 // Keep one discovery job per service so warmups can fetch from multiple services
@@ -1949,7 +1957,20 @@ async function findAvailableActiveNumber(
       }, signal);
       if (order) return order;
     }
-    if (cachedOnly) requestNumberPoolRefresh(service);
+    if (cachedOnly) {
+      requestNumberPoolRefresh(service);
+      const refill = activeNumberPoolRefills.get(normalizeServiceName(service).toLowerCase());
+      if (refill) {
+        // Warm allocations stay on the local fast path. A cold or depleted
+        // pool joins its one background refill rather than returning a false
+        // NO_NUMBERS while stock discovery is still running. The caller's
+        // existing deadline bounds how long this request can wait.
+        await waitForAbortable(refill, signal);
+        throwIfAborted(signal);
+        order = await tryInventory();
+        if (order) return order;
+      }
+    }
     return null;
   })();
 }

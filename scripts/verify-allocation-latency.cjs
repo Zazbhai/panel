@@ -9,7 +9,7 @@ const serverFixture = require("./server-fixture.cjs");
 const database = "https://fixture.firebaseio.com";
 const turn = () => new Promise(setImmediate);
 
-async function inventoryFixture(count, age = 20000) {
+async function inventoryFixture(count, age = 20000, suppressRefill = true) {
   const f = serverFixture();
   await f.context.getRuntimeStore();
   const now = Date.now();
@@ -18,7 +18,7 @@ async function inventoryFixture(count, age = 20000) {
     now: now - age, verifiedAt: now
   })));
   // Discovery is separately tested. Keep it out of foreground timing checks.
-  f.context.refillNumberPool = async () => null;
+  if (suppressRefill) f.context.refillNumberPool = async () => null;
   return f;
 }
 
@@ -66,6 +66,32 @@ function configureService(f) {
     await f.context.refillNumberPool("event-service");
     await f.context.refillNumberPool("event-service");
     assert.equal(refills, 1, "A refill below the ready-stock threshold should cool down instead of rescanning repeatedly");
+  }
+  {
+    const f = await inventoryFixture(0, 20000, false);
+    configureService(f);
+    f.context.setTimeout = (callback) => setTimeout(callback, 200);
+    f.context.clearTimeout = clearTimeout;
+    const databaseUrls = f.runtime.metadata().databaseUrls;
+    const devices = Object.fromEntries(Array.from({ length: 4 }, (_, index) => [
+      "cold-device-" + index, { status: true }
+    ]));
+    f.fetch = async (url) => {
+      if (url.endsWith("/clients.json")) return { ok: true, status: 200, json: async () => devices };
+      const deviceId = decodeURIComponent(url.split("/messages/")[1].split(".json")[0]);
+      const index = Number(deviceId.slice("cold-device-".length));
+      return { ok: true, status: 200, json: async () => ({
+        sms: { message: "Jio number 900000000" + index, timestamp: Date.now() }
+      }) };
+    };
+    const startedAt = Date.now();
+    const response = await f.request(`/stubs/handler_api.php?action=getNumber&service=fixture&api_key=${f.apiKey}`);
+    const order = response.body.match(/^ACCESS_NUMBER:[a-f0-9]{24}:(\d{10})$/);
+    assert.equal(response.status, 200);
+    assert(order, "A cold API request should join the event-driven pool refill instead of returning NO_NUMBERS early");
+    assert(Date.now() - startedAt < 1500, "Synthetic cold discovery should finish within its bounded wait");
+    assert(f.runtime.candidates({ service: "fixture", databases: databaseUrls }).length >= 1,
+      "The cold request refill should persist usable inventory into the shared pool");
   }
   {
     const f = serverFixture();

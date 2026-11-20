@@ -105,9 +105,9 @@ function completedOrder() {
     const startedAt = Date.now();
     const result = await f.request("/stubs/handler_api.php?action=getNumber&service=fixture&api_key=" + f.apiKey);
     assert(Date.now() - startedAt < 500, "A slow number request must return within its configured deadline");
-    assert.equal(result.status, 200);
-    assert.equal(result.body, "NO_NUMBERS",
-      "A cold pool should return immediately while the background sweeper discovers numbers");
+    assert.equal(result.status, 503);
+    assert.equal(JSON.parse(result.body).code, "ALLOCATION_TIMEOUT",
+      "A slow cold-pool refill should return a retryable timeout, never a misleading NO_NUMBERS result");
     assert.equal(f.rotation().orders.length, 0, "A timed-out request must not create an order");
   }
   {
@@ -305,9 +305,9 @@ function completedOrder() {
       headers: { get: (name) => name === "retry-after" ? "2" : null }
     });
     const response = await f.request(`/stubs/handler_api.php?action=getNumber&service=fixture&api_key=${f.apiKey}`);
-    assert.equal(response.status, 200,
-      "Number allocation should return immediately while the background sweep handles provider failures");
-    assert.equal(response.body, "NO_NUMBERS");
+    assert.equal(response.status, 503,
+      "An unreadable database must not be reported as an empty number pool");
+    assert.equal(JSON.parse(response.body).code, "UPSTREAM_UNAVAILABLE");
   }
   {
     const f = serverFixture();

@@ -151,6 +151,7 @@ const state = { initialized: true, databaseUrls: [database], orders: [], service
   {
     const f = serverFixture();
     await f.context.getRuntimeStore();
+    f.context.refillNumberPool = async () => null;
     f.runtime.remember(candidate);
     let statusReads = 0;
     f.fetch = async (url) => {
