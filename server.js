@@ -1868,9 +1868,30 @@ async function findAvailableActiveNumber(
         // Race a small set of status checks. A slow device must not hold up an
         // already-confirmed candidate, and losing reads should leave the queue.
         const staleCandidates = candidates
-          .filter((candidate) => !freshCandidates.includes(candidate))
-          .slice(0, 4);
-        if (!staleCandidates.length) return null;
+          .filter((candidate) => !freshCandidates.includes(candidate));
+        // Interleave databases before verification. A large stock table often
+        // contains many mappings from one database; checking only its first
+        // few rows can make an unavailable database look like an empty pool.
+        const byDatabase = new Map();
+        for (const candidate of staleCandidates) {
+          const list = byDatabase.get(candidate.database) || [];
+          list.push(candidate);
+          byDatabase.set(candidate.database, list);
+        }
+        const spreadCandidates = [];
+        while (spreadCandidates.length < Math.min(16, staleCandidates.length)) {
+          let added = false;
+          for (const list of byDatabase.values()) {
+            const candidate = list.shift();
+            if (!candidate) continue;
+            spreadCandidates.push(candidate);
+            added = true;
+            if (spreadCandidates.length >= Math.min(16, staleCandidates.length)) break;
+          }
+          if (!added) break;
+        }
+        const staleBatch = spreadCandidates;
+        if (!staleBatch.length) return null;
         const verificationController = new AbortController();
         const abortVerification = () => verificationController.abort();
         signal?.addEventListener("abort", abortVerification, { once: true });
@@ -1878,7 +1899,7 @@ async function findAvailableActiveNumber(
         const failures = [];
         let verifiedAny = false;
         try {
-          const checks = new Map(staleCandidates.map((candidate, index) => [index, (async () => {
+          const checks = new Map(staleBatch.map((candidate, index) => [index, (async () => {
             try {
               if (await verifyInventoryCandidate(store, candidate, verificationController.signal, {
                 forceRefresh: candidate.reused === true

@@ -27,7 +27,8 @@ class RuntimeStore {
       + "CREATE TABLE IF NOT EXISTS service_usage(service TEXT NOT NULL,number TEXT NOT NULL,cycle INTEGER NOT NULL,PRIMARY KEY(service,number));"
       + "CREATE TABLE IF NOT EXISTS numbers(database_url TEXT NOT NULL,device_id TEXT NOT NULL,number TEXT NOT NULL,verified_at INTEGER NOT NULL,online INTEGER NOT NULL,checked_at INTEGER NOT NULL,PRIMARY KEY(database_url,device_id));"
       + "CREATE INDEX IF NOT EXISTS numbers_ready ON numbers(online,verified_at DESC,checked_at DESC);"
-      + "CREATE INDEX IF NOT EXISTS numbers_by_database ON numbers(database_url,online,verified_at,checked_at,number);");
+      + "CREATE INDEX IF NOT EXISTS numbers_by_database ON numbers(database_url,online,verified_at,checked_at,number);"
+      + "CREATE INDEX IF NOT EXISTS numbers_service_candidates ON numbers(online,checked_at,verified_at,database_url,number);");
     this.prepared = new Map();
   }
   sql(text) {
