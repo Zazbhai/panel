@@ -4,6 +4,7 @@ const stockButton = document.getElementById("refreshStock");
 const stockStatus = document.getElementById("stockStatus");
 const stockCounts = document.getElementById("stockCounts");
 const stockSources = document.getElementById("stockSources");
+const mappingPrefetchStatus = document.getElementById("mappingPrefetchStatus");
 const stockFields = {
   total: "stockTotal", online: "stockOnline", reserved: "stockReserved",
   offline: "stockOffline", needsCheck: "stockNeedsCheck"
@@ -29,6 +30,18 @@ async function loadStock() {
     }
     stockSources.textContent = `${stockNumberFormat.format(data.databaseCount)} configured database${data.databaseCount === 1 ? "" : "s"}`;
     stockStatus.textContent = data.total ? `Updated at ${updated}.` : "No numbers have been saved yet.";
+    const prefetch = data.mappingPrefetch;
+    if (prefetch && Number.isSafeInteger(prefetch.total) && Number.isSafeInteger(prefetch.completed)) {
+      mappingPrefetchStatus.textContent = prefetch.status === "running"
+        ? `Preparing inventory: ${stockNumberFormat.format(prefetch.completed)} of ${stockNumberFormat.format(prefetch.total)} databases checked; ${stockNumberFormat.format(prefetch.mappings || 0)} number mappings saved; ${stockNumberFormat.format(prefetch.failed || 0)} failed.`
+        : prefetch.status === "partial"
+          ? `Inventory preparation saved ${stockNumberFormat.format(prefetch.mappings || 0)} number mappings, with ${stockNumberFormat.format(prefetch.failed)} database failures of ${stockNumberFormat.format(prefetch.total)}.`
+          : prefetch.status === "complete"
+            ? `Inventory preparation complete: ${stockNumberFormat.format(prefetch.completed)} databases checked and ${stockNumberFormat.format(prefetch.mappings || 0)} mappings saved.`
+            : prefetch.status === "failed"
+              ? "Inventory preparation failed before it completed. Check the server logs."
+              : "Inventory preparation has not started.";
+    }
     stockStatus.classList.remove("error");
   } catch {
     stockStatus.textContent = "Could not refresh stock totals. Try again.";
@@ -42,3 +55,6 @@ async function loadStock() {
 
 stockButton.addEventListener("click", loadStock);
 void loadStock();
+setInterval(() => {
+  if (document.visibilityState === "visible") void loadStock();
+}, 5000);

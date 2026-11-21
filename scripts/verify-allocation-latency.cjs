@@ -60,6 +60,41 @@ function configureService(f) {
     assert.equal(timerIntervals, 0, "Number inventory must not use a periodic scan timer");
   }
   {
+    const f = new serverFixture();
+    await f.context.getRuntimeStore();
+    f.fetch = async (url) => {
+      if (url.endsWith("/clients.json")) return {
+        ok: true, status: 200, json: async () => Object.fromEntries(Array.from({ length: 60 }, (_, index) => [
+          `prefetch-${index}`, { status: true }
+        ]))
+      };
+      const deviceId = decodeURIComponent(url.split("/messages/")[1].split(".json")[0]);
+      const index = Number(deviceId.split("-")[1]);
+      return { ok: true, status: 200, json: async () => ({
+        sms: { message: `Jio number ${9000000000 + index}`, timestamp: Date.now() }
+      }) };
+    };
+    await f.context.prefetchAllNumberMappings();
+    const ready = f.runtime.candidates({
+      service: "jio", databases: [database], limit: 100, freshOnly: true
+    });
+    assert.equal(ready.length, 60,
+      "The all-database mapping prefetch must persist each discovered number as fresh online inventory");
+    assert.equal(f.mappingPrefetchState().mappings, 60,
+      "Prefetch progress must count mappings as they are durably saved");
+    assert.equal(f.requests.filter((url) => url.includes("/messages/")).length, 60,
+      "A complete synthetic prefetch must inspect all unmapped active devices");
+    configureService(f);
+    const response = await f.request(
+      `/stubs/handler_api.php?action=getNumber&service=fixture&api_key=${f.apiKey}`
+    );
+    assert.equal(response.status, 200);
+    assert.match(response.body, /^ACCESS_NUMBER:/,
+      "A number prepared by the background sweep should allocate without a foreground Firebase scan");
+    assert.equal(f.requests.filter((url) => url.includes("/messages/")).length, 60,
+      "A customer allocation must reuse saved mappings rather than re-read message histories");
+  }
+  {
     const f = serverFixture();
     let refills = 0;
     f.context.fillNumberPool = async () => { refills++; return 1; };
@@ -68,8 +103,29 @@ function configureService(f) {
     assert.equal(refills, 1, "A refill below the ready-stock threshold should cool down instead of rescanning repeatedly");
   }
   {
+    const f = await inventoryFixture(12, 20000, false);
+    f.fetch = async (url) => {
+      assert.equal(url, database + "/clients.json",
+        "Refreshing stale prepared mappings should read client online state only");
+      return {
+        ok: true, status: 200, json: async () => Object.fromEntries(Array.from({ length: 12 }, (_, index) => [
+          `device-${index}`, { status: true }
+        ]))
+      };
+    };
+    const readyCount = await f.context.fillNumberPool("fixture");
+    assert(readyCount >= 8,
+      "Stale saved mappings must be refreshed into ready inventory instead of being mistaken for prepared stock");
+    assert.equal(f.requests.length, 1,
+      "A bulk online-state refresh should use one clients snapshot and no message-history reads");
+    assert.equal(f.runtime.candidates({
+      service: "fixture", databases: [database], limit: 20, freshOnly: true
+    }).length, 12);
+  }
+  {
     const f = await inventoryFixture(0, 20000, false);
     configureService(f);
+    f.context.requestNumberPoolRefresh = () => {};
     f.context.setTimeout = (callback) => setTimeout(callback, 200);
     f.context.clearTimeout = clearTimeout;
     const databaseUrls = f.runtime.metadata().databaseUrls;
@@ -168,46 +224,41 @@ function configureService(f) {
     assert.equal(nextRan, true, "Cancelling a read must not lose a database-read slot");
   }
   {
-    const f = await inventoryFixture(4);
-    const controller = new AbortController();
-    let abortedReads = 0;
-    f.fetch = async (url, { signal }) => {
-      assert(url.includes("/clients/device-"), "Allocation may only verify individual device status");
-      if (url.endsWith("/device-3.json")) {
-        return { ok: true, status: 200, json: async () => ({ status: true }) };
-      }
-      return new Promise((_resolve, reject) => {
-        const abort = () => {
-          abortedReads++;
-          reject(Object.assign(new Error("Cancelled losing check"), { name: "AbortError" }));
-        };
-        if (signal.aborted) abort();
-        else signal.addEventListener("abort", abort, { once: true });
-      });
-    };
-    let timeout;
-    try {
-      const order = await Promise.race([
-        f.context.findAvailableActiveNumber("fixture", controller.signal, null,
-          Date.now() + 4500, { cachedOnly: true }),
-        new Promise((resolve) => { timeout = setTimeout(() => resolve(null), 500); })
-      ]);
-      assert(order, "A confirmed online device must not wait for the other status checks");
-      assert.equal(order.number, "9000000003");
-      assert.equal(f.runtime.snapshot().orders.length, 1, "Only the winning device may create an order");
-      await turn();
-      assert.equal(abortedReads, 3, "Losing status checks must be cancelled");
-      assert.equal(f.requests.length, 4, "One allocation may verify only a small candidate batch");
-    } finally {
-      clearTimeout(timeout);
-      controller.abort();
-    }
+    const f = serverFixture();
+    let release;
+    const hold = new Promise((resolve) => { release = resolve; });
+    const active = Array.from({ length: 6 }, () => f.context.withDatabaseReadSlot(() => hold));
+    await turn();
+    const order = [];
+    const background = f.context.withDatabaseReadSlot(async () => { order.push("background"); }, null, 1);
+    const api = f.context.withDatabaseReadSlot(async () => { order.push("api"); }, null, 0);
+    release();
+    await Promise.all([...active, api, background]);
+    assert.deepEqual(order, ["api", "background"],
+      "An API read queued during global inventory prefetch must run before queued background reads");
   }
   {
     const f = await inventoryFixture(4);
     f.fetch = async (url) => {
-      assert(url.includes("/clients/device-"));
-      return { ok: true, status: 200, json: async () => ({ status: true }) };
+      assert.equal(url, database + "/clients.json", "Allocation should check one status snapshot per database");
+      return { ok: true, status: 200, json: async () => Object.fromEntries(Array.from({ length: 4 }, (_, index) => [
+        `device-${index}`, { status: true }
+      ])) };
+    };
+    const order = await f.context.findAvailableActiveNumber("fixture", null, null,
+      Date.now() + 4500, { cachedOnly: true });
+    assert(order, "A saved mapping with an online device should allocate");
+    assert.equal(order.number, "9000000000");
+    assert.equal(f.runtime.snapshot().orders.length, 1);
+    assert.equal(f.requests.length, 1, "One database status snapshot should update all saved candidates");
+  }
+  {
+    const f = await inventoryFixture(4);
+    f.fetch = async (url) => {
+      assert.equal(url, database + "/clients.json");
+      return { ok: true, status: 200, json: async () => Object.fromEntries(Array.from({ length: 4 }, (_, index) => [
+        `device-${index}`, { status: true }
+      ])) };
     };
     const orders = await Promise.all(["one", "two", "three", "four"].map((service) =>
       f.context.findAvailableActiveNumber(service, null, null,
@@ -215,7 +266,7 @@ function configureService(f) {
     assert(orders.every(Boolean), "Losing a cross-service claim must try another confirmed candidate");
     assert.equal(new Set(orders.map((order) => order.number)).size, 4,
       "Parallel services must not issue duplicate number leases");
-    assert.equal(f.requests.length, 4, "Parallel services must share identical upstream checks");
+    assert.equal(f.requests.length, 1, "Parallel services should share the database status snapshot");
   }
   {
     const f = await inventoryFixture(128, 0);
@@ -289,15 +340,39 @@ function configureService(f) {
     assert.equal(f.runtime.advanceCycle({ service: "recheck", databases: [database] }), true);
     let onlineChecks = 0;
     f.fetch = async (url) => {
-      assert.equal(url, database + "/clients/device-0.json",
-        "A recycled number must verify the individual device online status");
+      assert.equal(url, database + "/clients.json",
+        "A recycled number must verify current device status");
       onlineChecks++;
-      return { ok: true, status: 200, json: async () => ({ status: false }) };
+      return { ok: true, status: 200, json: async () => ({ "device-0": { status: false } }) };
     };
     const order = await f.context.findAvailableActiveNumber("recheck", null, null,
       Date.now() + 4500, { cachedOnly: true });
     assert.equal(order, null, "Offline recycled numbers must not be issued");
     assert(onlineChecks >= 1);
+  }
+  {
+    const f = new serverFixture();
+    const slowDatabase = "https://slow-fixture.firebaseio.com";
+    f.setRotation({ initialized: true, databaseUrls: [slowDatabase, database], serviceUsage: {}, orders: [] });
+    await f.context.getRuntimeStore();
+    const checkedAt = Date.now() - 20000;
+    f.runtime.rememberBatch([
+      { database: slowDatabase, deviceId: "slow-device", number: "9000000081", now: checkedAt, verifiedAt: Date.now() },
+      { database, deviceId: "ready-device", number: "9000000082", now: checkedAt, verifiedAt: Date.now() }
+    ]);
+    f.fetch = async (url) => {
+      if (url === slowDatabase + "/clients.json" || url === slowDatabase + "/clients/slow-device.json") {
+        return { ok: false, status: 503, headers: { get: () => null } };
+      }
+      assert.equal(url, database + "/clients.json",
+        "An unhealthy project must not stop a healthy database from serving the allocation");
+      return { ok: true, status: 200, json: async () => ({ "ready-device": { status: true } }) };
+    };
+    const order = await f.context.findAvailableActiveNumber(
+      "fixture", null, null, Date.now() + 4000, { cachedOnly: true }
+    );
+    assert(order, "The healthy database should still allocate a number");
+    assert.equal(order.databaseUrl, database);
   }
   {
     const f = await inventoryFixture(1);

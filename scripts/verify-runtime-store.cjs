@@ -97,6 +97,21 @@ const state = { initialized: true, databaseUrls: [database], orders: [], service
       [4, 1, 1, 1, 1, 1],
       "Stock totals should deduplicate phone numbers and classify recent, reserved, offline, and stale inventory"
     );
+    const snapshotStore = new RuntimeStore(":memory:");
+    snapshotStore.initialize(state);
+    snapshotStore.rememberBatch([
+      { ...candidate, deviceId: "snapshot-online", number: "9555555551", now: Date.now() - 20000 },
+      { ...candidate, deviceId: "snapshot-offline", number: "9555555552", now: Date.now() - 20000 }
+    ]);
+    const snapshotCheckedAt = Date.now();
+    snapshotStore.markDatabaseOnline({
+      database, onlineDeviceIds: ["snapshot-online"], now: snapshotCheckedAt
+    });
+    assert.deepEqual(snapshotStore.sql("SELECT device_id,online,checked_at FROM numbers WHERE number LIKE '955555555%' ORDER BY device_id")
+      .all().map((row) => [row.device_id, row.online, row.checked_at]), [
+      ["snapshot-offline", 0, snapshotCheckedAt], ["snapshot-online", 1, snapshotCheckedAt]
+    ], "One clients snapshot must update all saved online states in a single SQLite pass");
+    snapshotStore.close();
     summaryStore.close();
     const cycleStore = new RuntimeStore(":memory:");
     cycleStore.initialize(state);
@@ -155,9 +170,9 @@ const state = { initialized: true, databaseUrls: [database], orders: [], service
     f.runtime.remember(candidate);
     let statusReads = 0;
     f.fetch = async (url) => {
-      assert.equal(url, database + "/clients/synthetic-device.json", "Warm allocation may only check the device status");
+      assert.equal(url, database + "/clients.json", "Warm allocation may only check the database online-status snapshot");
       statusReads++;
-      return { ok: true, status: 200, json: async () => ({ status: true }) };
+      return { ok: true, status: 200, json: async () => ({ [candidate.deviceId]: { status: true } }) };
     };
     const before = [...f.readCounts].find(([name]) => name.endsWith("rotation.json"))[1];
     const order = await f.context.findAvailableActiveNumber("jio");

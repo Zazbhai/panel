@@ -244,6 +244,12 @@ class RuntimeStore {
   markOnlineBatch(entries) {
     return this.transaction(() => { for (const entry of entries) this.markOnline(entry); });
   }
+  markDatabaseOnline({ database, onlineDeviceIds = [], now = Date.now() }) {
+    const ids = JSON.stringify(onlineDeviceIds);
+    return this.sql("UPDATE numbers SET online=(device_id IN (SELECT value FROM json_each(?))),checked_at=? "
+      + "WHERE database_url=? AND (online!=(device_id IN (SELECT value FROM json_each(?))) OR checked_at<=?)")
+      .run(ids, now, database, ids, now - 8000).changes;
+  }
   releaseOrder(orderId) {
     this.sql("DELETE FROM leases WHERE order_id=?").run(orderId);
   }
@@ -264,21 +270,25 @@ class RuntimeStore {
       .get(now - 86400000, now - onlineTtl, now, JSON.stringify(databases));
     return { ...counts, databaseCount: databases.length, checkedAt: now };
   }
-  candidates({ service, databases, now = Date.now(), mappingTtl = 86400000, onlineTtl = 30000, limit = 32 }) {
+  candidates({ service, databases, now = Date.now(), mappingTtl = 86400000, onlineTtl = 30000, limit = 32, freshOnly = false }) {
     // Numbers already attempted in the current service cycle are excluded.
     // Once every eligible number has been attempted, advanceCycle moves to a
     // new cycle and these no-OTP numbers become the final fallback candidates.
     // OTP-bearing numbers remain excluded forever by service_locks.
-    const query = "SELECT n.*,c.cycle AS current_cycle,u.cycle AS used_cycle FROM numbers n "
+    const query = "WITH candidates AS (SELECT n.*,c.cycle AS current_cycle,u.cycle AS used_cycle,"
+      + "ROW_NUMBER() OVER(PARTITION BY n.database_url ORDER BY n.checked_at DESC,n.number) AS database_rank "
+      + "FROM numbers n "
       + "LEFT JOIN service_cycles c ON c.service=? "
       + "LEFT JOIN service_usage u ON u.service=? AND u.number=n.number "
-      + "WHERE (n.online=1 OR n.checked_at<=?) AND n.verified_at>? AND n.database_url IN (SELECT value FROM json_each(?)) "
+      + "WHERE " + (freshOnly ? "(n.online=1 AND n.checked_at>?) " : "(n.online=1 OR n.checked_at<=?) " )
+      + "AND n.verified_at>? AND n.database_url IN (SELECT value FROM json_each(?)) "
       + "AND NOT EXISTS(SELECT 1 FROM service_locks l WHERE l.service=? AND l.number=n.number) "
       + "AND (u.cycle IS NULL OR u.cycle<>COALESCE(c.cycle,0)) "
-      + "AND NOT EXISTS(SELECT 1 FROM leases r WHERE r.number=n.number AND r.expires_at>?) "
+      + "AND NOT EXISTS(SELECT 1 FROM leases r WHERE r.number=n.number AND r.expires_at>?) ) "
       // Fresh numbers (no service_usage row) always precede numbers recycled
-      // from an earlier cycle. Recycled no-OTP numbers are the final fallback.
-      + "ORDER BY CASE WHEN u.cycle IS NULL THEN 0 ELSE 1 END,n.checked_at DESC LIMIT ?";
+      // from an earlier cycle. Within each group, interleave databases so one
+      // slow project cannot dominate the bounded online-check batch.
+      + "SELECT * FROM candidates ORDER BY CASE WHEN used_cycle IS NULL THEN 0 ELSE 1 END,database_rank,checked_at DESC LIMIT ?";
     return this.sql(query).all(service, service, now - onlineTtl, now - mappingTtl, JSON.stringify(databases), service, now, limit)
       .map((row) => ({ database: row.database_url, deviceId: row.device_id, number: row.number,
         verifiedAt: row.verified_at, checkedAt: row.checked_at,

@@ -256,6 +256,28 @@ function completedOrder() {
   }
   {
     const f = serverFixture();
+    const endpoint = "https://fixture.firebaseio.com/messages/priority-device.json";
+    let reads = 0;
+    let releaseBackground;
+    const backgroundResponse = new Promise((resolve) => { releaseBackground = resolve; });
+    f.fetch = async (_url, { signal }) => {
+      reads++;
+      if (reads === 1) return new Promise((resolve, reject) => {
+        signal.addEventListener("abort", () => reject(Object.assign(new Error("background aborted"), { name: "AbortError" })), { once: true });
+        backgroundResponse.then(resolve);
+      });
+      return { ok: true, status: 200, json: async () => ({ priority: "api" }) };
+    };
+    const background = f.context.fetchSharedDatabaseJson(endpoint, 1000, 1000, null, 1);
+    await new Promise(setImmediate);
+    const apiRead = f.context.fetchSharedDatabaseJson(endpoint, 1000, 1000, null, 0);
+    assert.deepEqual(await apiRead, { priority: "api" });
+    assert.equal(reads, 2, "An API read must not join a slower background inventory read for the same endpoint");
+    releaseBackground({ ok: true, status: 200, json: async () => ({ priority: "background" }) });
+    await background;
+  }
+  {
+    const f = serverFixture();
     let oversizedBodyRead = false;
     f.fetch = async () => ({
       ok: true,

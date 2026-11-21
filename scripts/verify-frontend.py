@@ -67,7 +67,7 @@ class Fixture:
             elif path == '/api/health': data = {'status': 'ok'}
             elif path == '/api/services': data = {'initialized': True, 'services': [] if self.empty else self.services}
             elif path == '/api/rotation': data = {'initialized': True, 'databaseUrls': self.rotation}
-            elif path == '/api/stocks': data = {'total': 12, 'online': 6, 'reserved': 3, 'offline': 2, 'needsCheck': 1, 'databaseCount': 2, 'checkedAt': 1794921000000}
+            elif path == '/api/stocks': data = {'total': 12, 'online': 6, 'reserved': 3, 'offline': 2, 'needsCheck': 1, 'databaseCount': 2, 'checkedAt': 1794921000000, 'mappingPrefetch': {'status': 'running', 'total': 2, 'completed': 1, 'failed': 0}}
             elif path == '/api/sections': data = {'devices': True, 'clients': True}
             elif path == '/api/data': data = {} if self.empty else CLIENTS if section == 'clients' else DEVICES
             elif path == '/api/device-record': data = DEVICES['test-device-01']

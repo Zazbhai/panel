@@ -63,6 +63,9 @@ module.exports = function serverFixture() {
   });
   vm.runInContext(source.slice(0, startup), context);
   fixture.context = context;
+  fixture.mappingPrefetchState = () => vm.runInContext(
+    "({ ...numberMappingPrefetchState })", context
+  );
   fixture.rotation = () => fixture.runtime?.metadata() ? fixture.runtime.snapshot() : JSON.parse(files.get(path.join(path.dirname(serverPath), "rotation.json")));
   fixture.setRotation = (state) => files.set(path.join(path.dirname(serverPath), "rotation.json"), JSON.stringify(state));
   fixture.request = async (url, { method = "GET", body, admin = false } = {}) => {
