@@ -86,12 +86,12 @@ function configureService(f) {
     };
     const startedAt = Date.now();
     const response = await f.request(`/stubs/handler_api.php?action=getNumber&service=fixture&api_key=${f.apiKey}`);
-    const order = response.body.match(/^ACCESS_NUMBER:[a-f0-9]{24}:(\d{10})$/);
     assert.equal(response.status, 200);
-    assert(order, "A cold API request should join the event-driven pool refill instead of returning NO_NUMBERS early");
-    assert(Date.now() - startedAt < 1500, "Synthetic cold discovery should finish within its bounded wait");
-    assert(f.runtime.candidates({ service: "fixture", databases: databaseUrls }).length >= 1,
-      "The cold request refill should persist usable inventory into the shared pool");
+    assert.equal(response.body, "NO_NUMBERS",
+      "A cold API request must not read messages; background discovery owns mapping extraction");
+    assert(Date.now() - startedAt < 500, "A mapping-only request should return immediately");
+    assert(f.requests.every((url) => !url.includes("/messages/")),
+      `Customer number requests must never fetch message history: ${f.requests.join(",")}`);
   }
   {
     const f = serverFixture();

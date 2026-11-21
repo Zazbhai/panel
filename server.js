@@ -1979,20 +1979,12 @@ async function findAvailableActiveNumber(
       }, signal);
       if (order) return order;
     }
-    if (cachedOnly) {
-      requestNumberPoolRefresh(service);
-      const refill = activeNumberPoolRefills.get(normalizeServiceName(service).toLowerCase());
-      if (refill) {
-        // Warm allocations stay on the local fast path. A cold or depleted
-        // pool joins its one background refill rather than returning a false
-        // NO_NUMBERS while stock discovery is still running. The caller's
-        // existing deadline bounds how long this request can wait.
-        await waitForAbortable(refill, signal);
-        throwIfAborted(signal);
-        order = await tryInventory();
-        if (order) return order;
-      }
-    }
+    // API allocation is deliberately mapping-only: never read message history
+    // while a customer is waiting. Background refills extract and persist new
+    // number mappings; this request only checks the saved device online state.
+    // A customer request never starts message-history discovery. The startup
+    // warmup and low-stock refill hooks keep this inventory populated ahead of
+    // demand.
     return null;
   })();
 }
@@ -2165,9 +2157,6 @@ async function handleLocalOtpRequest(requestUrl, response) {
       );
       throwIfAborted(allocationController.signal);
     } catch (error) {
-      if (error.code !== "ALLOCATION_TIMEOUT") {
-        requestNumberPoolRefresh(service);
-      }
       if (error.code === "ALLOCATION_TIMEOUT") {
         sendJson(response, 503, {
           error: "Number request exceeded its time limit. No order was created.",
