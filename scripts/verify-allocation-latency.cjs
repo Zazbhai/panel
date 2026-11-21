@@ -40,10 +40,10 @@ function configureService(f) {
     const warmed = [];
     f.context.refillNumberPool = async (service) => { warmed.push(service); };
     await f.context.warmNumberPools();
-    assert.equal(new Set(warmed).size, names.length,
-      "One-time startup warming should cover every enabled service without recurring polling");
-    assert(names.every((name) => warmed.includes(name)));
-    assert.equal(warmed.length, names.length);
+    assert.equal(new Set(warmed).size, 4,
+      "Startup warming should stay bounded to the configured service batch");
+    assert(warmed.every((name) => names.includes(name)));
+    assert.equal(warmed.length, 4);
   }
   {
     const f = serverFixture();

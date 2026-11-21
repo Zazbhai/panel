@@ -74,6 +74,7 @@ const rotationStateCacheTtlMs = 250;
 const numberPoolSize = readPositiveIntegerEnv("NUMBER_POOL_SIZE", 32, 1, 500);
 const numberPoolRefillThreshold = Math.max(1, Math.floor(numberPoolSize / 4));
 const numberPoolWarmServices = readPositiveIntegerEnv("NUMBER_POOL_WARM_SERVICES", 4, 0, 32);
+const requestedNumberPoolServices = new Set();
 const numberPoolRefillCooldownMs = readPositiveIntegerEnv("NUMBER_POOL_REFILL_COOLDOWN_MS", 1000, 250, 30000);
 const numberPoolEmptyCooldownMs = readPositiveIntegerEnv("NUMBER_POOL_EMPTY_COOLDOWN_MS", 5000, 1000, 60000);
 // Allow a cold API allocation to wait up to thirty seconds for a slow database
@@ -951,13 +952,17 @@ async function warmNumberPools() {
     readRotationMetadata()
   ]);
   if (!rotationState.databaseUrls.length) return;
-  const services = configured.services
+  const configuredNames = configured.services
     .filter((service) => service?.enabled === true && getEnabledTemplates(service).length > 0)
     .map((service) => normalizeServiceName(service.name).toLowerCase());
-  for (let index = 0; index < services.length; index += numberPoolWarmServices) {
-    await Promise.all(services.slice(index, index + numberPoolWarmServices)
-      .map((service) => refillNumberPool(service)));
+  const services = configuredNames.slice(0, numberPoolWarmServices);
+  // A customer-requested service is warmed on demand. Avoid scanning every
+  // configured service at startup; with hundreds of databases that creates a
+  // large message-read wave and starves normal API traffic.
+  for (const service of requestedNumberPoolServices) {
+    if (!services.includes(service)) services.push(service);
   }
+  await Promise.all(services.map((service) => refillNumberPool(service)));
 }
 
 function startNumberPoolWarmup() {
