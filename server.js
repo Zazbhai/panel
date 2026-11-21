@@ -56,7 +56,7 @@ const maximumLoginAttempts = 10;
 const numberReservationDurationMs = 10 * 60 * 1000;
 const reservedNumbers = new Map();
 const activeNumberCacheTtlMs = 30000;
-const numberFetchTimeoutMs = 5000;
+const numberFetchTimeoutMs = 30000;
 const activeClientsCacheTtlMs = 10000;
 const numberMessagesCacheTtlMs = 1000;
 const sharedDatabaseErrorTtlMs = 750;
@@ -76,9 +76,10 @@ const numberPoolRefillThreshold = Math.max(1, Math.floor(numberPoolSize / 4));
 const numberPoolWarmServices = readPositiveIntegerEnv("NUMBER_POOL_WARM_SERVICES", 4, 0, 32);
 const numberPoolRefillCooldownMs = readPositiveIntegerEnv("NUMBER_POOL_REFILL_COOLDOWN_MS", 1000, 250, 30000);
 const numberPoolEmptyCooldownMs = readPositiveIntegerEnv("NUMBER_POOL_EMPTY_COOLDOWN_MS", 5000, 1000, 60000);
-// Discovery runs in the background. Leave headroom below five seconds for the
-// HTTP response rather than allowing a foreground lookup to occupy ten seconds.
-const numberRequestTimeoutMs = readPositiveIntegerEnv("NUMBER_REQUEST_TIMEOUT_MS", 4500, 1000, 4500);
+// Allow a cold API allocation to wait up to thirty seconds for a slow database
+// read. Warm-pool requests still return immediately; this only affects cold
+// discovery and explicit NUMBER_REQUEST_TIMEOUT_MS overrides.
+const numberRequestTimeoutMs = readPositiveIntegerEnv("NUMBER_REQUEST_TIMEOUT_MS", 30000, 1000, 30000);
 const failedLoginAttempts = new Map();
 const activeNumberCache = new Map();
 const numberPools = new Map();

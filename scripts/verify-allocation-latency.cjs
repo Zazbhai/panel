@@ -314,7 +314,7 @@ function configureService(f) {
       else signal.addEventListener("abort", abort, { once: true });
     });
     const response = await f.request(`/stubs/handler_api.php?action=getNumber&service=fixture&api_key=${f.apiKey}`);
-    assert.equal(timeoutValues[0], 4500, "The foreground waiting budget must stay below five seconds");
+    assert.equal(timeoutValues[0], 30000, "The foreground waiting budget must use the configured thirty-second maximum");
     assert.equal(response.status, 503);
     assert.equal(JSON.parse(response.body).code, "ALLOCATION_TIMEOUT");
     await turn();
