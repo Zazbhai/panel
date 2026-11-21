@@ -32,6 +32,150 @@ function configureService(f) {
 (async () => {
   {
     const f = serverFixture();
+    const databases = ["https://refill-slow.firebaseio.com", database];
+    const state = { databaseUrls: databases, serviceUsage: {}, orders: [], reserved: [] };
+    const started = [];
+    let cancelled = 0;
+    f.context.readActiveNumbers = async (database, _available, signal) => {
+      started.push(database);
+      if (database === databases[0]) {
+        return new Promise((_resolve, reject) => {
+          const abort = () => { cancelled++; reject(Object.assign(new Error("Cancelled"), { name: "AbortError" })); };
+          if (signal.aborted) abort();
+          else signal.addEventListener("abort", abort, { once: true });
+        });
+      }
+      return { numbers: Array.from({ length: 32 }, (_, index) => ({
+        deviceId: `refill-${index}`, number: String(9000000300 + index)
+      })), messageReadFailures: 0 };
+    };
+    const controller = new AbortController();
+    const refill = f.context.readActiveNumberInventories("fixture", state, 32, null, controller.signal, true);
+    let timer;
+    try {
+      const result = await Promise.race([refill, new Promise((resolve) => {
+        timer = setTimeout(() => resolve(null), 500);
+      })]);
+      assert(result, "Background refill must fetch a healthy database alongside a slow database");
+      assert.equal(started.length, 2);
+      assert.equal(cancelled, 1, "Reaching the prepared-stock target must stop unused refill reads");
+      assert.equal(result.inventories[0].numbers.length, 32);
+    } finally {
+      clearTimeout(timer);
+      controller.abort();
+      await refill.catch(() => null);
+    }
+  }
+  {
+    const f = serverFixture();
+    const databases = Array.from({ length: 5 }, (_, index) => `https://prefetch-${index}.firebaseio.com`);
+    f.context.readRotationMetadata = async () => ({ databaseUrls: databases });
+    let releaseSlow;
+    const slow = new Promise((resolve) => { releaseSlow = resolve; });
+    const started = [];
+    let active = 0, peak = 0;
+    f.context.readActiveNumbers = async (database) => {
+      started.push(database);
+      peak = Math.max(peak, ++active);
+      try {
+        if (database === databases[0]) await slow;
+        return { numbers: [], messageReadFailures: 0 };
+      } finally { active--; }
+    };
+    const preparation = f.context.prefetchAllNumberMappings();
+    try {
+      await turn();
+      assert.equal(started.length, 5, "A slow database must not block the next database in a free prefetch lane");
+      assert.equal(f.mappingPrefetchState().completed, 4, "Progress should advance before a slow database finishes");
+      assert.equal(peak, 2, "Rolling database preparation must retain its concurrency limit");
+    } finally {
+      releaseSlow();
+      await preparation;
+    }
+  }
+  {
+    const f = serverFixture();
+    let releaseSlow;
+    const slow = new Promise((resolve) => { releaseSlow = resolve; });
+    const saved = [];
+    let messageReads = 0, active = 0, peak = 0;
+    f.fetch = async (url) => {
+      if (url.endsWith("/clients.json")) return {
+        ok: true, status: 200, json: async () => Object.fromEntries(Array.from({ length: 8 }, (_, index) => [
+          `rolling-${index}`, { status: true }
+        ]))
+      };
+      const readIndex = messageReads++;
+      peak = Math.max(peak, ++active);
+      try {
+        if (readIndex === 0) await slow;
+        return { ok: true, status: 200, json: async () => ({
+          sms: { message: `Jio number ${9000000100 + readIndex}`, timestamp: Date.now() }
+        }) };
+      } finally { active--; }
+    };
+    const scan = f.context.readActiveNumbers(database, () => true, null, 100, null, true,
+      async (candidates) => { saved.push(...candidates); });
+    try {
+      for (let index = 0; index < 50 && saved.length < 7; index++) {
+        await new Promise((resolve) => setTimeout(resolve, 2));
+      }
+      assert.equal(saved.length, 7, "Fast device mappings must be saved while another device read is pending");
+      assert.equal(messageReads, 8, "Every free device lane should immediately fetch another mapping");
+      assert(peak <= 4, "Device discovery must keep the default bounded concurrency");
+    } finally {
+      releaseSlow();
+      const result = await scan;
+      assert.equal(result.numbers.length, 8);
+    }
+  }
+  {
+    const f = serverFixture();
+    const databases = Array.from({ length: 6 }, (_, index) => `https://allocation-${index}.firebaseio.com`);
+    f.setRotation({ initialized: true, databaseUrls: databases, serviceUsage: {}, orders: [] });
+    await f.context.getRuntimeStore();
+    f.context.refillNumberPool = async () => null;
+    f.runtime.rememberBatch(databases.map((database, index) => ({
+      database, deviceId: `rolling-${index}`, number: String(9000000200 + index),
+      now: Date.now() - 20000 - index * 100, verifiedAt: Date.now()
+    })));
+    let cancelled = 0;
+    f.fetch = async (url, { signal }) => {
+      assert(url.includes("/clients/rolling-"), "Allocation must check saved device status without reading messages");
+      const index = Number(url.match(/rolling-(\d+)\.json$/)[1]);
+      if (index === 0) return { ok: false, status: 503, headers: { get: () => null } };
+      if (index === 3 || index === 4) return {
+        ok: true, status: 200, json: async () => ({ status: index === 4 })
+      };
+      assert(index < 3, "The first successful candidate should stop speculative reads");
+      assert(index === 1 || index === 2, "A free check lane should reach the next database after a failure");
+      return new Promise((_resolve, reject) => {
+        const abort = () => { cancelled++; reject(Object.assign(new Error("Cancelled"), { name: "AbortError" })); };
+        if (signal.aborted) abort();
+        else signal.addEventListener("abort", abort, { once: true });
+      });
+    };
+    const controller = new AbortController();
+    const allocation = f.context.findAvailableActiveNumber("fixture", controller.signal, null,
+      Date.now() + 4000, { cachedOnly: true });
+    let timer;
+    try {
+      const order = await Promise.race([allocation, new Promise((resolve) => {
+        timer = setTimeout(() => resolve(null), 500);
+      })]);
+      assert(order, "A free status-check lane must reach an online fifth database without waiting for the three slow databases");
+      assert.equal(order.databaseUrl, databases[4]);
+      await turn();
+      assert.equal(cancelled, 2, "Winning an atomic claim must cancel only the remaining losing online checks");
+      assert.equal(f.runtime.snapshot().orders.length, 1);
+    } finally {
+      clearTimeout(timer);
+      controller.abort();
+      await allocation.catch(() => null);
+    }
+  }
+  {
+    const f = serverFixture();
     const names = Array.from({ length: 10 }, (_, index) => "service-" + index);
     f.context.readConfiguredServices = async () => ({ services: names.map((name) => ({
       name, enabled: true, template: "code [OTP]"
@@ -240,25 +384,23 @@ function configureService(f) {
   {
     const f = await inventoryFixture(4);
     f.fetch = async (url) => {
-      assert.equal(url, database + "/clients.json", "Allocation should check one status snapshot per database");
-      return { ok: true, status: 200, json: async () => Object.fromEntries(Array.from({ length: 4 }, (_, index) => [
-        `device-${index}`, { status: true }
-      ])) };
+      assert(url.startsWith(database + "/clients/device-"), "Allocation must verify saved device IDs");
+      const deviceId = decodeURIComponent(url.split("/clients/")[1].split(".json")[0]);
+      return { ok: true, status: 200, json: async () => ({ status: true, deviceId }) };
     };
     const order = await f.context.findAvailableActiveNumber("fixture", null, null,
       Date.now() + 4500, { cachedOnly: true });
     assert(order, "A saved mapping with an online device should allocate");
     assert.equal(order.number, "9000000000");
     assert.equal(f.runtime.snapshot().orders.length, 1);
-    assert.equal(f.requests.length, 1, "One database status snapshot should update all saved candidates");
+    assert(f.requests.length <= 4, "Only a bounded set of device-status reads should be needed");
   }
   {
     const f = await inventoryFixture(4);
     f.fetch = async (url) => {
-      assert.equal(url, database + "/clients.json");
-      return { ok: true, status: 200, json: async () => Object.fromEntries(Array.from({ length: 4 }, (_, index) => [
-        `device-${index}`, { status: true }
-      ])) };
+      assert(url.startsWith(database + "/clients/device-"));
+      const deviceId = decodeURIComponent(url.split("/clients/")[1].split(".json")[0]);
+      return { ok: true, status: 200, json: async () => ({ status: true, deviceId }) };
     };
     const orders = await Promise.all(["one", "two", "three", "four"].map((service) =>
       f.context.findAvailableActiveNumber(service, null, null,
@@ -266,7 +408,7 @@ function configureService(f) {
     assert(orders.every(Boolean), "Losing a cross-service claim must try another confirmed candidate");
     assert.equal(new Set(orders.map((order) => order.number)).size, 4,
       "Parallel services must not issue duplicate number leases");
-    assert.equal(f.requests.length, 1, "Parallel services should share the database status snapshot");
+    assert(f.requests.length <= 4, "Parallel services should share a bounded set of candidate checks");
   }
   {
     const f = await inventoryFixture(128, 0);
@@ -340,10 +482,10 @@ function configureService(f) {
     assert.equal(f.runtime.advanceCycle({ service: "recheck", databases: [database] }), true);
     let onlineChecks = 0;
     f.fetch = async (url) => {
-      assert.equal(url, database + "/clients.json",
+      assert.equal(url, database + "/clients/device-0.json",
         "A recycled number must verify current device status");
       onlineChecks++;
-      return { ok: true, status: 200, json: async () => ({ "device-0": { status: false } }) };
+      return { ok: true, status: 200, json: async () => ({ status: false }) };
     };
     const order = await f.context.findAvailableActiveNumber("recheck", null, null,
       Date.now() + 4500, { cachedOnly: true });
@@ -361,12 +503,14 @@ function configureService(f) {
       { database, deviceId: "ready-device", number: "9000000082", now: checkedAt, verifiedAt: Date.now() }
     ]);
     f.fetch = async (url) => {
-      if (url === slowDatabase + "/clients.json" || url === slowDatabase + "/clients/slow-device.json") {
+      const [projectUrl, deviceId] = url.split("/clients/");
+      assert(deviceId, "Allocation must check saved device status, not read messages");
+      if (projectUrl === slowDatabase) {
         return { ok: false, status: 503, headers: { get: () => null } };
       }
-      assert.equal(url, database + "/clients.json",
+      assert.equal(projectUrl, database,
         "An unhealthy project must not stop a healthy database from serving the allocation");
-      return { ok: true, status: 200, json: async () => ({ "ready-device": { status: true } }) };
+      return { ok: true, status: 200, json: async () => ({ status: true }) };
     };
     const order = await f.context.findAvailableActiveNumber(
       "fixture", null, null, Date.now() + 4000, { cachedOnly: true }

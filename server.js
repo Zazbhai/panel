@@ -69,11 +69,15 @@ const maximumSharedDatabaseJsonCacheBytes = 8 * 1024 * 1024;
 const sharedDatabaseJsonCacheLimit = 256;
 const maximumConcurrentDatabaseReads = readPositiveIntegerEnv("MAX_CONCURRENT_DATABASE_READS", 6, 1, 64);
 const backgroundDatabaseReadLimit = Math.max(1, maximumConcurrentDatabaseReads - Math.min(2, maximumConcurrentDatabaseReads - 1));
-const numberStatusCheckConcurrency = Math.max(1, Math.min(4, maximumConcurrentDatabaseReads));
-const numberMappingPrefetchConcurrency = readPositiveIntegerEnv("NUMBER_MAPPING_PREFETCH_CONCURRENCY", 2, 1, 2);
+const numberStatusCheckConcurrency = Math.max(1, Math.min(3, maximumConcurrentDatabaseReads));
+const numberStatusCheckDeviceConcurrency = Math.max(
+  1, Math.min(4, Math.floor(maximumConcurrentDatabaseReads / numberStatusCheckConcurrency))
+);
+const numberMappingPrefetchConcurrency = readPositiveIntegerEnv("NUMBER_MAPPING_PREFETCH_CONCURRENCY", 4, 1, 8);
+const numberPoolDatabaseConcurrency = readPositiveIntegerEnv("NUMBER_POOL_DATABASE_CONCURRENCY", 2, 1, 8);
 const numberMappingDeviceConcurrency = readPositiveIntegerEnv(
   "NUMBER_MAPPING_DEVICE_CONCURRENCY",
-  Math.max(1, Math.min(4, Math.floor(maximumConcurrentDatabaseReads / numberMappingPrefetchConcurrency))),
+  Math.max(1, Math.min(4, backgroundDatabaseReadLimit)),
   1, 16
 );
 const maximumConcurrentProviderReads = readPositiveIntegerEnv("MAX_CONCURRENT_PROVIDER_READS", 16, 1, 64);
@@ -972,32 +976,56 @@ async function prefetchAllNumberMappings() {
   };
   if (!databases.length) return;
   const controller = new AbortController();
-  for (let index = 0; index < databases.length; index += numberMappingPrefetchConcurrency) {
-    const batch = databases.slice(index, index + numberMappingPrefetchConcurrency);
-    const results = await Promise.allSettled(batch.map(async (database) => {
-      const noteAndSaveMappings = async (candidates, checkedAt) => {
-        if (!candidates.length) return;
-        await store.call("rememberBatch", candidates.map((candidate) => ({
-          database, deviceId: candidate.deviceId, number: candidate.number,
-          verifiedAt: candidate.verifiedAt, online: true, now: checkedAt
-        })));
-        for (const candidate of candidates) {
-          const key = `${database}|${candidate.deviceId}`;
-          if (countedMappings.has(key)) continue;
-          countedMappings.add(key);
-          numberMappingPrefetchState.mappings += 1;
-        }
-      };
-      const inventory = await readActiveNumbers(
-        database, () => true, controller.signal, Number.MAX_SAFE_INTEGER, null, true, noteAndSaveMappings
-      );
-      return inventory;
-    }));
-    numberMappingPrefetchState.completed += batch.length;
-    numberMappingPrefetchState.failed += results.filter((result) =>
-      result.status === "rejected"
-      || (result.status === "fulfilled" && result.value.messageReadFailures > 0)).length;
-  }
+  let nextDatabase = 0;
+  const scanDatabase = async () => {
+    while (nextDatabase < databases.length) {
+      const database = databases[nextDatabase++];
+      let failed = false;
+      try {
+        const pendingMappings = [];
+        let saveScheduled = false;
+        const savePendingMappings = async () => {
+          saveScheduled = false;
+          const batch = pendingMappings.splice(0);
+          try {
+            const entries = batch.flatMap(({ candidates, checkedAt }) => candidates.map((candidate) => ({
+              database, deviceId: candidate.deviceId, number: candidate.number,
+              verifiedAt: candidate.verifiedAt, online: true, now: checkedAt
+            })));
+            await store.call("rememberBatch", entries);
+            for (const entry of entries) {
+              const key = `${database}|${entry.deviceId}`;
+              if (countedMappings.has(key)) continue;
+              countedMappings.add(key);
+              numberMappingPrefetchState.mappings += 1;
+            }
+            for (const item of batch) item.resolve();
+          } catch (error) {
+            for (const item of batch) item.reject(error);
+          }
+        };
+        const noteAndSaveMappings = (candidates, checkedAt) => new Promise((resolve, reject) => {
+          pendingMappings.push({ candidates, checkedAt, resolve, reject });
+          if (!saveScheduled) {
+            saveScheduled = true;
+            setImmediate(savePendingMappings);
+          }
+        });
+        const inventory = await readActiveNumbers(
+          database, () => true, controller.signal, Number.MAX_SAFE_INTEGER, null, true, noteAndSaveMappings
+        );
+        failed = inventory.messageReadFailures > 0;
+      } catch {
+        failed = true;
+      } finally {
+        numberMappingPrefetchState.completed += 1;
+        if (failed) numberMappingPrefetchState.failed += 1;
+      }
+    }
+  };
+  await Promise.all(Array.from(
+    { length: Math.min(numberMappingPrefetchConcurrency, databases.length) }, scanDatabase
+  ));
   numberMappingPrefetchState.status = numberMappingPrefetchState.failed ? "partial" : "complete";
   numberMappingPrefetchState.completedAt = Date.now();
 }
@@ -1416,7 +1444,7 @@ function rememberActiveClientIds(database, clients, expiresAt) {
     }
   }
   activeClientOnlineIds.delete(database);
-  activeClientOnlineIds.set(database, { onlineIds, expiresAt });
+  activeClientOnlineIds.set(database, { onlineIds, checkedIds: null, complete: true, expiresAt });
   while (activeClientOnlineIds.size > 500) {
     activeClientOnlineIds.delete(activeClientOnlineIds.keys().next().value);
   }
@@ -1504,8 +1532,47 @@ async function readActiveNumbers(database, isAvailable = () => true, parentSigna
     ? uncachedClients.map((_, index) => uncachedClients[(offset + index) % uncachedClients.length])
     : [];
   let messageReads = 0;
+  if (scanAll) {
+    let nextDevice = 0;
+    const scanDevice = async () => {
+      while (!batchController.signal.aborted && nextDevice < candidates.length) {
+        const [deviceId] = candidates[nextDevice++];
+        let candidate;
+        try {
+          candidate = {
+            deviceId,
+            number: getLatestCarrierNumber(await fetchSharedDatabaseJson(
+              `${database}/messages/${encodeURIComponent(deviceId)}.json`,
+              numberFetchTimeoutMs, numberMessagesCacheTtlMs, batchController.signal, readPriority
+            ))
+          };
+        } catch (error) {
+          if (batchController.signal.aborted) return;
+          messageReadFailures += 1;
+          if (!upstreamError && (error.status || error.code)) upstreamError = error;
+          continue;
+        }
+        if (batchController.signal.aborted) return;
+        cacheActiveNumber(database, candidate);
+        if (!candidate.number) continue;
+        numbers.set(candidate.number, candidate);
+        if (typeof onDiscover === "function") {
+          await onDiscover([candidate], snapshotCheckedAt);
+        }
+      }
+    };
+    try {
+      await Promise.all(Array.from(
+        { length: Math.min(numberMappingDeviceConcurrency, candidates.length) }, scanDevice
+      ));
+      return { numbers: [...numbers.values()], messageReadFailures, upstreamError };
+    } finally {
+      batchController.abort();
+      parentSignal?.removeEventListener("abort", abortForParent);
+    }
+  }
   for (let index = 0; index < candidates.length;) {
-    const batchSize = scanAll ? numberMappingDeviceConcurrency : (requiredCandidates > 1 ? Math.min(8, 48 - messageReads) : 8);
+    const batchSize = requiredCandidates > 1 ? Math.min(8, 48 - messageReads) : 8;
     if (batchSize <= 0) break;
     const batch = candidates.slice(index, index + batchSize);
     index += batch.length;
@@ -1537,7 +1604,6 @@ async function readActiveNumbers(database, isAvailable = () => true, parentSigna
       // No eligible number in this batch; inspect its results for recycling and errors.
     }
     const results = await Promise.allSettled(reads);
-    const discovered = [];
     for (const result of results) {
       if (result.status === "rejected") {
         messageReadFailures += 1;
@@ -1547,14 +1613,9 @@ async function readActiveNumbers(database, isAvailable = () => true, parentSigna
       } else if (result.value.number && !numbers.has(result.value.number)) {
         cacheActiveNumber(database, result.value);
         numbers.set(result.value.number, result.value);
-        discovered.push(result.value);
       } else if (result.status === "fulfilled") {
         cacheActiveNumber(database, result.value);
-        if (result.value.number) discovered.push(result.value);
       }
-    }
-    if (scanAll && discovered.length && typeof onDiscover === "function") {
-      await onDiscover(discovered, snapshotCheckedAt);
     }
     if (parentSignal?.aborted) {
       if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
@@ -1758,7 +1819,7 @@ async function readActiveNumberInventories(service, rotationState, requiredCandi
     }
   };
   await Promise.all(Array.from(
-    { length: Math.min(requiredCandidates > 1 ? 1 : databasePingConcurrency, scanUrls.length) },
+    { length: Math.min(requiredCandidates > 1 ? numberPoolDatabaseConcurrency : databasePingConcurrency, scanUrls.length) },
     scanDatabase
   ));
   if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
@@ -1924,70 +1985,82 @@ function refillNumberPool(service, parentSignal = null) {
 
 async function refreshCandidateDatabaseStatus(store, service, database, candidates, signal) {
   let snapshot = activeClientOnlineIds.get(database);
-  if (!snapshot || snapshot.expiresAt <= Date.now()) {
-    try {
-      const clients = await fetchSharedDatabaseJson(
-        `${database}/clients.json`, numberStatusCheckTimeoutMs, activeClientsCacheTtlMs, signal
-      );
-      if (clients !== null && (typeof clients !== "object" || Array.isArray(clients))) {
-        const error = new Error("Firebase returned an invalid clients list.");
-        error.status = 502;
-        throw error;
-      }
-      const cached = sharedDatabaseJsonCache.get(`${database}/clients.json`);
-      const checkedAt = Date.now();
-      const expiresAt = cached?.expiresAt > checkedAt ? cached.expiresAt : checkedAt + activeClientsCacheTtlMs;
-      snapshot = { onlineIds: rememberActiveClientIds(database, clients, expiresAt), expiresAt };
-      activeClientsSnapshotFreshUntil.set(database, expiresAt);
-    } catch (snapshotError) {
-      // If the full status index is temporarily unavailable or too large,
-      // fall back to only four saved device records from this database.
-      const controller = new AbortController();
-      const abortForParent = () => controller.abort();
-      signal?.addEventListener("abort", abortForParent, { once: true });
-      if (signal?.aborted) controller.abort();
-      let upstreamError = null;
-      const checks = new Map(candidates.slice(0, 4).map((candidate, index) => [index, (async () => {
-        try {
-          const client = await fetchSharedDatabaseJson(
-            `${database}/clients/${encodeURIComponent(candidate.deviceId)}.json`,
-            numberStatusCheckTimeoutMs, activeClientsCacheTtlMs, controller.signal
-          );
-          const online = client?.status === true;
-          await store.call("markOnline", { ...candidate, online });
-          if (!online) throw new Error("Device is offline.");
-          return { candidate, index };
-        } catch (error) {
-          if (!controller.signal.aborted && (error.status || error.code || error.name === "TimeoutError")) {
-            upstreamError ||= error;
-          }
-          throw error;
-        }
-      })()]));
-      try {
-        while (checks.size) {
-          try {
-            const available = await Promise.any(checks.values());
-            return [available.candidate];
-          } catch {
-            break;
-          }
-        }
-        if (upstreamError) throw upstreamError;
-        throw snapshotError;
-      } finally {
-        signal?.removeEventListener("abort", abortForParent);
-        controller.abort();
-      }
+  if (snapshot && snapshot.expiresAt <= Date.now()) {
+    activeClientOnlineIds.delete(database);
+    snapshot = null;
+  }
+  if (snapshot) {
+    if (!snapshot.complete) {
+      const knownOnlineCandidates = candidates.filter((candidate) => snapshot.checkedIds.has(candidate.deviceId)
+        && snapshot.onlineIds.has(candidate.deviceId));
+      if (knownOnlineCandidates.length) return knownOnlineCandidates;
+      snapshot = null;
+    }
+    if (snapshot?.complete) {
+      await store.call("markDatabaseOnline", {
+        database, onlineDeviceIds: [...snapshot.onlineIds], now: Date.now()
+      });
+      return store.call("candidates", {
+        service, databases: [database], limit: numberPoolClaimCandidates,
+        onlineTtl: activeClientsCacheTtlMs, freshOnly: true
+      });
     }
   }
-  await store.call("markDatabaseOnline", {
-    database, onlineDeviceIds: [...snapshot.onlineIds], now: Date.now()
-  });
-  return store.call("candidates", {
-    service, databases: [database], limit: numberPoolClaimCandidates,
-    onlineTtl: activeClientsCacheTtlMs, freshOnly: true
-  });
+
+  // A whole clients.json can be slow and large on production databases. Verify
+  // only the already-saved device IDs, racing a small parallel group.
+  const controller = new AbortController();
+  const abortForParent = () => controller.abort();
+  signal?.addEventListener("abort", abortForParent, { once: true });
+  if (signal?.aborted) controller.abort();
+  let upstreamError = null;
+  let nextCandidate = 0;
+  const onlineCandidates = [];
+  const checkCandidate = async () => {
+    while (!controller.signal.aborted && nextCandidate < candidates.length && !onlineCandidates.length) {
+      const candidate = candidates[nextCandidate++];
+      try {
+        const client = await fetchSharedDatabaseJson(
+          `${database}/clients/${encodeURIComponent(candidate.deviceId)}.json`,
+          numberStatusCheckTimeoutMs, activeClientsCacheTtlMs, controller.signal
+        );
+        const online = client?.status === true;
+        await store.call("markOnline", { ...candidate, online });
+        const checkedAt = Date.now();
+        let partial = activeClientOnlineIds.get(database);
+        if (!partial || partial.expiresAt <= checkedAt || partial.complete) {
+          partial = { onlineIds: new Set(), checkedIds: new Set(), complete: false,
+            expiresAt: checkedAt + activeClientsCacheTtlMs };
+        }
+        partial.checkedIds.add(candidate.deviceId);
+        if (online) partial.onlineIds.add(candidate.deviceId);
+        else partial.onlineIds.delete(candidate.deviceId);
+        activeClientOnlineIds.set(database, partial);
+        while (activeClientOnlineIds.size > 500) {
+          activeClientOnlineIds.delete(activeClientOnlineIds.keys().next().value);
+        }
+        if (online) {
+          onlineCandidates.push(candidate);
+          controller.abort();
+        }
+      } catch (error) {
+        if (!controller.signal.aborted && (error.status || error.code || error.name === "TimeoutError")) {
+          upstreamError ||= error;
+        }
+      }
+    }
+  };
+  try {
+    await Promise.all(Array.from(
+      { length: Math.min(numberStatusCheckDeviceConcurrency, candidates.length) }, checkCandidate
+    ));
+    if (onlineCandidates.length) return onlineCandidates;
+    if (upstreamError) throw upstreamError;
+    return [];
+  } finally {
+    signal?.removeEventListener("abort", abortForParent);
+    controller.abort();
+  }
 }
 
 async function findAvailableActiveNumber(
@@ -2035,12 +2108,11 @@ async function findAvailableActiveNumber(
         // A fresh pool snapshot already confirmed these devices are online.
         const freshCutoff = Date.now() - activeClientsCacheTtlMs;
         const freshCandidates = candidates.filter((candidate) => {
-          const snapshotExpiresAt = activeClientsSnapshotFreshUntil.get(candidate.database) || 0;
-          if (snapshotExpiresAt <= Date.now()) {
-            activeClientsSnapshotFreshUntil.delete(candidate.database);
-            return false;
-          }
-          return candidate.reused !== true && Number(candidate.checkedAt) > freshCutoff;
+          const snapshot = activeClientOnlineIds.get(candidate.database);
+          return Boolean(snapshot && snapshot.expiresAt > Date.now()
+            && Number(candidate.checkedAt) > freshCutoff
+            && snapshot.onlineIds.has(candidate.deviceId)
+            && (snapshot.complete || snapshot.checkedIds.has(candidate.deviceId)));
         });
         const freshOrder = freshCandidates.length
           ? await claimCandidatesAtomically(freshCandidates)
@@ -2060,72 +2132,60 @@ async function findAvailableActiveNumber(
           list.push(candidate);
           byDatabase.set(candidate.database, list);
         }
-        const spreadCandidates = [];
-        while (spreadCandidates.length < Math.min(16, staleCandidates.length)) {
-          let added = false;
-          for (const list of byDatabase.values()) {
-            const candidate = list.shift();
-            if (!candidate) continue;
-            spreadCandidates.push(candidate);
-            added = true;
-            if (spreadCandidates.length >= Math.min(16, staleCandidates.length)) break;
-          }
-          if (!added) break;
-        }
-        const staleGroups = new Map();
-        for (const candidate of spreadCandidates) {
-          const group = staleGroups.get(candidate.database) || [];
-          group.push(candidate);
-          staleGroups.set(candidate.database, group);
-        }
-        const selectedGroups = [...staleGroups.entries()].slice(
-          0, Math.min(numberStatusCheckConcurrency, numberStatusCheckDatabaseLimit - databasesChecked)
+        const selectedGroups = [...byDatabase.entries()].slice(
+          0, Math.max(0, numberStatusCheckDatabaseLimit - databasesChecked)
         );
-        for (const [database, candidates] of selectedGroups) {
-          staleGroups.set(database, candidates.slice(0, 4));
-        }
-        databasesChecked += selectedGroups.length;
         if (!selectedGroups.length) return null;
         const verificationController = new AbortController();
         const abortVerification = () => verificationController.abort();
         signal?.addEventListener("abort", abortVerification, { once: true });
         if (signal?.aborted) abortVerification();
-        const failures = [];
         let verifiedAny = false;
-        try {
-          const checks = new Map(selectedGroups.map(([database, databaseCandidates], index) => [index, (async () => {
+        const checks = new Map();
+        const checkedDatabaseUrls = new Set();
+        let nextGroup = 0;
+        const startNextCheck = () => {
+          if (verificationController.signal.aborted || nextGroup >= selectedGroups.length) return;
+          const index = nextGroup++;
+          const [database, databaseCandidates] = selectedGroups[index];
+          if (!checkedDatabaseUrls.has(database)) {
+            checkedDatabaseUrls.add(database);
+            databasesChecked += 1;
+          }
+          checks.set(index, (async () => {
             try {
               const onlineCandidates = await refreshCandidateDatabaseStatus(
-                store, service, database, databaseCandidates, verificationController.signal
+                store, service, database, databaseCandidates.slice(0, 4), verificationController.signal
               );
-              if (onlineCandidates.length) return { candidates: onlineCandidates, index };
+              return { candidates: onlineCandidates, database, databaseCandidates, index };
             } catch (error) {
               if (!verificationController.signal.aborted) {
-                failures.push({ database, error });
                 lastVerificationError ||= error;
                 recordSlowDatabase(database, error);
               }
+              return { candidates: [], index };
             }
-            throw new Error("No eligible online number in this device record.");
-          })()]));
+          })());
+        };
+        try {
+          for (let index = 0; index < numberStatusCheckConcurrency; index += 1) startNextCheck();
           while (checks.size) {
-            let verified;
-            try {
-              verified = await Promise.any(checks.values());
-            } catch {
-              throwIfAborted(signal);
-              if (!verifiedAny && failures.length) {
-                // Failed databases are deferred above; this batch can now move
-                // on without spending the full request deadline retrying them.
-              }
-              break;
-            }
+            const verified = await Promise.race(checks.values());
             checks.delete(verified.index);
-            verifiedAny = true;
+            throwIfAborted(signal);
             // Claims remain serial and atomic. If another service wins this
             // number, consume the next ready check instead of failing early.
-            const order = await claimCandidatesAtomically(verified.candidates);
-            if (order) return finish(order);
+            if (verified.candidates.length) {
+              verifiedAny = true;
+              const order = await claimCandidatesAtomically(verified.candidates);
+              if (order) return finish(order);
+              const issuedDeviceIds = new Set(verified.candidates.map((candidate) => candidate.deviceId));
+              const remaining = verified.databaseCandidates.filter((candidate) => !issuedDeviceIds.has(candidate.deviceId));
+              if (remaining.length) selectedGroups.push([verified.database, remaining]);
+            }
+            // A finished empty or failed check immediately frees its lane.
+            // Other slow databases need not finish before we try the next.
+            startNextCheck();
           }
         } finally {
           signal?.removeEventListener("abort", abortVerification);
