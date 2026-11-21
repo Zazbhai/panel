@@ -95,6 +95,7 @@ const activeClientsSnapshotFreshUntil = new Map();
 let recentOrdersCache = null;
 let stockSummaryCache = null;
 let stockSummaryPending = null;
+let numberMappingPrefetchPromise = null;
 let configuredServicesCache = null;
 let configuredServicesReadPromise = null;
 const compressedStaticAssets = new Map();
@@ -942,7 +943,27 @@ function getLatestCarrierNumber(messages) {
 async function initializeOrderExpirationTimers() {
   await (await getRuntimeStore()).call("expire");
   // Expiry is indexed and checked at claim/read time; no per-order timers or JSON rewrites.
-  setTimeout(startNumberPoolWarmup, 1000).unref();
+  setTimeout(startNumberMappingPrefetch, 1000).unref();
+}
+
+async function prefetchAllNumberMappings() {
+  const rotation = await readRotationMetadata();
+  const databases = rotation.databaseUrls;
+  if (!databases.length) return;
+  const controller = new AbortController();
+  for (let index = 0; index < databases.length; index += databasePingConcurrency) {
+    const batch = databases.slice(index, index + databasePingConcurrency);
+    await Promise.allSettled(batch.map((database) =>
+      readActiveNumbers(database, () => true, controller.signal, Number.MAX_SAFE_INTEGER, null, true)));
+  }
+}
+
+function startNumberMappingPrefetch() {
+  if (numberMappingPrefetchPromise) return numberMappingPrefetchPromise;
+  numberMappingPrefetchPromise = prefetchAllNumberMappings()
+    .catch((error) => console.error("Could not prefetch number mappings:", error.message))
+    .finally(() => { numberMappingPrefetchPromise = null; });
+  return numberMappingPrefetchPromise;
 }
 
 async function warmNumberPools() {
@@ -1317,7 +1338,7 @@ function cacheActiveNumber(database, candidate) {
   }
 }
 
-async function readActiveNumbers(database, isAvailable = () => true, parentSignal = null, requiredCandidates = 1, excludedNumbers = null) {
+async function readActiveNumbers(database, isAvailable = () => true, parentSignal = null, requiredCandidates = 1, excludedNumbers = null, scanAll = false) {
   const clients = await fetchSharedDatabaseJson(
     `${database}/clients.json`,
     numberFetchTimeoutMs,
@@ -1377,7 +1398,7 @@ async function readActiveNumbers(database, isAvailable = () => true, parentSigna
         const candidate = { deviceId, number: cached.number, verifiedAt: cached.verifiedAt };
         numbers.set(cached.number, candidate);
         const eligible = (value) => isAvailable(value) && !excludedNumbers?.has(value.number);
-        if (requiredCandidates <= 1 && eligible({ ...candidate, database })) {
+        if (!scanAll && requiredCandidates <= 1 && eligible({ ...candidate, database })) {
           if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
           return { numbers: [candidate], messageReadFailures };
         }
@@ -1386,7 +1407,7 @@ async function readActiveNumbers(database, isAvailable = () => true, parentSigna
     }
     uncachedClients.push([deviceId]);
   }
-  if (requiredCandidates > 1
+  if (!scanAll && requiredCandidates > 1
     && [...numbers.values()].filter((candidate) => isAvailable(candidate) && !excludedNumbers?.has(candidate.number)).length >= requiredCandidates) {
     if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
     return { numbers: [...numbers.values()], messageReadFailures };
@@ -1397,7 +1418,7 @@ async function readActiveNumbers(database, isAvailable = () => true, parentSigna
     : [];
   let messageReads = 0;
   for (let index = 0; index < candidates.length;) {
-    const batchSize = requiredCandidates > 1 ? Math.min(8, 48 - messageReads) : 8;
+    const batchSize = scanAll ? 8 : (requiredCandidates > 1 ? Math.min(8, 48 - messageReads) : 8);
     if (batchSize <= 0) break;
     const batch = candidates.slice(index, index + batchSize);
     index += batch.length;
@@ -1411,7 +1432,7 @@ async function readActiveNumbers(database, isAvailable = () => true, parentSigna
         batchController.signal
       ))
     }));
-    if (requiredCandidates <= 1) try {
+    if (!scanAll && requiredCandidates <= 1) try {
       const available = await Promise.any(reads.map(async (read) => {
         const candidate = await read;
         cacheActiveNumber(database, candidate);
@@ -1445,7 +1466,7 @@ async function readActiveNumbers(database, isAvailable = () => true, parentSigna
       if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
       return { numbers: [...numbers.values()], messageReadFailures, upstreamError };
     }
-    if ([...numbers.values()].filter((candidate) =>
+    if (!scanAll && [...numbers.values()].filter((candidate) =>
       isAvailable(candidate) && !excludedNumbers?.has(candidate.number)).length >= requiredCandidates) {
       if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
       return { numbers: [...numbers.values()], messageReadFailures };
