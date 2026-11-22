@@ -11,17 +11,19 @@ const stockFields = {
 };
 const stockNumberFormat = new Intl.NumberFormat();
 const stockTimeFormat = new Intl.DateTimeFormat(undefined, { timeStyle: "short" });
+let stockHasTotals = false;
 
 async function loadStock() {
   if (stockButton.disabled) return;
   stockButton.disabled = true;
-  stockCounts.setAttribute("aria-busy", "true");
+  // Keep previously loaded numbers visible during the periodic refresh.
+  if (!stockHasTotals) stockCounts.setAttribute("aria-busy", "true");
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10000);
   try {
     const response = await window.dashboardApiFetch("/api/stocks", { signal: controller.signal });
-    if (!response.ok) throw new Error();
     const data = await response.json();
+    if (!response.ok) throw new Error(data?.error || `Stock request failed (HTTP ${response.status}).`);
     if (![...Object.keys(stockFields), "databaseCount", "checkedAt"]
       .every((key) => Number.isSafeInteger(data?.[key]) && data[key] >= 0)) throw new Error();
     const updated = stockTimeFormat.format(data.checkedAt);
@@ -29,7 +31,10 @@ async function loadStock() {
       document.getElementById(id).textContent = stockNumberFormat.format(data[key]);
     }
     stockSources.textContent = `${stockNumberFormat.format(data.databaseCount)} configured database${data.databaseCount === 1 ? "" : "s"}`;
-    stockStatus.textContent = data.total ? `Updated at ${updated}.` : "No numbers have been saved yet.";
+    stockHasTotals = true;
+    stockStatus.textContent = data.stale
+      ? `Showing totals from ${updated}; refreshing in the background.`
+      : data.total ? `Updated at ${updated}.` : "No numbers have been saved yet.";
     const prefetch = data.mappingPrefetch;
     if (prefetch && Number.isSafeInteger(prefetch.total) && Number.isSafeInteger(prefetch.completed)) {
       mappingPrefetchStatus.textContent = prefetch.status === "running"
@@ -43,8 +48,12 @@ async function loadStock() {
               : "Inventory preparation has not started.";
     }
     stockStatus.classList.remove("error");
-  } catch {
-    stockStatus.textContent = "Could not refresh stock totals. Try again.";
+  } catch (error) {
+    const detail = error.name === "AbortError" ? "The stock request timed out."
+      : error.message || "The server could not be reached.";
+    stockStatus.textContent = stockHasTotals
+      ? `Showing previous totals. ${detail} Retrying automatically.`
+      : `${detail} Retrying automatically.`;
     stockStatus.classList.add("error");
   } finally {
     clearTimeout(timeout);

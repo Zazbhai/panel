@@ -111,6 +111,7 @@ const activeNumberCache = new Map();
 const numberPools = new Map();
 const readyNumberQueues = new Map();
 const readyNumberQueueLoads = new Map();
+const readyNumberQueueRefreshAfter = new Map();
 const activeNumberPoolRefills = new Map();
 const numberPoolFailures = new Map();
 const serviceAllocationOperations = new Map();
@@ -2025,15 +2026,6 @@ async function refreshReadyNumberQueue(service, store = null) {
     const runtime = store || await getRuntimeStore();
     const metadata = await runtime.call("metadata");
     if (!metadata?.databaseUrls?.length) { readyNumberQueues.set(key, []); return 0; }
-    const checkedAt = Date.now();
-    for (const database of metadata.databaseUrls) {
-      const snapshot = activeClientOnlineIds.get(database);
-      if (snapshot?.complete && snapshot.expiresAt > checkedAt) {
-        await runtime.call("markDatabaseOnline", {
-          database, onlineDeviceIds: [...snapshot.onlineIds], now: checkedAt
-        });
-      }
-    }
     const candidates = await runtime.call("candidates", {
       service: key, databases: metadata.databaseUrls, limit: numberReadyQueueSize,
       onlineTtl: activeClientsCacheTtlMs, freshOnly: true
@@ -2064,6 +2056,9 @@ async function refreshReadyNumberQueue(service, store = null) {
 }
 
 function requestReadyNumberQueueRefresh(service) {
+  const now = Date.now();
+  if ((readyNumberQueueRefreshAfter.get(service) || 0) > now) return;
+  readyNumberQueueRefreshAfter.set(service, now + numberPoolRefillCooldownMs);
   void refreshReadyNumberQueue(service).catch((error) => {
     if (error?.status !== 503) console.error(`Could not refresh ready number queue for ${service}:`, error.message);
   });
@@ -2198,6 +2193,24 @@ async function findAvailableActiveNumber(
   return (async () => {
     throwIfAborted(signal);
     const store = await waitForAbortable(getRuntimeStore(), signal);
+    // Shared, recently verified stock must be tried before queue maintenance,
+    // candidate pagination, or any Firebase read. Selection and lease creation
+    // happen together inside SQLite so other PM2 processes see the claim.
+    const finishReadyCommit = onCommit?.();
+    let readyOrder;
+    try {
+      readyOrder = await store.call("claimReady", {
+        service, deadline: deadline - 100, duration: numberReservationDurationMs,
+        onlineTtl: activeClientsCacheTtlMs
+      });
+    } finally {
+      if (typeof finishReadyCommit === "function") finishReadyCommit(Boolean(readyOrder));
+    }
+    if (readyOrder) {
+      recentOrdersCache = null;
+      requestNumberPoolRefresh(service);
+      return readyOrder;
+    }
     const claimCandidatesAtomically = async (candidates) => {
       throwIfAborted(signal);
       const finishCommit = onCommit?.();
@@ -2524,8 +2537,6 @@ async function handleLocalOtpRequest(requestUrl, response) {
       return;
     }
     const service = normalizeServiceName(services[0].trim()).toLowerCase();
-    requestedNumberPoolServices.add(service);
-    requestReadyNumberQueueRefresh(service);
     const allocationDeadline = Date.now() + numberRequestTimeoutMs;
     const allocationController = new AbortController();
     let allocationTimer = setTimeout(() => allocationController.abort(), numberRequestTimeoutMs);
@@ -2564,6 +2575,7 @@ async function handleLocalOtpRequest(requestUrl, response) {
       sendText(response, 200, "BAD_SERVICE");
       return;
     }
+    requestedNumberPoolServices.add(service);
     // Refresh stale saved mappings before demand exhausts the prepared pool.
     // This runs in the background and coalesces per service; allocation still
     // verifies a candidate online immediately before it is reserved.
@@ -3067,6 +3079,28 @@ async function proxyFirebase(response, endpoint) {
   }
 }
 
+function refreshStockSummarySnapshot() {
+  if (stockSummaryPending) return stockSummaryPending;
+  stockSummaryPending = getRuntimeStore()
+    .then((store) => store.call("stockSnapshot", { onlineTtl: activeClientsCacheTtlMs }))
+    .then((value) => {
+      const progress = value.inventoryProgress;
+      const mappingPrefetch = { ...numberMappingPrefetchState };
+      // On another PM2 process the local prefetch state may be idle. Report
+      // durable progress there without mixing previous passes into a live run.
+      if (mappingPrefetch.status === "idle") {
+        mappingPrefetch.total = value.databaseCount;
+        mappingPrefetch.completed = progress?.checkedDatabases || 0;
+        mappingPrefetch.mappings = progress?.mappings || 0;
+      }
+      const { inventoryProgress, ...summary } = value;
+      stockSummaryCache = { value: { ...summary, mappingPrefetch }, expiresAt: Date.now() + 3000 };
+      return stockSummaryCache.value;
+    })
+    .finally(() => { stockSummaryPending = null; });
+  return stockSummaryPending;
+}
+
 async function handleRequest(request, response) {
   const requestUrl = new URL(request.url, "http://localhost");
   if (requestUrl.pathname === "/api/auth/session") {
@@ -3203,29 +3237,20 @@ async function handleRequest(request, response) {
       return;
     }
     try {
-      if (!stockSummaryCache || stockSummaryCache.expiresAt <= Date.now()) {
-        stockSummaryPending ||= getRuntimeStore()
-          .then((store) => store.call("stockSummary", { onlineTtl: activeClientsCacheTtlMs }))
-          .then((value) => { stockSummaryCache = { value, expiresAt: Date.now() + 3000 }; })
-          .finally(() => { stockSummaryPending = null; });
-        await stockSummaryPending;
-      }
-      const rotation = await getRuntimeStore().then((store) => store.call("metadata"));
-      const progress = await (await getRuntimeStore()).call("inventoryProgress", {
-        databases: rotation?.databaseUrls || []
-      });
-      const mappingPrefetch = { ...numberMappingPrefetchState };
-      if (mappingPrefetch.total === (rotation?.databaseUrls || []).length) {
-        mappingPrefetch.completed = Math.max(mappingPrefetch.completed, progress.checkedDatabases);
-        mappingPrefetch.mappings = Math.max(mappingPrefetch.mappings, progress.mappings);
-      }
-      sendJson(response, 200, { ...stockSummaryCache.value, mappingPrefetch });
-    } catch {
       if (stockSummaryCache?.value) {
-        sendJson(response, 200, { ...stockSummaryCache.value, mappingPrefetch: { ...numberMappingPrefetchState } });
-        return;
+        if (stockSummaryCache.expiresAt <= Date.now()) {
+          void refreshStockSummarySnapshot().catch((error) => {
+            console.warn("Stock snapshot refresh failed:", error.code || error.name || "storage error");
+          });
+        }
+        sendJson(response, 200, { ...stockSummaryCache.value,
+          stale: stockSummaryCache.expiresAt <= Date.now() });
+      } else {
+        sendJson(response, 200, { ...await refreshStockSummarySnapshot(), stale: false });
       }
-      sendJson(response, 503, { error: "Stock totals are temporarily unavailable." }, { "Retry-After": "3" });
+    } catch (error) {
+      console.warn("Initial stock snapshot failed:", error.code || error.name || "storage error");
+      sendJson(response, 503, { error: "Stock totals are temporarily unavailable.", code: "STOCK_READ_FAILED" }, { "Retry-After": "3" });
     }
     return;
   }

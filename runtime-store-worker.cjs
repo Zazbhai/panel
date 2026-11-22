@@ -7,6 +7,6 @@ parentPort.on("message", ({ id, method, args }) => {
     const value = store[method](...args);
     parentPort.postMessage({ id, value });
   } catch (error) {
-    parentPort.postMessage({ id, error: { message: error.message, code: error.code } });
+    parentPort.postMessage({ id, error: { message: error.message, code: error.code, status: error.status } });
   }
 });

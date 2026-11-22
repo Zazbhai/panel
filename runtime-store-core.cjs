@@ -30,6 +30,7 @@ class RuntimeStore {
       + "CREATE INDEX IF NOT EXISTS numbers_ready ON numbers(online,verified_at DESC,checked_at DESC);"
       + "CREATE INDEX IF NOT EXISTS numbers_by_database ON numbers(database_url,online,verified_at,checked_at,number);"
       + "CREATE INDEX IF NOT EXISTS numbers_service_candidates ON numbers(online,checked_at,verified_at,database_url,number);");
+    this.db.exec("CREATE INDEX IF NOT EXISTS numbers_ready_claim ON numbers(checked_at DESC,number) WHERE online=1;");
     const now = Date.now();
     this.db.prepare("DELETE FROM leases WHERE expires_at<=?").run(now);
     this.db.prepare("UPDATE orders SET status='expired',number_active=0 WHERE status='active' AND expires_at<=?").run(now);
@@ -323,6 +324,48 @@ class RuntimeStore {
       + "COUNT(CASE WHEN state=1 THEN 1 END) AS needsCheck FROM stock")
       .get(now - 86400000, now - onlineTtl, now, JSON.stringify(databases));
     return { ...counts, databaseCount: databases.length, checkedAt: now };
+  }
+  stockSnapshot(options = {}) {
+    // One read transaction gives totals and progress from the same WAL snapshot.
+    this.db.exec("BEGIN");
+    try {
+      const summary = this.stockSummary(options);
+      const metadata = this.metadata();
+      const progress = this.inventoryProgress({ databases: metadata?.databaseUrls || [] });
+      this.db.exec("COMMIT");
+      return { ...summary, inventoryProgress: progress };
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+  claimReady({ service, now = Date.now(), onlineTtl = 10000, mappingTtl = 86400000, ...options }) {
+    return this.transaction(() => {
+      now = Math.max(now, Date.now());
+      if (Date.now() >= (options.deadline ?? Infinity)) {
+        const error = new Error("Number allocation deadline exceeded.");
+        error.code = "ALLOCATION_TIMEOUT";
+        throw error;
+      }
+      const databases = this.metadata()?.databaseUrls || [];
+      if (!databases.length) return null;
+      // Select and claim under the same write lock: parallel PM2 processes
+      // never race over a copied 2,000-row candidate queue on the ready path.
+      // Previously attempted numbers still go through the explicit recheck path.
+      const row = this.sql("SELECT n.database_url,n.device_id,n.number FROM numbers n "
+        + "JOIN database_checks d ON d.database_url=n.database_url "
+        + "WHERE n.online=1 AND n.checked_at>? AND n.verified_at>? AND d.checked_at>? "
+        + "AND n.database_url IN (SELECT value FROM json_each(?)) "
+        + "AND NOT EXISTS(SELECT 1 FROM service_usage u WHERE u.service=? AND u.number=n.number) "
+        + "AND NOT EXISTS(SELECT 1 FROM service_locks l WHERE l.service=? AND l.number=n.number) "
+        + "AND NOT EXISTS(SELECT 1 FROM leases r WHERE r.number=n.number AND r.expires_at>?) "
+        + "ORDER BY n.checked_at DESC,n.number LIMIT 1")
+        .get(now - onlineTtl, now - mappingTtl, now - onlineTtl, JSON.stringify(databases), service, service, now);
+      if (!row) return null;
+      this.expire(now);
+      return this.claimWithinTransaction({ ...options, service, now, onlineTtl, mappingTtl,
+        candidate: { database: row.database_url, deviceId: row.device_id, number: row.number } });
+    });
   }
   candidates({ service, databases, now = Date.now(), mappingTtl = 86400000, onlineTtl = 30000, limit = 32, offset = 0, freshOnly = false, includeOffline = false }) {
     // Numbers already attempted in the current service cycle are excluded.

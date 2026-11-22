@@ -16,7 +16,7 @@ class AsyncRuntimeStore {
       if (!request) return;
       this.pending.delete(id);
       if (!this.pending.size) this.worker.unref();
-      if (error) request.reject(Object.assign(new Error(error.message), { code: error.code }));
+      if (error) request.reject(Object.assign(new Error(error.message), { code: error.code, status: error.status }));
       else request.resolve(value);
     });
     const fail = (error) => {
@@ -26,9 +26,10 @@ class AsyncRuntimeStore {
     };
     this.worker.on("error", fail);
     this.worker.on("exit", (code) => fail(new Error(`Runtime storage worker stopped (${code}).`)));
-    this.worker.unref();
+    if (!this.pending.size) this.worker.unref();
   }
   call(method, ...args) {
+    if (method === "claimReady" || method === "refreshDatabaseInventory") return this.retryTransaction(method, args);
     // Status polling can produce many identical reads for the same order.
     // Share one worker request among concurrent callers instead of filling the
     // IPC queue with duplicate SQLite work.
@@ -43,6 +44,23 @@ class AsyncRuntimeStore {
     });
     this.inflightReads.set(key, shared);
     return shared;
+  }
+  async retryTransaction(method, args) {
+    // Another PM2 process can briefly own the WAL write lock. A failed BEGIN
+    // (or rolled-back claim) is safe to retry; do not retry other storage errors.
+    const deadline = args[0]?.deadline ?? Date.now() + 1000;
+    for (let attempt = 0; ; attempt++) {
+      try { return await this.send(method, args); }
+      catch (error) {
+        const busy = error.code === "ERR_SQLITE_ERROR" && /database is (locked|busy)/i.test(error.message);
+        if (!busy) throw error;
+        if (attempt >= 2 || Date.now() + 30 >= deadline) {
+          error.status = 503;
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10 + Math.floor(Math.random() * 20)));
+      }
+    }
   }
   send(method, args) {
     if (this.failure) return Promise.reject(this.failure);
