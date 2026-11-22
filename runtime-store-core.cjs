@@ -363,18 +363,24 @@ class RuntimeStore {
       }
       const databases = this.metadata()?.databaseUrls || [];
       if (!databases.length) return null;
+      const currentCycle = this.sql("SELECT cycle FROM service_cycles WHERE service=?").get(service)?.cycle || 0;
       // Select and claim under the same write lock: parallel PM2 processes
       // never race over a copied 2,000-row candidate queue on the ready path.
-      // Previously attempted numbers still go through the explicit recheck path.
+      // Numbers attempted in an older no-OTP cycle are valid fallback stock;
+      // only numbers attempted in the current cycle are excluded. Fresh,
+      // never-tried numbers are ordered first.
       const row = this.sql("SELECT n.database_url,n.device_id,n.number FROM numbers n "
         + "JOIN database_checks d ON d.database_url=n.database_url "
+        + "LEFT JOIN service_usage current_usage ON current_usage.service=? AND current_usage.number=n.number AND current_usage.cycle=? "
         + "WHERE n.online=1 AND n.checked_at>? AND n.verified_at>? AND d.checked_at>? "
         + "AND n.database_url IN (SELECT value FROM json_each(?)) "
-        + "AND NOT EXISTS(SELECT 1 FROM service_usage u WHERE u.service=? AND u.number=n.number) "
+        + "AND current_usage.number IS NULL "
         + "AND NOT EXISTS(SELECT 1 FROM service_locks l WHERE l.service=? AND l.number=n.number) "
         + "AND NOT EXISTS(SELECT 1 FROM leases r WHERE r.number=n.number AND r.expires_at>?) "
-        + "ORDER BY n.checked_at DESC,n.number LIMIT 1")
-        .get(now - onlineTtl, now - mappingTtl, now - onlineTtl, JSON.stringify(databases), service, service, now);
+        + "ORDER BY CASE WHEN EXISTS(SELECT 1 FROM service_usage u WHERE u.service=? AND u.number=n.number) THEN 1 ELSE 0 END,"
+        + "n.checked_at DESC,n.number LIMIT 1")
+        .get(service, currentCycle, now - onlineTtl, now - mappingTtl, now - onlineTtl,
+          JSON.stringify(databases), service, now, service);
       if (!row) return null;
       this.expire(now);
       return this.claimWithinTransaction({ ...options, service, now, onlineTtl, mappingTtl,

@@ -171,11 +171,15 @@ function readyEligibility() {
     store.sql("INSERT INTO service_usage VALUES(?,?,?)").run("rush", entries[7].number, -1);
     const order = store.claimReady({ service: "rush", onlineTtl: 60000 });
     assert.equal(order.number, entries[0].number);
+    const recycled = store.claimReady({ service: "rush", onlineTtl: 60000 });
+    assert.equal(recycled.number, entries[7].number,
+      "An unlocked number from an older no-OTP cycle must be reusable without a deep search");
     assert.equal(store.claimReady({ service: "rush", onlineTtl: 60000 }), null,
-      "Offline, stale, unconfigured, unchecked, locked, leased and recycled entries must be skipped");
+      "Offline, stale, unconfigured, unchecked, locked and leased entries must be skipped");
+    const ordersBeforeExpiredDeadline = store.sql("SELECT COUNT(*) AS n FROM orders").get().n;
     assert.throws(() => store.claimReady({ service: "other", deadline: now - 1 }),
       { code: "ALLOCATION_TIMEOUT" });
-    assert.equal(store.sql("SELECT COUNT(*) AS n FROM orders").get().n, 1,
+    assert.equal(store.sql("SELECT COUNT(*) AS n FROM orders").get().n, ordersBeforeExpiredDeadline,
       "Expired claim deadlines must not create an order");
     console.log("PASS: ready claims enforce freshness, database configuration, locks, leases and deadlines.");
   } finally { store.close(); }
