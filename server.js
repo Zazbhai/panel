@@ -92,11 +92,11 @@ const numberReadyQueueRefillThreshold = Math.max(1, Math.floor(numberReadyQueueS
 const numberPoolClaimCandidates = readPositiveIntegerEnv("NUMBER_POOL_CLAIM_CANDIDATES", 1000, 32, 1000);
 const numberPoolMaxCandidatePages = readPositiveIntegerEnv("NUMBER_POOL_MAX_CANDIDATE_PAGES", 256, 2, 4096);
 const numberPoolRefillThreshold = Math.max(1, Math.floor(numberPoolSize / 4));
-const numberPoolWarmServices = readPositiveIntegerEnv("NUMBER_POOL_WARM_SERVICES", 16, 0, 128);
+const numberPoolWarmServices = readPositiveIntegerEnv("NUMBER_POOL_WARM_SERVICES", 8, 0, 128);
 const requestedNumberPoolServices = new Set();
 const numberPoolRefillCooldownMs = readPositiveIntegerEnv("NUMBER_POOL_REFILL_COOLDOWN_MS", 1000, 250, 30000);
 const numberPoolEmptyCooldownMs = readPositiveIntegerEnv("NUMBER_POOL_EMPTY_COOLDOWN_MS", 5000, 1000, 60000);
-const numberPoolWarmupIntervalMs = readPositiveIntegerEnv("NUMBER_POOL_WARMUP_INTERVAL_MS", 5000, 1000, 60000);
+const numberPoolWarmupIntervalMs = readPositiveIntegerEnv("NUMBER_POOL_WARMUP_INTERVAL_MS", 10000, 1000, 60000);
 // Allow a cold API allocation to wait up to thirty seconds for a slow database
 // read. Warm-pool requests still return immediately; this only affects cold
 // discovery and explicit NUMBER_REQUEST_TIMEOUT_MS overrides.
@@ -1074,6 +1074,9 @@ function startNumberMappingPrefetch() {
 
 async function warmNumberPools() {
   if (numberPoolWarmServices === 0) return;
+  // Let the all-database mapping sweep finish first. Running service scans
+  // against the same Firebase projects at startup starves customer reads.
+  if (numberMappingPrefetchPromise) await numberMappingPrefetchPromise;
   const [configured, rotationState] = await Promise.all([
     readConfiguredServices(),
     readRotationMetadata()
@@ -1997,11 +2000,20 @@ async function refreshReadyNumberQueue(service, store = null) {
     const runtime = store || await getRuntimeStore();
     const metadata = await runtime.call("metadata");
     if (!metadata?.databaseUrls?.length) { readyNumberQueues.set(key, []); return 0; }
+    const checkedAt = Date.now();
+    for (const database of metadata.databaseUrls) {
+      const snapshot = activeClientOnlineIds.get(database);
+      if (snapshot?.complete && snapshot.expiresAt > checkedAt) {
+        await runtime.call("markDatabaseOnline", {
+          database, onlineDeviceIds: [...snapshot.onlineIds], now: checkedAt
+        });
+      }
+    }
     const candidates = await runtime.call("candidates", {
       service: key, databases: metadata.databaseUrls, limit: numberReadyQueueSize,
       onlineTtl: activeClientsCacheTtlMs, freshOnly: true
     });
-    const now = Date.now();
+    const now = checkedAt;
     const verifiedCandidates = candidates.filter((candidate) => {
       const snapshot = activeClientOnlineIds.get(candidate.database);
       return snapshot && snapshot.expiresAt > now && snapshot.onlineIds.has(candidate.deviceId)
