@@ -2226,12 +2226,10 @@ async function findAvailableActiveNumber(
           signal?.removeEventListener("abort", abortVerification);
           verificationController.abort();
         }
-        if (!verifiedAny) return null;
-        const error = new Error("Number allocation is busy. Retry shortly.");
-        error.code = "ALLOCATION_CONTENTION";
-        error.status = 503;
-        error.retryAfterMs = 1000;
-        throw error;
+        // Every verified candidate may have been claimed by another request.
+        // Let the outer page loop fetch the next stock page instead of
+        // exposing a transient contention error as a customer-facing 503.
+        return null;
       };
       const triedPages = new Set();
       const maximumPages = Math.max(numberPoolMaxCandidatePages,
