@@ -69,14 +69,14 @@ function completedOrder() {
       }) };
     };
     await f.context.refillNumberPool("fixture");
-    assert.equal(f.runtime.candidates({ service: "fixture", databases: f.rotation().databaseUrls }).length, 32,
+    assert.equal(f.runtime.candidates({ service: "fixture", databases: f.rotation().databaseUrls, limit: 100 }).length, 40,
       "Background refill should prepare a bounded shared inventory of future numbers");
     const readsBeforeAllocation = upstreamReads;
     const reservation = await f.context.findAvailableActiveNumber("fixture");
     assert(reservation, "A prepared number should be allocated");
     assert.equal(upstreamReads, readsBeforeAllocation,
       "A warm-pool allocation must not scan Firebase on the request path");
-    assert.equal(f.runtime.candidates({ service: "fixture", databases: f.rotation().databaseUrls }).length, 31,
+    assert.equal(f.runtime.candidates({ service: "fixture", databases: f.rotation().databaseUrls, limit: 100 }).length, 39,
       "An active lease should exclude the number from the shared inventory");
     assert.equal(typeof reservation.number, "string",
       "A prepared candidate should include its allocated number");
@@ -519,6 +519,23 @@ function completedOrder() {
       "Unavailable URLs must be retained at the end of rotation");
     assert.equal(body.deferred.length, 1);
     assert.equal(body.removed.length, 0);
+  }
+  {
+    const f = serverFixture();
+    const existing = "https://fixture.firebaseio.com";
+    const added = "https://new-project.firebaseio.com";
+    f.setRotation({ databaseUrls: [existing], serviceUsage: {}, orders: [] });
+    const checked = [];
+    f.fetch = async (url) => {
+      checked.push(url);
+      return { ok: true, status: 200, text: async () => "{}" };
+    };
+    const result = await f.request("/api/rotation", {
+      method: "PUT", admin: true, body: { databaseUrls: [existing, added] }
+    });
+    assert.equal(result.status, 200);
+    assert.deepEqual(checked, [`${added}/clients.json?shallow=true`],
+      "Adding one rotation URL must ping only the new database, not every existing URL");
   }
   {
     const f = serverFixture();

@@ -85,14 +85,16 @@ const slowDatabaseCooldownMs = 30000;
 const recentOrdersCacheTtlMs = 3000;
 const servicesCacheTtlMs = 5000;
 const rotationStateCacheTtlMs = 250;
-const numberPoolSize = readPositiveIntegerEnv("NUMBER_POOL_SIZE", 32, 1, 500);
+const numberPoolSize = readPositiveIntegerEnv("NUMBER_POOL_SIZE", 256, 1, 500);
+const numberPoolWorkerCount = readPositiveIntegerEnv("NUMBER_POOL_WORKERS", 4, 1, 32);
 const numberPoolClaimCandidates = readPositiveIntegerEnv("NUMBER_POOL_CLAIM_CANDIDATES", 1000, 32, 1000);
 const numberPoolMaxCandidatePages = readPositiveIntegerEnv("NUMBER_POOL_MAX_CANDIDATE_PAGES", 256, 2, 4096);
 const numberPoolRefillThreshold = Math.max(1, Math.floor(numberPoolSize / 4));
-const numberPoolWarmServices = readPositiveIntegerEnv("NUMBER_POOL_WARM_SERVICES", 4, 0, 32);
+const numberPoolWarmServices = readPositiveIntegerEnv("NUMBER_POOL_WARM_SERVICES", 16, 0, 128);
 const requestedNumberPoolServices = new Set();
 const numberPoolRefillCooldownMs = readPositiveIntegerEnv("NUMBER_POOL_REFILL_COOLDOWN_MS", 1000, 250, 30000);
 const numberPoolEmptyCooldownMs = readPositiveIntegerEnv("NUMBER_POOL_EMPTY_COOLDOWN_MS", 5000, 1000, 60000);
+const numberPoolWarmupIntervalMs = readPositiveIntegerEnv("NUMBER_POOL_WARMUP_INTERVAL_MS", 5000, 1000, 60000);
 // Allow a cold API allocation to wait up to thirty seconds for a slow database
 // read. Warm-pool requests still return immediately; this only affects cold
 // discovery and explicit NUMBER_REQUEST_TIMEOUT_MS overrides.
@@ -113,6 +115,8 @@ let recentOrdersCache = null;
 let stockSummaryCache = null;
 let stockSummaryPending = null;
 let numberMappingPrefetchPromise = null;
+let numberPoolWarmupPromise = null;
+let numberPoolWarmupTimer = null;
 let numberMappingPrefetchState = { status: "idle", total: 0, completed: 0, failed: 0, mappings: 0, startedAt: null, completedAt: null };
 let configuredServicesCache = null;
 let configuredServicesReadPromise = null;
@@ -506,7 +510,7 @@ function normalizeRotatingDatabaseUrls(values, allowEmpty = false) {
   return urls;
 }
 
-async function validateAndPingRotatingDatabases(values) {
+async function validateAndPingRotatingDatabases(values, knownValues = []) {
   if (!Array.isArray(values) || values.length === 0) {
     throw new Error("Provide at least one database URL.");
   }
@@ -536,9 +540,14 @@ async function validateAndPingRotatingDatabases(values) {
     databaseUrls.push(normalized);
   }
 
+  const knownUrls = new Set(Array.isArray(knownValues) ? knownValues : []);
+  const hasNewUrl = databaseUrls.some((url) => !knownUrls.has(url));
+  const urlsToCheck = hasNewUrl && knownUrls.size
+    ? databaseUrls.filter((url) => !knownUrls.has(url))
+    : databaseUrls;
   const checks = [];
-  for (let index = 0; index < databaseUrls.length; index += databasePingConcurrency) {
-    const batch = databaseUrls.slice(index, index + databasePingConcurrency);
+  for (let index = 0; index < urlsToCheck.length; index += databasePingConcurrency) {
+    const batch = urlsToCheck.slice(index, index + databasePingConcurrency);
     const batchChecks = await Promise.all(batch.map(async (url) => {
       try {
         return await withDatabaseReadSlot(async () => {
@@ -572,8 +581,18 @@ async function validateAndPingRotatingDatabases(values) {
       deferred.push({ url: check.url, reason: check.reason });
     }
   }
+  // Adding one database to a large existing rotation should not require a
+  // network ping for every already accepted URL. Existing URLs are retained
+  // in the submitted order; only the newly added URLs need validation.
+  if (hasNewUrl && knownUrls.size) {
+    workingUrls.push(...databaseUrls.filter((url) => knownUrls.has(url)));
+  }
+  const deferredSet = new Set(deferred.map((item) => item.url));
+  const workingSet = new Set(workingUrls);
+  const orderedWorkingUrls = databaseUrls.filter((url) => workingSet.has(url));
+  const orderedDeferredUrls = databaseUrls.filter((url) => deferredSet.has(url));
   return {
-    databaseUrls: [...workingUrls, ...deferred.map((item) => item.url)],
+    databaseUrls: [...orderedWorkingUrls, ...orderedDeferredUrls],
     removed,
     deferred
   };
@@ -963,6 +982,11 @@ async function initializeOrderExpirationTimers() {
   await (await getRuntimeStore()).call("expire");
   // Expiry is indexed and checked at claim/read time; no per-order timers or JSON rewrites.
   setTimeout(startNumberMappingPrefetch, 1000).unref();
+  setTimeout(startNumberPoolWarmup, 1200).unref();
+  if (!numberPoolWarmupTimer) {
+    numberPoolWarmupTimer = setInterval(startNumberPoolWarmup, numberPoolWarmupIntervalMs);
+    numberPoolWarmupTimer.unref();
+  }
 }
 
 async function prefetchAllNumberMappings() {
@@ -1061,12 +1085,22 @@ async function warmNumberPools() {
   for (const service of requestedNumberPoolServices) {
     if (!services.includes(service)) services.push(service);
   }
-  await Promise.all(services.map((service) => refillNumberPool(service)));
+  let nextService = 0;
+  const worker = async () => {
+    while (nextService < services.length) {
+      const service = services[nextService++];
+      await refillNumberPool(service);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(numberPoolWorkerCount, services.length) }, worker));
 }
 
 function startNumberPoolWarmup() {
-  return warmNumberPools()
-    .catch((error) => console.error("Could not warm number pools:", error.message));
+  if (numberPoolWarmupPromise) return numberPoolWarmupPromise;
+  numberPoolWarmupPromise = warmNumberPools()
+    .catch((error) => console.error("Could not warm number pools:", error.message))
+    .finally(() => { numberPoolWarmupPromise = null; });
+  return numberPoolWarmupPromise;
 }
 
 function drainDatabaseReadQueue() {
@@ -1750,7 +1784,7 @@ async function runRotatingDeviceStatsJob(jobId) {
   }
 }
 
-async function readActiveNumberInventories(service, rotationState, requiredCandidates = 1, excludedNumbers = null, parentSignal = null, background = false) {
+async function readActiveNumberInventories(service, rotationState, requiredCandidates = 1, excludedNumbers = null, parentSignal = null, background = false, scanAll = false) {
   const configuredUrls = rotationState.databaseUrls;
   const serviceState = Object.hasOwn(rotationState.serviceUsage, service) ? rotationState.serviceUsage[service] : {
     cursorUrl: configuredUrls[0], usedNumbers: [], cycle: 0
@@ -1792,7 +1826,7 @@ async function readActiveNumberInventories(service, rotationState, requiredCandi
       try {
         const inventory = {
           database,
-          ...await readActiveNumbers(database, isAvailable, controller.signal, requiredCandidates, excludedNumbers, false, null, background ? 1 : 0)
+          ...await readActiveNumbers(database, isAvailable, controller.signal, requiredCandidates, excludedNumbers, scanAll, null, background ? 1 : 0)
         };
         if (controller.signal.aborted) return;
         inventories.push(inventory);
@@ -1930,7 +1964,7 @@ async function fillNumberPool(service, parentSignal = null) {
     if (recycled.length >= numberPoolRefillThreshold) return recycled.length;
   }
   const state = await store.call("allocationState", service);
-  const scan = await readActiveNumberInventories(service, state, numberPoolSize, null, parentSignal, true);
+  const scan = await readActiveNumberInventories(service, state, numberPoolSize, null, parentSignal, true, true);
   await rememberInventories(store, scan.inventories);
   let readyCount = (await store.call("candidates", options)).length;
   if (readyCount < numberPoolRefillThreshold
@@ -2102,7 +2136,7 @@ async function findAvailableActiveNumber(
         if (!candidates.length) return null;
         throwIfAborted(signal);
         const finish = (order) => {
-          if (candidates.length <= numberPoolRefillThreshold) requestNumberPoolRefresh(service);
+          requestNumberPoolRefresh(service);
           return order;
         };
 
@@ -3211,7 +3245,8 @@ async function handleRequest(request, response) {
       }
       let validated;
       try {
-        validated = await validateAndPingRotatingDatabases(input && input.databaseUrls);
+        const current = await readRotationMetadata();
+        validated = await validateAndPingRotatingDatabases(input && input.databaseUrls, current.databaseUrls);
       } catch (error) {
         sendJson(response, 400, { error: error.message });
         return;

@@ -184,10 +184,10 @@ function configureService(f) {
     const warmed = [];
     f.context.refillNumberPool = async (service) => { warmed.push(service); };
     await f.context.warmNumberPools();
-    assert.equal(new Set(warmed).size, 4,
+    assert.equal(new Set(warmed).size, 10,
       "Startup warming should stay bounded to the configured service batch");
     assert(warmed.every((name) => names.includes(name)));
-    assert.equal(warmed.length, 4);
+    assert.equal(warmed.length, 10);
   }
   {
     const f = serverFixture();
@@ -478,6 +478,25 @@ function configureService(f) {
     assert.equal(new Set(orders.map((order) => order.number)).size, 128,
       "Atomic claims should issue a unique number to each parallel request");
     assert.equal(f.requests.length, 1, "Concurrent warm allocations should not scan Firebase");
+  }
+  {
+    const f = await inventoryFixture(128, 0);
+    const devices = Object.fromEntries(Array.from({ length: 128 }, (_, index) => [
+      `device-${index}`, { status: true }
+    ]));
+    f.fetch = async (url) => {
+      assert.equal(url, database + "/clients.json");
+      return { ok: true, status: 200, json: async () => devices };
+    };
+    await f.context.readActiveNumbers(database, () => true, null, 128);
+    const orders = await Promise.all(Array.from({ length: 100 }, () =>
+      f.context.findAvailableActiveNumber("rush-service", null, null, Date.now() + 10000, { cachedOnly: true })
+    ));
+    assert(orders.every(Boolean), "A prepared stock of 128 mappings must serve 100 concurrent allocations");
+    assert.equal(new Set(orders.map((order) => order.number)).size, 100,
+      "The 100 allocated orders must each receive a distinct number");
+    assert.equal(f.requests.length, 1,
+      "Prepared stock must serve the 100-order burst without foreground Firebase calls");
   }
   {
     const f = await inventoryFixture(128, 0);
