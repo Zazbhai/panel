@@ -644,5 +644,30 @@ function configureService(f) {
     assert.equal(JSON.parse(response.body).code, "ALLOCATION_TIMEOUT");
     assert.equal(f.runtime.snapshot().orders.length, 0);
   }
+  {
+    const f = new serverFixture();
+    const databases = [
+      "https://mapped-a.firebaseio.com",
+      "https://failed-b.firebaseio.com",
+      "https://unmapped-c.firebaseio.com"
+    ];
+    f.context.readRotationMetadata = async () => ({ databaseUrls: databases });
+    await f.context.getRuntimeStore();
+    f.runtime.remember({ database: databases[0], deviceId: "device-a", number: "9000000091" });
+    f.runtime.remember({ database: databases[1], deviceId: "device-b", number: "9000000092" });
+    let calls = 0;
+    f.fetch = async (url) => {
+      calls++;
+      if (url.startsWith(databases[1])) return { ok: false, status: 503, headers: { get: () => null } };
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+    await f.context.prefetchAllNumberMappings();
+    const progress = f.mappingPrefetchState();
+    assert.equal(calls, 3, "The inventory worker must visit every configured database, including unmapped ones");
+    assert.equal(progress.completed, 3);
+    assert.equal(progress.failed, 1);
+    assert.equal(f.runtime.sql("SELECT COUNT(*) AS n FROM database_checks").get().n, 2,
+      "Failed databases must remain unchecked so the next pass retries them");
+  }
   console.log("PASS: allocation queue cancellation, read capacity, first-ready verification, warm burst uniqueness, offline invalidation, and request deadlines.");
 })().catch((error) => { console.error(error); process.exitCode = 1; });

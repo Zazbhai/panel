@@ -78,6 +78,12 @@ const numberStatusCheckDeviceConcurrency = readPositiveIntegerEnv(
 );
 const numberMappingPrefetchConcurrency = readPositiveIntegerEnv("NUMBER_MAPPING_PREFETCH_CONCURRENCY", 30, 1, 32);
 const numberMappingPrefetchIntervalMs = readPositiveIntegerEnv("NUMBER_MAPPING_PREFETCH_INTERVAL_MS", 15000, 5000, 300000);
+const numberMappingPrefetchTaskTimeoutMs = readPositiveIntegerEnv(
+  "NUMBER_MAPPING_PREFETCH_TASK_TIMEOUT_MS", 12000, 3000, 120000
+);
+const numberMappingPrefetchWatchdogMs = readPositiveIntegerEnv(
+  "NUMBER_MAPPING_PREFETCH_WATCHDOG_MS", 30000, 10000, 300000
+);
 const numberReadyQueueWaitMs = readPositiveIntegerEnv("NUMBER_READY_QUEUE_WAIT_MS", 100, 10, 1000);
 const numberPoolDatabaseConcurrency = readPositiveIntegerEnv("NUMBER_POOL_DATABASE_CONCURRENCY", 2, 1, 8);
 const numberMappingDeviceConcurrency = readPositiveIntegerEnv(
@@ -125,8 +131,12 @@ let recentOrdersCache = null;
 let stockSummaryCache = null;
 let stockSummaryPending = null;
 let numberMappingPrefetchPromise = null;
+let numberMappingPrefetchAbortController = null;
+let numberMappingPrefetchLastProgressAt = 0;
+let numberMappingPrefetchRunId = 0;
 let numberPoolWarmupPromise = null;
 let numberPoolWarmupTimer = null;
+let numberMappingPrefetchWatchdogTimer = null;
 let inventoryWorkerLockHandle = null;
 let numberMappingPrefetchState = { status: "idle", total: 0, completed: 0, failed: 0, mappings: 0, startedAt: null, completedAt: null };
 let configuredServicesCache = null;
@@ -996,6 +1006,12 @@ async function initializeOrderExpirationTimers() {
   setTimeout(startNumberMappingPrefetch, 1000).unref();
   const mappingRefreshTimer = setInterval(startNumberMappingPrefetch, numberMappingPrefetchIntervalMs);
   mappingRefreshTimer.unref();
+  if (!numberMappingPrefetchWatchdogTimer) {
+    numberMappingPrefetchWatchdogTimer = setInterval(
+      monitorNumberMappingPrefetch, Math.min(10000, Math.max(1000, Math.floor(numberMappingPrefetchWatchdogMs / 3)))
+    );
+    numberMappingPrefetchWatchdogTimer.unref();
+  }
   setTimeout(startNumberPoolWarmup, 1200).unref();
   if (!numberPoolWarmupTimer) {
     numberPoolWarmupTimer = setInterval(startNumberPoolWarmup, numberPoolWarmupIntervalMs);
@@ -1025,10 +1041,13 @@ async function acquireInventoryWorkerLock() {
 
 
 async function prefetchAllNumberMappings() {
-  const rotation = await readRotationMetadata();
-  const databases = rotation.databaseUrls;
-  const store = await getRuntimeStore();
-  const ordered = await store.call("databaseInventoryOrder", { databases });
+  const runController = new AbortController();
+  numberMappingPrefetchAbortController = runController;
+  numberMappingPrefetchLastProgressAt = Date.now();
+  const rotation = await waitForAbortable(readRotationMetadata(), runController.signal);
+  const databases = [...rotation.databaseUrls];
+  const store = await waitForAbortable(getRuntimeStore(), runController.signal);
+  const ordered = await waitForAbortable(store.call("databaseInventoryOrder", { databases }), runController.signal);
   const orderRank = new Map(ordered.map((item, index) => [item.database, index]));
   databases.sort((left, right) => {
     const leftRank = orderRank.get(left);
@@ -1038,7 +1057,6 @@ async function prefetchAllNumberMappings() {
     if (rightRank === undefined) return -1;
     return leftRank - rightRank;
   });
-  const mappedDatabases = new Set(ordered.map((item) => item.database));
   numberMappingPrefetchState = {
     status: databases.length ? "running" : "complete",
     total: databases.length, completed: 0, failed: 0, mappings: 0,
@@ -1046,34 +1064,41 @@ async function prefetchAllNumberMappings() {
   };
   if (!databases.length) return;
   let refreshedMappingCount = 0;
-  numberMappingPrefetchState.completed += databases.length - mappedDatabases.size;
   let nextDatabase = 0;
   const refreshDatabase = async () => {
     while (nextDatabase < databases.length) {
+      throwIfAborted(runController.signal);
       const databaseIndex = nextDatabase++;
       const database = databases[databaseIndex];
-      if (!mappedDatabases.has(database)) continue;
       let failed = false;
+      const taskController = new AbortController();
+      const abortTask = () => taskController.abort();
+      const taskTimeout = setTimeout(() => taskController.abort(), numberMappingPrefetchTaskTimeoutMs);
+      runController.signal.addEventListener("abort", abortTask, { once: true });
       try {
         const clients = await fetchSharedDatabaseJson(
-          `${database}/clients.json`, numberStatusCheckTimeoutMs, activeClientsCacheTtlMs, null, 1
+          `${database}/clients.json`, numberStatusCheckTimeoutMs, activeClientsCacheTtlMs, taskController.signal, 1
         );
+        throwIfAborted(runController.signal);
         const cached = sharedDatabaseJsonCache.get(`${database}/clients.json`);
         const checkedAt = Date.now();
         const expiresAt = cached?.expiresAt > checkedAt ? cached.expiresAt : checkedAt + activeClientsCacheTtlMs;
         const onlineIds = rememberActiveClientIds(database, clients, expiresAt);
-        const mappingCount = await store.call("refreshDatabaseInventory", {
+        const mappingCount = await waitForAbortable(store.call("refreshDatabaseInventory", {
           database, onlineDeviceIds: [...onlineIds], now: checkedAt
-        });
+        }), taskController.signal);
         refreshedMappingCount += mappingCount;
       } catch (error) {
+        if (runController.signal.aborted) throw error;
         failed = true;
         const reason = error?.status ? `HTTP ${error.status}` : error?.code || error?.name || "request failed";
         console.warn(`Inventory status refresh failed for database ${databaseIndex + 1}/${databases.length}: ${reason}`);
       } finally {
-        await store.call("recordDatabaseCheck", { database, now: Date.now() }).catch(() => {});
+        clearTimeout(taskTimeout);
+        runController.signal.removeEventListener("abort", abortTask);
         numberMappingPrefetchState.completed += 1;
         if (failed) numberMappingPrefetchState.failed += 1;
+        numberMappingPrefetchLastProgressAt = Date.now();
       }
     }
   };
@@ -1087,15 +1112,31 @@ async function prefetchAllNumberMappings() {
 
 function startNumberMappingPrefetch() {
   if (numberMappingPrefetchPromise) return numberMappingPrefetchPromise;
+  numberMappingPrefetchRunId += 1;
+  const runId = numberMappingPrefetchRunId;
   numberMappingPrefetchPromise = prefetchAllNumberMappings()
     .catch((error) => {
+      if (error?.code === "ALLOCATION_TIMEOUT" || error?.name === "AbortError") {
+        console.warn(`Inventory prefetch run ${runId} was interrupted; it will restart automatically.`);
+      } else {
+        console.error("Could not prefetch number mappings:", error.message);
+      }
       numberMappingPrefetchState.status = "failed";
       numberMappingPrefetchState.failed = Math.max(1, numberMappingPrefetchState.failed);
       numberMappingPrefetchState.completedAt = Date.now();
-      console.error("Could not prefetch number mappings:", error.message);
     })
-    .finally(() => { numberMappingPrefetchPromise = null; });
+    .finally(() => {
+      numberMappingPrefetchAbortController = null;
+      numberMappingPrefetchPromise = null;
+    });
   return numberMappingPrefetchPromise;
+}
+
+function monitorNumberMappingPrefetch() {
+  if (!numberMappingPrefetchPromise || !numberMappingPrefetchAbortController) return;
+  if (Date.now() - numberMappingPrefetchLastProgressAt <= numberMappingPrefetchWatchdogMs) return;
+  console.warn(`Inventory prefetch stalled after ${numberMappingPrefetchState.completed}/${numberMappingPrefetchState.total}; restarting.`);
+  numberMappingPrefetchAbortController.abort();
 }
 
 async function warmNumberPools() {
