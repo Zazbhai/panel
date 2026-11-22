@@ -272,6 +272,18 @@ class RuntimeStore {
     return this.sql("SELECT database_url AS database FROM database_checks WHERE checked_at>? AND database_url IN (SELECT value FROM json_each(?))")
       .all(now - ttl, JSON.stringify(databases)).map((row) => row.database);
   }
+  recordDatabaseCheck({ database, now = Date.now() }) {
+    this.sql("INSERT INTO database_checks VALUES(?,?) ON CONFLICT(database_url) DO UPDATE SET checked_at=excluded.checked_at")
+      .run(database, now);
+  }
+  inventoryProgress({ databases = [] } = {}) {
+    if (!databases.length) return { checkedDatabases: 0, mappings: 0 };
+    const checkedDatabases = this.sql("SELECT COUNT(*) AS count FROM database_checks WHERE database_url IN (SELECT value FROM json_each(?))")
+      .get(JSON.stringify(databases)).count;
+    const mappings = this.sql("SELECT COUNT(*) AS count FROM numbers WHERE database_url IN (SELECT value FROM json_each(?))")
+      .get(JSON.stringify(databases)).count;
+    return { checkedDatabases, mappings };
+  }
   releaseOrder(orderId) {
     this.sql("DELETE FROM leases WHERE order_id=?").run(orderId);
   }

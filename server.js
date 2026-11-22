@@ -1035,7 +1035,7 @@ async function prefetchAllNumberMappings() {
       let failed = false;
       try {
         const clients = await fetchSharedDatabaseJson(
-          `${database}/clients.json`, numberFetchTimeoutMs, activeClientsCacheTtlMs, null, 1
+          `${database}/clients.json`, numberStatusCheckTimeoutMs, activeClientsCacheTtlMs, null, 1
         );
         const cached = sharedDatabaseJsonCache.get(`${database}/clients.json`);
         const checkedAt = Date.now();
@@ -1049,6 +1049,7 @@ async function prefetchAllNumberMappings() {
       } catch {
         failed = true;
       } finally {
+        await store.call("recordDatabaseCheck", { database, now: Date.now() }).catch(() => {});
         numberMappingPrefetchState.completed += 1;
         if (failed) numberMappingPrefetchState.failed += 1;
       }
@@ -3187,7 +3188,16 @@ async function handleRequest(request, response) {
           .finally(() => { stockSummaryPending = null; });
         await stockSummaryPending;
       }
-      sendJson(response, 200, { ...stockSummaryCache.value, mappingPrefetch: { ...numberMappingPrefetchState } });
+      const rotation = await getRuntimeStore().then((store) => store.call("metadata"));
+      const progress = await (await getRuntimeStore()).call("inventoryProgress", {
+        databases: rotation?.databaseUrls || []
+      });
+      const mappingPrefetch = { ...numberMappingPrefetchState };
+      if (mappingPrefetch.total === (rotation?.databaseUrls || []).length) {
+        mappingPrefetch.completed = Math.max(mappingPrefetch.completed, progress.checkedDatabases);
+        mappingPrefetch.mappings = Math.max(mappingPrefetch.mappings, progress.mappings);
+      }
+      sendJson(response, 200, { ...stockSummaryCache.value, mappingPrefetch });
     } catch {
       sendJson(response, 503, { error: "Stock totals are temporarily unavailable." }, { "Retry-After": "3" });
     }
