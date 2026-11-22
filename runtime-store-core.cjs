@@ -29,6 +29,16 @@ class RuntimeStore {
       + "CREATE INDEX IF NOT EXISTS numbers_ready ON numbers(online,verified_at DESC,checked_at DESC);"
       + "CREATE INDEX IF NOT EXISTS numbers_by_database ON numbers(database_url,online,verified_at,checked_at,number);"
       + "CREATE INDEX IF NOT EXISTS numbers_service_candidates ON numbers(online,checked_at,verified_at,database_url,number);");
+    const now = Date.now();
+    this.db.prepare("DELETE FROM leases WHERE expires_at<=?").run(now);
+    this.db.prepare("UPDATE orders SET status='expired',number_active=0 WHERE status='active' AND expires_at<=?").run(now);
+    const duplicate = this.db.prepare("SELECT 1 FROM orders WHERE status='active' GROUP BY number HAVING COUNT(*)>1 LIMIT 1").get();
+    if (duplicate) {
+      throw new Error("Runtime storage contains duplicate active orders for a number; allocation stopped to protect customers.");
+    }
+    // The leases table is already unique, but this independently prevents any
+    // code path or migration from inserting two active orders for one number.
+    this.db.exec("CREATE UNIQUE INDEX IF NOT EXISTS orders_one_active_number ON orders(number) WHERE status='active';");
     this.prepared = new Map();
   }
   sql(text) {
@@ -63,10 +73,13 @@ class RuntimeStore {
     });
   }
   importOrder(order) {
-    this.sql("INSERT OR IGNORE INTO orders VALUES(?,?,?,?,?,?,?,?,?,?,?)").run(
+    const inserted = this.sql("INSERT OR IGNORE INTO orders VALUES(?,?,?,?,?,?,?,?,?,?,?)").run(
       order.orderId, order.service, order.number, order.databaseUrl, order.deviceId,
       order.createdAt, order.expiresAt, order.status, order.receivedOtp, order.receivedAt, Number(order.numberActive === true)
     );
+    if (!inserted.changes && !this.sql("SELECT 1 FROM orders WHERE id=?").get(order.orderId)) {
+      throw new Error("Runtime storage rejected a second active order for the same number.");
+    }
     if (order.receivedOtp != null || order.receivedOtps?.length) this.lock(order.service, order.number, order.receivedAt || order.createdAt);
     for (const otp of order.receivedOtps || []) {
       this.insertOtp(order.orderId, otp);
@@ -82,7 +95,7 @@ class RuntimeStore {
     this.sql("INSERT OR IGNORE INTO numbers VALUES(?,?,?,?,0,0)")
       .run(order.databaseUrl, order.deviceId, order.number, 0);
     if (order.status === "active" && order.receivedOtp === null && order.expiresAt > Date.now()) {
-      this.sql("INSERT INTO leases VALUES(?,?,?) ON CONFLICT(number) DO UPDATE SET order_id=excluded.order_id,expires_at=MAX(leases.expires_at,excluded.expires_at)")
+      this.sql("INSERT INTO leases VALUES(?,?,?) ON CONFLICT(number) DO NOTHING")
         .run(order.number, order.orderId, order.expiresAt);
     }
   }
@@ -223,10 +236,10 @@ class RuntimeStore {
       const ready = this.sql("SELECT COUNT(DISTINCT n.number) AS total,"
         + "SUM(CASE WHEN u.number IS NULL THEN 1 ELSE 0 END) AS unused "
         + "FROM numbers n LEFT JOIN service_usage u ON u.service=? AND u.number=n.number AND u.cycle=? "
-        + "WHERE n.online=1 AND n.checked_at>? AND n.verified_at>? AND n.database_url IN (SELECT value FROM json_each(?)) "
+        + "WHERE n.verified_at>? AND n.database_url IN (SELECT value FROM json_each(?)) "
         + "AND NOT EXISTS(SELECT 1 FROM service_locks l WHERE l.service=? AND l.number=n.number) "
         + "AND NOT EXISTS(SELECT 1 FROM leases r WHERE r.number=n.number AND r.expires_at>?)")
-        .get(service, cycle, now - 30000, now - mappingTtl, pool, service, now);
+        .get(service, cycle, now - mappingTtl, pool, service, now);
       if (!ready.total || ready.unused) return false;
       const nextCycle = cycle + 1;
       this.sql("INSERT INTO service_cycles VALUES(?,?,?) ON CONFLICT(service) DO UPDATE SET cycle=excluded.cycle")
@@ -270,7 +283,7 @@ class RuntimeStore {
       .get(now - 86400000, now - onlineTtl, now, JSON.stringify(databases));
     return { ...counts, databaseCount: databases.length, checkedAt: now };
   }
-  candidates({ service, databases, now = Date.now(), mappingTtl = 86400000, onlineTtl = 30000, limit = 32, freshOnly = false }) {
+  candidates({ service, databases, now = Date.now(), mappingTtl = 86400000, onlineTtl = 30000, limit = 32, offset = 0, freshOnly = false, includeOffline = false }) {
     // Numbers already attempted in the current service cycle are excluded.
     // Once every eligible number has been attempted, advanceCycle moves to a
     // new cycle and these no-OTP numbers become the final fallback candidates.
@@ -280,7 +293,7 @@ class RuntimeStore {
       + "FROM numbers n "
       + "LEFT JOIN service_cycles c ON c.service=? "
       + "LEFT JOIN service_usage u ON u.service=? AND u.number=n.number "
-      + "WHERE " + (freshOnly ? "(n.online=1 AND n.checked_at>?) " : "(n.online=1 OR n.checked_at<=?) " )
+      + "WHERE " + (freshOnly ? "(n.online=1 AND n.checked_at>?) " : (includeOffline ? "1=1 " : "(n.online=1 OR n.checked_at<=?) "))
       + "AND n.verified_at>? AND n.database_url IN (SELECT value FROM json_each(?)) "
       + "AND NOT EXISTS(SELECT 1 FROM service_locks l WHERE l.service=? AND l.number=n.number) "
       + "AND (u.cycle IS NULL OR u.cycle<>COALESCE(c.cycle,0)) "
@@ -288,8 +301,11 @@ class RuntimeStore {
       // Fresh numbers (no service_usage row) always precede numbers recycled
       // from an earlier cycle. Within each group, interleave databases so one
       // slow project cannot dominate the bounded online-check batch.
-      + "SELECT * FROM candidates ORDER BY CASE WHEN used_cycle IS NULL THEN 0 ELSE 1 END,database_rank,checked_at DESC LIMIT ?";
-    return this.sql(query).all(service, service, now - onlineTtl, now - mappingTtl, JSON.stringify(databases), service, now, limit)
+      + "SELECT * FROM candidates ORDER BY CASE WHEN used_cycle IS NULL THEN 0 ELSE 1 END,database_rank,checked_at DESC LIMIT ? OFFSET ?";
+    const args = freshOnly || !includeOffline
+      ? [service, service, now - onlineTtl, now - mappingTtl, JSON.stringify(databases), service, now, limit, Math.max(0, offset)]
+      : [service, service, now - mappingTtl, JSON.stringify(databases), service, now, limit, Math.max(0, offset)];
+    return this.sql(query).all(...args)
       .map((row) => ({ database: row.database_url, deviceId: row.device_id, number: row.number,
         verifiedAt: row.verified_at, checkedAt: row.checked_at,
         // A number used in an earlier cycle is a fallback. It is deliberately
@@ -297,10 +313,14 @@ class RuntimeStore {
         reused: row.used_cycle !== null && row.used_cycle !== row.current_cycle }));
   }
   claim(options) {
-    return this.transaction(() => this.claimWithinTransaction(options));
+    return this.transaction(() => {
+      this.expire(options.now ?? Date.now());
+      return this.claimWithinTransaction(options);
+    });
   }
   claimAny({ service, candidates = [], ...options }) {
     return this.transaction(() => {
+      this.expire(options.now ?? Date.now());
       for (const candidate of candidates) {
         const order = this.claimWithinTransaction({ ...options, service, candidate });
         if (order) return order;

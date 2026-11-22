@@ -40,7 +40,9 @@ const state = { initialized: true, databaseUrls: [database], orders: [], service
     const third = core.claim({ service: "flipkart", candidate, duration: 10000 });
     assert(third);
     assert.equal(core.claim({ service: "swiggy", candidate }), null);
-    core.sql("UPDATE leases SET expires_at=? WHERE number=?").run(Date.now() - 1, candidate.number);
+    const expiredAt = Date.now() - 1;
+    core.sql("UPDATE leases SET expires_at=? WHERE number=?").run(expiredAt, candidate.number);
+    core.sql("UPDATE orders SET expires_at=? WHERE number=? AND status='active'").run(expiredAt, candidate.number);
     assert(core.claim({ service: "unused-service", candidate }), "Expired leases are reusable without scanning orders");
     core.close(); core = null;
 
@@ -61,6 +63,46 @@ const state = { initialized: true, databaseUrls: [database], orders: [], service
       b.call("claim", { service: "two", candidate: candidate2 })
     ]);
     assert.equal(claims.filter(Boolean).length, 1, "Concurrent workers must atomically claim one global lease");
+    const stressCandidate = { ...candidate, deviceId: "worker-contention", number: "9000000007" };
+    await a.call("remember", stressCandidate);
+    const concurrentClaims = await Promise.allSettled(Array.from({ length: 128 }, (_, index) =>
+      (index % 2 ? a : b).call("claim", { service: `stress-${index}`, candidate: stressCandidate })
+    ));
+    assert(concurrentClaims.every((result) => result.status === "fulfilled"),
+      "Concurrent claim contention must return a result, never leak SQLite lock errors");
+    const stressWinners = concurrentClaims
+      .filter((result) => result.status === "fulfilled" && result.value)
+      .map((result) => result.value);
+    assert.equal(stressWinners.length, 1,
+      "Many simultaneous workers must create exactly one active order for a shared number");
+    let stressSnapshot = await a.call("snapshot");
+    assert.equal(stressSnapshot.orders.filter((order) =>
+      order.number === stressCandidate.number && order.status === "active").length, 1,
+    "The durable order table must not contain duplicate active rows for a number");
+    const cancellationRace = await Promise.all([
+      b.call("setStatus", { id: stressWinners[0].orderId, status: "8" }),
+      ...Array.from({ length: 64 }, (_, index) =>
+        (index % 2 ? a : b).call("claim", { service: `after-cancel-${index}`, candidate: stressCandidate }))
+    ]);
+    assert.equal(cancellationRace[0], "ACCESS_CANCEL");
+    assert(cancellationRace.slice(1).filter(Boolean).length <= 1,
+      "Racing cancellation with new claims must never produce two winners");
+    stressSnapshot = await a.call("snapshot");
+    assert(stressSnapshot.orders.filter((order) =>
+      order.number === stressCandidate.number && order.status === "active").length <= 1,
+    "The active-order invariant must hold after cancellation races too");
+    const invariantStore = new RuntimeStore(":memory:");
+    invariantStore.initialize(state);
+    invariantStore.sql("INSERT INTO orders VALUES(?,?,?,?,?,?,?,'active',NULL,NULL,1)")
+      .run("first-invariant-order", "first-service", "9000000008", database, "first-device",
+        Date.now(), Date.now() + 60000);
+    assert.throws(() => {
+      invariantStore.sql("INSERT INTO orders VALUES(?,?,?,?,?,?,?,'active',NULL,NULL,1)")
+        .run("duplicate-order", "other-service", "9000000008", database, "duplicate-device",
+          Date.now(), Date.now() + 60000);
+    }, /UNIQUE constraint failed: orders.number/,
+    "SQLite must reject a second active order even when a caller bypasses the claim method");
+    invariantStore.close();
     const page = await a.call("getRecentOrders", { limit: 1 });
     assert.equal(page.orders.length, 1);
     assert(page.hasMore);

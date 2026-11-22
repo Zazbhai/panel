@@ -411,6 +411,58 @@ function configureService(f) {
     assert(f.requests.length <= 4, "Parallel services should share a bounded set of candidate checks");
   }
   {
+    const f = await inventoryFixture(300);
+    const candidates = f.runtime.candidates({ service: "late-online", databases: [database], limit: 300 });
+    assert.equal(candidates.length, 300);
+    f.fetch = async (url) => {
+      const deviceId = decodeURIComponent(url.split("/clients/")[1].split(".json")[0]);
+      const index = Number(deviceId.slice("device-".length));
+      return { ok: true, status: 200, json: async () => ({ status: index === 199 }) };
+    };
+    const allocation = await f.context.findAvailableActiveNumber("late-online", null, null,
+      Date.now() + 5000, { cachedOnly: true });
+    assert(allocation, "An online number later in a large unlocked pool must be found");
+    assert.equal(allocation.number, "9000000199",
+      "Allocation must continue past offline candidates instead of stopping after the first four");
+  }
+  {
+    const f = await inventoryFixture(10000);
+    f.fetch = async (url) => {
+      const deviceId = decodeURIComponent(url.split("/clients/")[1].split(".json")[0]);
+      const index = Number(deviceId.slice("device-".length));
+      return { ok: true, status: 200, json: async () => ({ status: index === 9999 }) };
+    };
+    const allocation = await f.context.findAvailableActiveNumber("ten-thousand", null, null,
+      Date.now() + 10000, { cachedOnly: true });
+    assert(allocation, "A healthy mapping beyond the first 8192 candidates must still be found");
+    assert.equal(allocation.number, "9000009999");
+  }
+  {
+    const f = await inventoryFixture(1);
+    configureService(f);
+    f.context.requestNumberPoolRefresh = () => {};
+    f.fetch = async (url) => {
+      assert.equal(url, database + "/clients/device-0.json");
+      return { ok: true, status: 200, json: async () => ({ status: true }) };
+    };
+    const responses = await Promise.all(Array.from({ length: 64 }, () =>
+      f.request(`/stubs/handler_api.php?action=getNumber&service=fixture&api_key=${f.apiKey}`)
+    ));
+    const allocations = responses.filter((response) => response.body.startsWith("ACCESS_NUMBER:"));
+    assert.equal(allocations.length, 1,
+      "64 simultaneous API requests competing for one number must create exactly one successful allocation");
+    const [, orderId, number] = allocations[0].body.split(":");
+    assert(number);
+    const activeOrders = f.runtime.snapshot().orders.filter((order) => order.status === "active");
+    assert.equal(activeOrders.length, 1, "The SQLite order history must have exactly one live order");
+    assert.equal(activeOrders[0].orderId, orderId);
+    assert.equal(activeOrders[0].number, number);
+    assert.equal(f.runtime.sql("SELECT COUNT(*) AS n FROM leases WHERE expires_at>? AND number=?")
+      .get(Date.now(), number).n, 1, "Exactly one unexpired lease must own the allocated number");
+    assert.equal(f.runtime.sql("SELECT COUNT(*) AS n FROM orders WHERE number=? AND status='active'")
+      .get(number).n, 1, "The active-order uniqueness invariant must hold under API load");
+  }
+  {
     const f = await inventoryFixture(128, 0);
     const devices = Object.fromEntries(Array.from({ length: 128 }, (_, index) => [
       `device-${index}`, { status: true }

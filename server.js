@@ -70,8 +70,8 @@ const sharedDatabaseJsonCacheLimit = 256;
 const maximumConcurrentDatabaseReads = readPositiveIntegerEnv("MAX_CONCURRENT_DATABASE_READS", 6, 1, 64);
 const backgroundDatabaseReadLimit = Math.max(1, maximumConcurrentDatabaseReads - Math.min(2, maximumConcurrentDatabaseReads - 1));
 const numberStatusCheckConcurrency = Math.max(1, Math.min(3, maximumConcurrentDatabaseReads));
-const numberStatusCheckDeviceConcurrency = Math.max(
-  1, Math.min(4, Math.floor(maximumConcurrentDatabaseReads / numberStatusCheckConcurrency))
+const numberStatusCheckDeviceConcurrency = readPositiveIntegerEnv(
+  "NUMBER_STATUS_CHECK_DEVICE_CONCURRENCY", 4, 1, 16
 );
 const numberMappingPrefetchConcurrency = readPositiveIntegerEnv("NUMBER_MAPPING_PREFETCH_CONCURRENCY", 4, 1, 8);
 const numberPoolDatabaseConcurrency = readPositiveIntegerEnv("NUMBER_POOL_DATABASE_CONCURRENCY", 2, 1, 8);
@@ -86,7 +86,8 @@ const recentOrdersCacheTtlMs = 3000;
 const servicesCacheTtlMs = 5000;
 const rotationStateCacheTtlMs = 250;
 const numberPoolSize = readPositiveIntegerEnv("NUMBER_POOL_SIZE", 32, 1, 500);
-const numberPoolClaimCandidates = readPositiveIntegerEnv("NUMBER_POOL_CLAIM_CANDIDATES", 256, 32, 1000);
+const numberPoolClaimCandidates = readPositiveIntegerEnv("NUMBER_POOL_CLAIM_CANDIDATES", 1000, 32, 1000);
+const numberPoolMaxCandidatePages = readPositiveIntegerEnv("NUMBER_POOL_MAX_CANDIDATE_PAGES", 256, 2, 4096);
 const numberPoolRefillThreshold = Math.max(1, Math.floor(numberPoolSize / 4));
 const numberPoolWarmServices = readPositiveIntegerEnv("NUMBER_POOL_WARM_SERVICES", 4, 0, 32);
 const requestedNumberPoolServices = new Set();
@@ -2155,7 +2156,7 @@ async function findAvailableActiveNumber(
           checks.set(index, (async () => {
             try {
               const onlineCandidates = await refreshCandidateDatabaseStatus(
-                store, service, database, databaseCandidates.slice(0, 4), verificationController.signal
+                store, service, database, databaseCandidates, verificationController.signal
               );
               return { candidates: onlineCandidates, database, databaseCandidates, index };
             } catch (error) {
@@ -2199,12 +2200,15 @@ async function findAvailableActiveNumber(
         throw error;
       };
       const triedPages = new Set();
-      const maximumPages = Math.max(2, Math.ceil(numberPoolClaimCandidates / numberPoolRefillThreshold));
+      const maximumPages = Math.max(numberPoolMaxCandidatePages,
+        Math.ceil(numberPoolClaimCandidates / numberPoolRefillThreshold));
       for (let page = 0; page < maximumPages; page += 1) {
+        if (Date.now() >= deadline - 250) break;
         const eligibleDatabases = candidateDatabaseUrls();
         if (!eligibleDatabases.length) break;
         const candidates = await store.call("candidates", {
-          service, databases: eligibleDatabases, limit: numberPoolClaimCandidates
+          service, databases: eligibleDatabases, limit: numberPoolClaimCandidates, includeOffline: true,
+          offset: page * numberPoolClaimCandidates
         });
         const signature = candidates.map((candidate) => candidate.database + "|" + candidate.deviceId + "|" + candidate.number).join("\n");
         if (!signature || triedPages.has(signature)) break;
@@ -2223,7 +2227,7 @@ async function findAvailableActiveNumber(
         return null;
       }
       const candidates = await store.call("candidates", {
-        service, databases: eligibleDatabases, limit: numberPoolClaimCandidates
+        service, databases: eligibleDatabases, limit: numberPoolClaimCandidates, includeOffline: true
       });
       return claimCandidates(candidates);
     };
