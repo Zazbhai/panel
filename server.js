@@ -82,7 +82,13 @@ const numberMappingPrefetchTaskTimeoutMs = readPositiveIntegerEnv(
   "NUMBER_MAPPING_PREFETCH_TASK_TIMEOUT_MS", 12000, 3000, 120000
 );
 const numberMappingPrefetchWatchdogMs = readPositiveIntegerEnv(
-  "NUMBER_MAPPING_PREFETCH_WATCHDOG_MS", 30000, 10000, 300000
+  "NUMBER_MAPPING_PREFETCH_WATCHDOG_MS", 180000, 30000, 600000
+);
+const numberMappingDiscoveryConcurrency = readPositiveIntegerEnv(
+  "NUMBER_MAPPING_DISCOVERY_CONCURRENCY", 2, 1, 8
+);
+const numberMappingDiscoveryTaskTimeoutMs = readPositiveIntegerEnv(
+  "NUMBER_MAPPING_DISCOVERY_TASK_TIMEOUT_MS", 60000, 10000, 300000
 );
 const numberReadyQueueWaitMs = readPositiveIntegerEnv("NUMBER_READY_QUEUE_WAIT_MS", 100, 10, 1000);
 const numberPoolDatabaseConcurrency = readPositiveIntegerEnv("NUMBER_POOL_DATABASE_CONCURRENCY", 2, 1, 8);
@@ -138,7 +144,10 @@ let numberPoolWarmupPromise = null;
 let numberPoolWarmupTimer = null;
 let numberMappingPrefetchWatchdogTimer = null;
 let inventoryWorkerLockHandle = null;
-let numberMappingPrefetchState = { status: "idle", total: 0, completed: 0, failed: 0, mappings: 0, startedAt: null, completedAt: null };
+let numberMappingPrefetchState = {
+  status: "idle", total: 0, completed: 0, failed: 0, mappings: 0,
+  discoveryTotal: 0, discoveryCompleted: 0, startedAt: null, completedAt: null
+};
 let configuredServicesCache = null;
 let configuredServicesReadPromise = null;
 const compressedStaticAssets = new Map();
@@ -1064,6 +1073,7 @@ async function prefetchAllNumberMappings() {
   numberMappingPrefetchState = {
     status: databases.length ? "running" : "complete",
     total: databases.length, completed: 0, failed: 0, mappings: progress.mappings || 0,
+    discoveryTotal: databases.length, discoveryCompleted: 0,
     startedAt: Date.now(), completedAt: databases.length ? null : Date.now()
   };
   if (!databases.length) return;
@@ -1074,12 +1084,8 @@ async function prefetchAllNumberMappings() {
   const pendingDatabases = databases.filter((database) =>
     (checkedAtByDatabase.get(database) || 0) <= freshUntil);
   numberMappingPrefetchState.completed = databases.length - pendingDatabases.length;
-  if (!pendingDatabases.length) {
-    numberMappingPrefetchState.status = "complete";
-    numberMappingPrefetchState.completedAt = Date.now();
-    return;
-  }
   let refreshedMappingCount = 0;
+  const failedDatabases = new Set();
   let nextDatabase = 0;
   const refreshDatabase = async () => {
     while (nextDatabase < pendingDatabases.length) {
@@ -1110,6 +1116,7 @@ async function prefetchAllNumberMappings() {
       } catch (error) {
         if (runController.signal.aborted) throw error;
         failed = true;
+        failedDatabases.add(database);
         const reason = error?.status ? `HTTP ${error.status}` : error?.code || error?.name || "request failed";
         console.warn(`Inventory status refresh failed for database ${databaseIndex + 1}/${databases.length}: ${reason}`);
       } finally {
@@ -1124,8 +1131,73 @@ async function prefetchAllNumberMappings() {
   await Promise.all(Array.from(
     { length: Math.min(numberMappingPrefetchConcurrency, pendingDatabases.length) }, refreshDatabase
   ));
-  numberMappingPrefetchState.mappings = Math.max(progress.mappings || 0, refreshedMappingCount);
-  numberMappingPrefetchState.status = numberMappingPrefetchState.failed ? "partial" : "complete";
+  numberMappingPrefetchState.status = "discovering";
+  let discoveryNext = 0;
+  let discoveryFailures = 0;
+  const discoverDatabase = async () => {
+    while (discoveryNext < databases.length) {
+      throwIfAborted(runController.signal);
+      const database = databases[discoveryNext++];
+      const taskController = new AbortController();
+      const abortTask = () => taskController.abort();
+      const taskTimeout = setTimeout(() => taskController.abort(), numberMappingDiscoveryTaskTimeoutMs);
+      runController.signal.addEventListener("abort", abortTask, { once: true });
+      try {
+        const discovery = await waitForAbortable(readActiveNumbers(
+          database,
+          () => true,
+          taskController.signal,
+          2,
+          null,
+          true,
+          async (entries, checkedAt) => {
+            const mappings = entries.filter((entry) => entry.number).map((entry) => ({
+              database,
+              deviceId: entry.deviceId,
+              number: entry.number,
+              online: true,
+              now: checkedAt,
+              verifiedAt: checkedAt
+            }));
+            if (!mappings.length) return;
+            await store.call("rememberBatch", mappings);
+            numberMappingPrefetchState.mappings += mappings.length;
+            numberMappingPrefetchLastProgressAt = Date.now();
+          },
+          1,
+          true
+        ), taskController.signal);
+        if (discovery.messageReadFailures > 0) {
+          discoveryFailures += 1;
+          if (!failedDatabases.has(database)) {
+            failedDatabases.add(database);
+            numberMappingPrefetchState.failed += 1;
+          }
+        }
+      } catch (error) {
+        if (runController.signal.aborted) throw error;
+        discoveryFailures += 1;
+        if (!failedDatabases.has(database)) {
+          failedDatabases.add(database);
+          numberMappingPrefetchState.failed += 1;
+        }
+        console.warn("Number mapping discovery failed for database " + database + ": "
+          + (error?.status ? "HTTP " + error.status : error?.code || error?.name || "request failed"));
+      } finally {
+        clearTimeout(taskTimeout);
+        runController.signal.removeEventListener("abort", abortTask);
+        numberMappingPrefetchState.discoveryCompleted += 1;
+        numberMappingPrefetchLastProgressAt = Date.now();
+      }
+    }
+  };
+  await Promise.all(Array.from(
+    { length: Math.min(numberMappingDiscoveryConcurrency, databases.length) }, discoverDatabase
+  ));
+  numberMappingPrefetchState.mappings = Math.max(
+    progress.mappings || 0, refreshedMappingCount, numberMappingPrefetchState.mappings || 0
+  );
+  numberMappingPrefetchState.status = numberMappingPrefetchState.failed || discoveryFailures ? "partial" : "complete";
   numberMappingPrefetchState.completedAt = Date.now();
 }
 
@@ -1579,7 +1651,7 @@ function rememberActiveClientIds(database, clients, expiresAt) {
   return onlineIds;
 }
 
-async function readActiveNumbers(database, isAvailable = () => true, parentSignal = null, requiredCandidates = 1, excludedNumbers = null, scanAll = false, onDiscover = null, readPriority = scanAll ? 1 : 0) {
+async function readActiveNumbers(database, isAvailable = () => true, parentSignal = null, requiredCandidates = 1, excludedNumbers = null, scanAll = false, onDiscover = null, readPriority = scanAll ? 1 : 0, preserveEmptySnapshot = false) {
   const clients = await fetchSharedDatabaseJson(
     `${database}/clients.json`,
     numberFetchTimeoutMs,
@@ -1622,7 +1694,7 @@ async function readActiveNumbers(database, isAvailable = () => true, parentSigna
   if (knownMappings.length) {
     const activeIds = new Set(activeClients.map(([id]) => id));
     await store.call("markDatabaseOnline", {
-      database, onlineDeviceIds: [...activeIds], now: snapshotCheckedAt
+      database, onlineDeviceIds: [...activeIds], now: snapshotCheckedAt, preserveOnEmpty: preserveEmptySnapshot
     });
   }
   activeClientsSnapshotFreshUntil.set(database, snapshotExpiresAt);

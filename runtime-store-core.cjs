@@ -259,7 +259,9 @@ class RuntimeStore {
   markOnlineBatch(entries) {
     return this.transaction(() => { for (const entry of entries) this.markOnline(entry); });
   }
-  markDatabaseOnline({ database, onlineDeviceIds = [], now = Date.now() }) {
+  markDatabaseOnline({ database, onlineDeviceIds = [], now = Date.now(), preserveOnEmpty = false }) {
+    if (onlineDeviceIds.length === 0 && preserveOnEmpty
+      && this.sql("SELECT 1 FROM numbers WHERE database_url=? LIMIT 1").get(database)) return 0;
     const ids = JSON.stringify(onlineDeviceIds);
     const changes = this.sql("UPDATE numbers SET online=(device_id IN (SELECT value FROM json_each(?))),checked_at=? "
       + "WHERE database_url=? AND (online!=(device_id IN (SELECT value FROM json_each(?))) OR checked_at<=?)")
