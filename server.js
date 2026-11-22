@@ -87,6 +87,8 @@ const servicesCacheTtlMs = 5000;
 const rotationStateCacheTtlMs = 250;
 const numberPoolSize = readPositiveIntegerEnv("NUMBER_POOL_SIZE", 256, 1, 500);
 const numberPoolWorkerCount = readPositiveIntegerEnv("NUMBER_POOL_WORKERS", 4, 1, 32);
+const numberReadyQueueSize = readPositiveIntegerEnv("NUMBER_READY_QUEUE_SIZE", 256, 16, 2000);
+const numberReadyQueueRefillThreshold = Math.max(1, Math.floor(numberReadyQueueSize / 4));
 const numberPoolClaimCandidates = readPositiveIntegerEnv("NUMBER_POOL_CLAIM_CANDIDATES", 1000, 32, 1000);
 const numberPoolMaxCandidatePages = readPositiveIntegerEnv("NUMBER_POOL_MAX_CANDIDATE_PAGES", 256, 2, 4096);
 const numberPoolRefillThreshold = Math.max(1, Math.floor(numberPoolSize / 4));
@@ -102,6 +104,8 @@ const numberRequestTimeoutMs = readPositiveIntegerEnv("NUMBER_REQUEST_TIMEOUT_MS
 const failedLoginAttempts = new Map();
 const activeNumberCache = new Map();
 const numberPools = new Map();
+const readyNumberQueues = new Map();
+const readyNumberQueueLoads = new Map();
 const activeNumberPoolRefills = new Map();
 const numberPoolFailures = new Map();
 const serviceAllocationOperations = new Map();
@@ -1981,6 +1985,52 @@ async function fillNumberPool(service, parentSignal = null) {
   return readyCount;
 }
 
+function readyNumberKey(candidate) {
+  return `${candidate.database}|${candidate.deviceId}|${candidate.number}`;
+}
+
+async function refreshReadyNumberQueue(service, store = null) {
+  const key = normalizeServiceName(service).toLowerCase();
+  const active = readyNumberQueueLoads.get(key);
+  if (active) return active;
+  const load = (async () => {
+    const runtime = store || await getRuntimeStore();
+    const metadata = await runtime.call("metadata");
+    if (!metadata?.databaseUrls?.length) { readyNumberQueues.set(key, []); return 0; }
+    const candidates = await runtime.call("candidates", {
+      service: key, databases: metadata.databaseUrls, limit: numberReadyQueueSize,
+      onlineTtl: activeClientsCacheTtlMs, freshOnly: true
+    });
+    const now = Date.now();
+    const verifiedCandidates = candidates.filter((candidate) => {
+      const snapshot = activeClientOnlineIds.get(candidate.database);
+      return snapshot && snapshot.expiresAt > now && snapshot.onlineIds.has(candidate.deviceId)
+        && (snapshot.complete || snapshot.checkedIds?.has(candidate.deviceId))
+        && Number(candidate.checkedAt) > now - activeClientsCacheTtlMs;
+    });
+    const queue = readyNumberQueues.get(key) || [];
+    const seen = new Set(queue.map((candidate) => readyNumberKey(candidate)));
+    for (const candidate of verifiedCandidates) {
+      const candidateKey = readyNumberKey(candidate);
+      if (seen.has(candidateKey)) continue;
+      seen.add(candidateKey);
+      queue.push(candidate);
+    }
+    readyNumberQueues.set(key, queue);
+    return queue.length;
+  })().finally(() => {
+    readyNumberQueueLoads.delete(key);
+  });
+  readyNumberQueueLoads.set(key, load);
+  return load;
+}
+
+function requestReadyNumberQueueRefresh(service) {
+  void refreshReadyNumberQueue(service).catch((error) => {
+    if (error?.status !== 503) console.error(`Could not refresh ready number queue for ${service}:`, error.message);
+  });
+}
+
 // Keep one discovery job per service so warmups can fetch from multiple services
 // in parallel without duplicate scans for the same service. The shared Firebase
 // read gate still caps total upstream work.
@@ -1996,6 +2046,7 @@ function refillNumberPool(service, parentSignal = null) {
     .then(() => fillNumberPool(key, parentSignal))
     .then((result) => {
       pool.lastResult = result;
+      requestReadyNumberQueueRefresh(key);
       numberPoolFailures.delete(key);
       pool.retryAt = Date.now() + (result >= numberPoolRefillThreshold
         ? numberPoolRefillCooldownMs
@@ -2123,9 +2174,21 @@ async function findAvailableActiveNumber(
       }
       if (order) {
         recentOrdersCache = null;
+        requestReadyNumberQueueRefresh(service);
       }
       return order;
     };
+    const queueKey = normalizeServiceName(service).toLowerCase();
+    let readyQueue = readyNumberQueues.get(queueKey) || [];
+    if (readyQueue.length < numberReadyQueueRefillThreshold) {
+      await refreshReadyNumberQueue(queueKey, store);
+      readyQueue = readyNumberQueues.get(queueKey) || [];
+    }
+    while (readyQueue.length) {
+      const queuedCandidate = readyQueue.shift();
+      const queuedOrder = await claimCandidatesAtomically([queuedCandidate]);
+      if (queuedOrder) return queuedOrder;
+    }
     const tryInventory = async () => {
       const metadata = await store.call("metadata");
       let lastVerificationError = null;
@@ -2137,6 +2200,9 @@ async function findAvailableActiveNumber(
         throwIfAborted(signal);
         const finish = (order) => {
           requestNumberPoolRefresh(service);
+          if (order && (readyNumberQueues.get(queueKey)?.length || 0) < numberReadyQueueRefillThreshold) {
+            requestReadyNumberQueueRefresh(queueKey);
+          }
           return order;
         };
 
