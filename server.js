@@ -73,7 +73,7 @@ const numberStatusCheckConcurrency = Math.max(1, Math.min(3, maximumConcurrentDa
 const numberStatusCheckDeviceConcurrency = readPositiveIntegerEnv(
   "NUMBER_STATUS_CHECK_DEVICE_CONCURRENCY", 4, 1, 16
 );
-const numberMappingPrefetchConcurrency = readPositiveIntegerEnv("NUMBER_MAPPING_PREFETCH_CONCURRENCY", 2, 1, 8);
+const numberMappingPrefetchConcurrency = readPositiveIntegerEnv("NUMBER_MAPPING_PREFETCH_CONCURRENCY", 16, 1, 32);
 const numberReadyQueueWaitMs = readPositiveIntegerEnv("NUMBER_READY_QUEUE_WAIT_MS", 100, 10, 1000);
 const numberPoolDatabaseConcurrency = readPositiveIntegerEnv("NUMBER_POOL_DATABASE_CONCURRENCY", 2, 1, 8);
 const numberMappingDeviceConcurrency = readPositiveIntegerEnv(
@@ -998,46 +998,30 @@ async function prefetchAllNumberMappings() {
   const rotation = await readRotationMetadata();
   const databases = rotation.databaseUrls;
   const store = await getRuntimeStore();
-  const countedMappings = new Set();
   numberMappingPrefetchState = {
     status: databases.length ? "running" : "complete",
     total: databases.length, completed: 0, failed: 0, mappings: 0,
     startedAt: Date.now(), completedAt: databases.length ? null : Date.now()
   };
   if (!databases.length) return;
-  const controller = new AbortController();
   let nextDatabase = 0;
-  const scanDatabase = async () => {
+  const refreshDatabase = async () => {
     while (nextDatabase < databases.length) {
       const database = databases[nextDatabase++];
       let failed = false;
       try {
-        const pendingEntries = [];
-        let saveChain = Promise.resolve();
-        const flushMappings = () => {
-          if (!pendingEntries.length) return saveChain;
-          const entries = pendingEntries.splice(0);
-          saveChain = saveChain.then(() => store.call("rememberBatch", entries));
-          return saveChain;
-        };
-        const noteAndSaveMappings = (candidates, checkedAt) => {
-          for (const candidate of candidates) {
-            const key = `${database}|${candidate.deviceId}`;
-            if (countedMappings.has(key)) continue;
-            countedMappings.add(key);
-            numberMappingPrefetchState.mappings += 1;
-            pendingEntries.push({ database, deviceId: candidate.deviceId, number: candidate.number,
-              verifiedAt: candidate.verifiedAt, online: true, now: checkedAt });
-          }
-          if (pendingEntries.length >= 64) void flushMappings();
-          return Promise.resolve();
-        };
-        const inventory = await readActiveNumbers(
-          database, () => true, controller.signal, Number.MAX_SAFE_INTEGER, null, true, noteAndSaveMappings
+        const clients = await fetchSharedDatabaseJson(
+          `${database}/clients.json`, numberFetchTimeoutMs, activeClientsCacheTtlMs, null, 1
         );
-        await flushMappings();
-        await saveChain;
-        failed = inventory.messageReadFailures > 0;
+        const cached = sharedDatabaseJsonCache.get(`${database}/clients.json`);
+        const checkedAt = Date.now();
+        const expiresAt = cached?.expiresAt > checkedAt ? cached.expiresAt : checkedAt + activeClientsCacheTtlMs;
+        const onlineIds = rememberActiveClientIds(database, clients, expiresAt);
+        const mappings = await store.call("mappings", database);
+        await store.call("markDatabaseOnline", {
+          database, onlineDeviceIds: [...onlineIds], now: checkedAt
+        });
+        numberMappingPrefetchState.mappings += mappings.length;
       } catch {
         failed = true;
       } finally {
@@ -1047,7 +1031,7 @@ async function prefetchAllNumberMappings() {
     }
   };
   await Promise.all(Array.from(
-    { length: Math.min(numberMappingPrefetchConcurrency, databases.length) }, scanDatabase
+    { length: Math.min(numberMappingPrefetchConcurrency, databases.length) }, refreshDatabase
   ));
   numberMappingPrefetchState.status = numberMappingPrefetchState.failed ? "partial" : "complete";
   numberMappingPrefetchState.completedAt = Date.now();

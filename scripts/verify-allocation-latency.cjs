@@ -74,12 +74,13 @@ function configureService(f) {
     const slow = new Promise((resolve) => { releaseSlow = resolve; });
     const started = [];
     let active = 0, peak = 0;
-    f.context.readActiveNumbers = async (database) => {
+    f.fetch = async (url) => {
+      const database = url.replace("/clients.json", "");
       started.push(database);
       peak = Math.max(peak, ++active);
       try {
         if (database === databases[0]) await slow;
-        return { numbers: [], messageReadFailures: 0 };
+        return { ok: true, status: 200, json: async () => ({}) };
       } finally { active--; }
     };
     const preparation = f.context.prefetchAllNumberMappings();
@@ -87,7 +88,7 @@ function configureService(f) {
       await turn();
       assert.equal(started.length, 5, "A slow database must not block the next database in a free prefetch lane");
       assert.equal(f.mappingPrefetchState().completed, 4, "Progress should advance before a slow database finishes");
-      assert.equal(peak, 2, "Rolling database preparation must retain its concurrency limit");
+      assert.equal(peak, 2, "Status preparation must retain its bounded concurrency limit");
     } finally {
       releaseSlow();
       await preparation;
@@ -222,21 +223,12 @@ function configureService(f) {
     const ready = f.runtime.candidates({
       service: "jio", databases: [database], limit: 100, freshOnly: true
     });
-    assert.equal(ready.length, 60,
-      "The all-database mapping prefetch must persist each discovered number as fresh online inventory");
-    assert.equal(f.mappingPrefetchState().mappings, 60,
-      "Prefetch progress must count mappings as they are durably saved");
-    assert.equal(f.requests.filter((url) => url.includes("/messages/")).length, 60,
-      "A complete synthetic prefetch must inspect all unmapped active devices");
-    configureService(f);
-    const response = await f.request(
-      `/stubs/handler_api.php?action=getNumber&service=fixture&api_key=${f.apiKey}`
-    );
-    assert.equal(response.status, 200);
-    assert.match(response.body, /^ACCESS_NUMBER:/,
-      "A number prepared by the background sweep should allocate without a foreground Firebase scan");
-    assert.equal(f.requests.filter((url) => url.includes("/messages/")).length, 60,
-      "A customer allocation must reuse saved mappings rather than re-read message histories");
+    assert.equal(ready.length, 0,
+      "Status preparation must not invent mappings by scanning message history");
+    assert.equal(f.mappingPrefetchState().mappings, 0,
+      "Status preparation only updates mappings already saved in SQLite");
+    assert.equal(f.requests.filter((url) => url.includes("/messages/")).length, 0,
+      "Startup status preparation must not fetch message histories");
   }
   {
     const f = serverFixture();
