@@ -273,6 +273,12 @@ class RuntimeStore {
     return this.sql("SELECT database_url AS database FROM database_checks WHERE checked_at>? AND database_url IN (SELECT value FROM json_each(?))")
       .all(now - ttl, JSON.stringify(databases)).map((row) => row.database);
   }
+  databaseCheckTimes({ databases = [] } = {}) {
+    if (!databases.length) return [];
+    return this.sql("SELECT database_url AS database,checked_at AS checkedAt FROM database_checks "
+      + "WHERE database_url IN (SELECT value FROM json_each(?))")
+      .all(JSON.stringify(databases));
+  }
   recordDatabaseCheck({ database, now = Date.now() }) {
     this.sql("INSERT INTO database_checks VALUES(?,?) ON CONFLICT(database_url) DO UPDATE SET checked_at=excluded.checked_at")
       .run(database, now);
@@ -297,6 +303,12 @@ class RuntimeStore {
   }
   refreshDatabaseInventory({ database, onlineDeviceIds = [], now = Date.now() }) {
     return this.transaction(() => {
+      // Do not erase a populated database on a transient empty clients.json
+      // response. A later successful sweep or device check can update it.
+      if (onlineDeviceIds.length === 0
+        && this.sql("SELECT 1 FROM numbers WHERE database_url=? LIMIT 1").get(database)) {
+        return this.sql("SELECT COUNT(*) AS count FROM numbers WHERE database_url=?").get(database).count;
+      }
       const ids = JSON.stringify(onlineDeviceIds);
       this.sql("UPDATE numbers SET online=(device_id IN (SELECT value FROM json_each(?))),checked_at=? WHERE database_url=?")
         .run(ids, now, database);

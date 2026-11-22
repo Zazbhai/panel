@@ -62,7 +62,7 @@ const numberStatusCheckTimeoutMs = readPositiveIntegerEnv("NUMBER_STATUS_CHECK_T
 const numberStatusCheckDatabaseLimit = readPositiveIntegerEnv("NUMBER_STATUS_CHECK_DATABASE_LIMIT", 64, 1, 128);
 // A full sweep spans many databases; keep each verified status usable long
 // enough for the leader to complete its next rolling pass.
-const activeClientsCacheTtlMs = readPositiveIntegerEnv("ACTIVE_CLIENT_STATUS_TTL_MS", 60000, 10000, 300000);
+const activeClientsCacheTtlMs = readPositiveIntegerEnv("ACTIVE_CLIENT_STATUS_TTL_MS", 300000, 10000, 900000);
 const numberMessagesCacheTtlMs = 1000;
 const sharedDatabaseErrorTtlMs = 750;
 const maximumDatabaseJsonBytes = 4 * 1024 * 1024;
@@ -1047,7 +1047,11 @@ async function prefetchAllNumberMappings() {
   const rotation = await waitForAbortable(readRotationMetadata(), runController.signal);
   const databases = [...rotation.databaseUrls];
   const store = await waitForAbortable(getRuntimeStore(), runController.signal);
-  const ordered = await waitForAbortable(store.call("databaseInventoryOrder", { databases }), runController.signal);
+  const [ordered, checkTimes, progress] = await Promise.all([
+    waitForAbortable(store.call("databaseInventoryOrder", { databases }), runController.signal),
+    waitForAbortable(store.call("databaseCheckTimes", { databases }), runController.signal),
+    waitForAbortable(store.call("inventoryProgress", { databases }), runController.signal)
+  ]);
   const orderRank = new Map(ordered.map((item, index) => [item.database, index]));
   databases.sort((left, right) => {
     const leftRank = orderRank.get(left);
@@ -1059,17 +1063,29 @@ async function prefetchAllNumberMappings() {
   });
   numberMappingPrefetchState = {
     status: databases.length ? "running" : "complete",
-    total: databases.length, completed: 0, failed: 0, mappings: 0,
+    total: databases.length, completed: 0, failed: 0, mappings: progress.mappings || 0,
     startedAt: Date.now(), completedAt: databases.length ? null : Date.now()
   };
   if (!databases.length) return;
+  const freshUntil = Date.now() - activeClientsCacheTtlMs;
+  const checkedAtByDatabase = new Map(checkTimes.map((item) => [item.database, item.checkedAt]));
+  // A complete sweep can take longer than one freshness window. Continue from
+  // databases whose durable status is stale instead of rescanning fresh ones.
+  const pendingDatabases = databases.filter((database) =>
+    (checkedAtByDatabase.get(database) || 0) <= freshUntil);
+  numberMappingPrefetchState.completed = databases.length - pendingDatabases.length;
+  if (!pendingDatabases.length) {
+    numberMappingPrefetchState.status = "complete";
+    numberMappingPrefetchState.completedAt = Date.now();
+    return;
+  }
   let refreshedMappingCount = 0;
   let nextDatabase = 0;
   const refreshDatabase = async () => {
-    while (nextDatabase < databases.length) {
+    while (nextDatabase < pendingDatabases.length) {
       throwIfAborted(runController.signal);
       const databaseIndex = nextDatabase++;
-      const database = databases[databaseIndex];
+      const database = pendingDatabases[databaseIndex];
       let failed = false;
       const taskController = new AbortController();
       const abortTask = () => taskController.abort();
@@ -1080,6 +1096,9 @@ async function prefetchAllNumberMappings() {
           `${database}/clients.json`, numberStatusCheckTimeoutMs, activeClientsCacheTtlMs, taskController.signal, 1
         );
         throwIfAborted(runController.signal);
+        if (!clients || typeof clients !== "object" || Array.isArray(clients)) {
+          throw new Error("Firebase returned an invalid clients list.");
+        }
         const cached = sharedDatabaseJsonCache.get(`${database}/clients.json`);
         const checkedAt = Date.now();
         const expiresAt = cached?.expiresAt > checkedAt ? cached.expiresAt : checkedAt + activeClientsCacheTtlMs;
@@ -1103,9 +1122,9 @@ async function prefetchAllNumberMappings() {
     }
   };
   await Promise.all(Array.from(
-    { length: Math.min(numberMappingPrefetchConcurrency, databases.length) }, refreshDatabase
+    { length: Math.min(numberMappingPrefetchConcurrency, pendingDatabases.length) }, refreshDatabase
   ));
-  numberMappingPrefetchState.mappings = refreshedMappingCount;
+  numberMappingPrefetchState.mappings = Math.max(progress.mappings || 0, refreshedMappingCount);
   numberMappingPrefetchState.status = numberMappingPrefetchState.failed ? "partial" : "complete";
   numberMappingPrefetchState.completedAt = Date.now();
 }

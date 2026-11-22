@@ -666,8 +666,8 @@ function configureService(f) {
     assert.equal(calls, 3, "The inventory worker must visit every configured database, including unmapped ones");
     assert.equal(progress.completed, 3);
     assert.equal(progress.failed, 1);
-    assert.equal(f.runtime.sql("SELECT COUNT(*) AS n FROM database_checks").get().n, 2,
-      "Failed databases must remain unchecked so the next pass retries them");
+    assert.equal(f.runtime.sql("SELECT COUNT(*) AS n FROM database_checks").get().n, 1,
+      "Failed and empty snapshots must remain unchecked so the next pass retries them");
   }
   console.log("PASS: allocation queue cancellation, read capacity, first-ready verification, warm burst uniqueness, offline invalidation, and request deadlines.");
 })().catch((error) => { console.error(error); process.exitCode = 1; });

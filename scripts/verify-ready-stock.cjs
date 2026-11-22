@@ -181,6 +181,20 @@ function readyEligibility() {
   } finally { store.close(); }
 }
 
+function emptySnapshotSafety() {
+  const store = new RuntimeStore(":memory:");
+  try {
+    const database = "https://fixture.firebaseio.com";
+    store.initialize({ initialized: true, databaseUrls: [database] });
+    store.remember({ database, deviceId: "stable-device", number: "9444444000" });
+    store.markDatabaseOnline({ database, onlineDeviceIds: ["stable-device"] });
+    store.refreshDatabaseInventory({ database, onlineDeviceIds: [] });
+    assert.equal(store.sql("SELECT online FROM numbers WHERE number=?").get("9444444000").online, 1,
+      "A transient empty inventory refresh must preserve saved stock");
+    console.log("PASS: empty status snapshots cannot erase saved online inventory.");
+  } finally { store.close(); }
+}
+
 async function stockUi() {
   const elements = new Map();
   const element = (id) => {
@@ -249,5 +263,5 @@ async function briefWriteLock() {
 }
 
 (async () => {
-  readyEligibility(); await briefWriteLock(); await diskBurst(); await stockCache(); await readyApi(); await stockUi();
+  readyEligibility(); emptySnapshotSafety(); await briefWriteLock(); await diskBurst(); await stockCache(); await readyApi(); await stockUi();
 })().catch((error) => { console.error(error); process.exitCode = 1; });
