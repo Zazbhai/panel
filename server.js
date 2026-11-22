@@ -73,7 +73,8 @@ const numberStatusCheckConcurrency = Math.max(1, Math.min(3, maximumConcurrentDa
 const numberStatusCheckDeviceConcurrency = readPositiveIntegerEnv(
   "NUMBER_STATUS_CHECK_DEVICE_CONCURRENCY", 4, 1, 16
 );
-const numberMappingPrefetchConcurrency = readPositiveIntegerEnv("NUMBER_MAPPING_PREFETCH_CONCURRENCY", 4, 1, 8);
+const numberMappingPrefetchConcurrency = readPositiveIntegerEnv("NUMBER_MAPPING_PREFETCH_CONCURRENCY", 2, 1, 8);
+const numberReadyQueueWaitMs = readPositiveIntegerEnv("NUMBER_READY_QUEUE_WAIT_MS", 100, 10, 1000);
 const numberPoolDatabaseConcurrency = readPositiveIntegerEnv("NUMBER_POOL_DATABASE_CONCURRENCY", 2, 1, 8);
 const numberMappingDeviceConcurrency = readPositiveIntegerEnv(
   "NUMBER_MAPPING_DEVICE_CONCURRENCY",
@@ -1011,38 +1012,31 @@ async function prefetchAllNumberMappings() {
       const database = databases[nextDatabase++];
       let failed = false;
       try {
-        const pendingMappings = [];
-        let saveScheduled = false;
-        const savePendingMappings = async () => {
-          saveScheduled = false;
-          const batch = pendingMappings.splice(0);
-          try {
-            const entries = batch.flatMap(({ candidates, checkedAt }) => candidates.map((candidate) => ({
-              database, deviceId: candidate.deviceId, number: candidate.number,
-              verifiedAt: candidate.verifiedAt, online: true, now: checkedAt
-            })));
-            await store.call("rememberBatch", entries);
-            for (const entry of entries) {
-              const key = `${database}|${entry.deviceId}`;
-              if (countedMappings.has(key)) continue;
-              countedMappings.add(key);
-              numberMappingPrefetchState.mappings += 1;
-            }
-            for (const item of batch) item.resolve();
-          } catch (error) {
-            for (const item of batch) item.reject(error);
-          }
+        const pendingEntries = [];
+        let saveChain = Promise.resolve();
+        const flushMappings = () => {
+          if (!pendingEntries.length) return saveChain;
+          const entries = pendingEntries.splice(0);
+          saveChain = saveChain.then(() => store.call("rememberBatch", entries));
+          return saveChain;
         };
-        const noteAndSaveMappings = (candidates, checkedAt) => new Promise((resolve, reject) => {
-          pendingMappings.push({ candidates, checkedAt, resolve, reject });
-          if (!saveScheduled) {
-            saveScheduled = true;
-            setImmediate(savePendingMappings);
+        const noteAndSaveMappings = (candidates, checkedAt) => {
+          for (const candidate of candidates) {
+            const key = `${database}|${candidate.deviceId}`;
+            if (countedMappings.has(key)) continue;
+            countedMappings.add(key);
+            numberMappingPrefetchState.mappings += 1;
+            pendingEntries.push({ database, deviceId: candidate.deviceId, number: candidate.number,
+              verifiedAt: candidate.verifiedAt, online: true, now: checkedAt });
           }
-        });
+          if (pendingEntries.length >= 64) void flushMappings();
+          return Promise.resolve();
+        };
         const inventory = await readActiveNumbers(
           database, () => true, controller.signal, Number.MAX_SAFE_INTEGER, null, true, noteAndSaveMappings
         );
+        await flushMappings();
+        await saveChain;
         failed = inventory.messageReadFailures > 0;
       } catch {
         failed = true;
@@ -2193,7 +2187,10 @@ async function findAvailableActiveNumber(
     const queueKey = normalizeServiceName(service).toLowerCase();
     let readyQueue = readyNumberQueues.get(queueKey) || [];
     if (readyQueue.length < numberReadyQueueRefillThreshold) {
-      await refreshReadyNumberQueue(queueKey, store);
+      const refresh = refreshReadyNumberQueue(queueKey, store).catch(() => null);
+      if (!readyQueue.length) {
+        await Promise.race([refresh, new Promise((resolve) => setTimeout(resolve, numberReadyQueueWaitMs))]);
+      }
       readyQueue = readyNumberQueues.get(queueKey) || [];
     }
     while (readyQueue.length) {
@@ -2496,6 +2493,8 @@ async function handleLocalOtpRequest(requestUrl, response) {
       return;
     }
     const service = normalizeServiceName(services[0].trim()).toLowerCase();
+    requestedNumberPoolServices.add(service);
+    requestReadyNumberQueueRefresh(service);
     const allocationDeadline = Date.now() + numberRequestTimeoutMs;
     const allocationController = new AbortController();
     let allocationTimer = setTimeout(() => allocationController.abort(), numberRequestTimeoutMs);
