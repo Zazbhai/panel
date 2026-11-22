@@ -1041,11 +1041,10 @@ async function prefetchAllNumberMappings() {
         const checkedAt = Date.now();
         const expiresAt = cached?.expiresAt > checkedAt ? cached.expiresAt : checkedAt + activeClientsCacheTtlMs;
         const onlineIds = rememberActiveClientIds(database, clients, expiresAt);
-        const mappings = await store.call("mappings", database);
-        await store.call("markDatabaseOnline", {
+        const mappingCount = await store.call("refreshDatabaseInventory", {
           database, onlineDeviceIds: [...onlineIds], now: checkedAt
         });
-        numberMappingPrefetchState.mappings += mappings.length;
+        numberMappingPrefetchState.mappings += mappingCount;
       } catch {
         failed = true;
       } finally {
@@ -3199,6 +3198,10 @@ async function handleRequest(request, response) {
       }
       sendJson(response, 200, { ...stockSummaryCache.value, mappingPrefetch });
     } catch {
+      if (stockSummaryCache?.value) {
+        sendJson(response, 200, { ...stockSummaryCache.value, mappingPrefetch: { ...numberMappingPrefetchState } });
+        return;
+      }
       sendJson(response, 503, { error: "Stock totals are temporarily unavailable." }, { "Retry-After": "3" });
     }
     return;

@@ -284,6 +284,16 @@ class RuntimeStore {
       .get(JSON.stringify(databases)).count;
     return { checkedDatabases, mappings };
   }
+  refreshDatabaseInventory({ database, onlineDeviceIds = [], now = Date.now() }) {
+    return this.transaction(() => {
+      const ids = JSON.stringify(onlineDeviceIds);
+      this.sql("UPDATE numbers SET online=(device_id IN (SELECT value FROM json_each(?))),checked_at=? WHERE database_url=?")
+        .run(ids, now, database);
+      this.sql("INSERT INTO database_checks VALUES(?,?) ON CONFLICT(database_url) DO UPDATE SET checked_at=excluded.checked_at")
+        .run(database, now);
+      return this.sql("SELECT COUNT(*) AS count FROM numbers WHERE database_url=?").get(database).count;
+    });
+  }
   releaseOrder(orderId) {
     this.sql("DELETE FROM leases WHERE order_id=?").run(orderId);
   }
