@@ -6,7 +6,7 @@ const {
   randomInt,
   timingSafeEqual
 } = require("node:crypto");
-const { readFile, writeFile, rename, unlink } = require("node:fs/promises");
+const { readFile, writeFile, rename, unlink, open } = require("node:fs/promises");
 const { gzipSync } = require("node:zlib");
 const { getEnabledTemplates, matchServiceMessage } = require("./service-matching-core");
 const { mergeSmsFormats, normalizeServiceName, normalizeServiceNames } = require("./service-sms-format-import");
@@ -41,6 +41,7 @@ const servicesDataPath = path.join(__dirname, "services.json");
 const smsFormatsDataPath = path.join(__dirname, "service-sms-formats.json");
 const rotationDataPath = path.join(__dirname, "rotation.json");
 const runtimeDataPath = path.join(__dirname, "runtime.sqlite");
+const inventoryWorkerLockPath = path.join(__dirname, ".inventory-worker.lock");
 let runtimeStorePromise = null;
 const maximumServicesRequestBytes = 16 * 1024 * 1024;
 const maximumRotationRequestBytes = 1024 * 1024;
@@ -122,6 +123,7 @@ let stockSummaryPending = null;
 let numberMappingPrefetchPromise = null;
 let numberPoolWarmupPromise = null;
 let numberPoolWarmupTimer = null;
+let inventoryWorkerLockHandle = null;
 let numberMappingPrefetchState = { status: "idle", total: 0, completed: 0, failed: 0, mappings: 0, startedAt: null, completedAt: null };
 let configuredServicesCache = null;
 let configuredServicesReadPromise = null;
@@ -986,6 +988,7 @@ function getLatestCarrierNumber(messages) {
 async function initializeOrderExpirationTimers() {
   await (await getRuntimeStore()).call("expire");
   // Expiry is indexed and checked at claim/read time; no per-order timers or JSON rewrites.
+  if (!await acquireInventoryWorkerLock()) return;
   setTimeout(startNumberMappingPrefetch, 1000).unref();
   setTimeout(startNumberPoolWarmup, 1200).unref();
   if (!numberPoolWarmupTimer) {
@@ -993,6 +996,27 @@ async function initializeOrderExpirationTimers() {
     numberPoolWarmupTimer.unref();
   }
 }
+
+async function acquireInventoryWorkerLock() {
+  if (inventoryWorkerLockHandle) return true;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      inventoryWorkerLockHandle = await open(inventoryWorkerLockPath, "wx");
+      await inventoryWorkerLockHandle.writeFile(`${process.pid}\n`, "utf8");
+      return true;
+    } catch (error) {
+      if (error.code !== "EEXIST") return false;
+      let ownerPid = 0;
+      try { ownerPid = Number((await readFile(inventoryWorkerLockPath, "utf8")).trim()); } catch { /* retry below */ }
+      if (ownerPid && ownerPid !== process.pid) {
+        try { process.kill(ownerPid, 0); return false; } catch { /* stale lock */ }
+      }
+      await unlink(inventoryWorkerLockPath).catch(() => {});
+    }
+  }
+  return false;
+}
+
 
 async function prefetchAllNumberMappings() {
   const rotation = await readRotationMetadata();

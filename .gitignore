@@ -20,4 +20,5 @@ rotation.json
 services.json
 runtime.sqlite
 runtime.sqlite-*
+.inventory-worker.lock
 rotation.pre-sqlite.json
