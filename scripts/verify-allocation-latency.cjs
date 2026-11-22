@@ -341,7 +341,7 @@ function configureService(f) {
     const f = serverFixture();
     let release;
     const hold = new Promise((resolve) => { release = resolve; });
-    const occupied = Array.from({ length: 6 }, () =>
+    const occupied = Array.from({ length: 16 }, () =>
       f.context.withDatabaseReadSlot(() => hold));
     await turn();
     const controller = new AbortController();
@@ -363,7 +363,7 @@ function configureService(f) {
     const f = serverFixture();
     let release;
     const hold = new Promise((resolve) => { release = resolve; });
-    const active = Array.from({ length: 6 }, () => f.context.withDatabaseReadSlot(() => hold));
+    const active = Array.from({ length: 16 }, () => f.context.withDatabaseReadSlot(() => hold));
     await turn();
     const order = [];
     const background = f.context.withDatabaseReadSlot(async () => { order.push("background"); }, null, 1);

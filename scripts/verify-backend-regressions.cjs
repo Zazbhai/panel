@@ -157,7 +157,7 @@ function completedOrder() {
         return { ok: true };
       }
     });
-    const readLimit = 6;
+    const readLimit = 16;
     await Promise.all(Array.from({ length: 24 }, (_, index) =>
       f.context.fetchDatabaseJson(`https://fixture.firebaseio.com/clients/${index}.json`)
     ));
