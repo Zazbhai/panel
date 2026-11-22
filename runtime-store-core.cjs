@@ -26,6 +26,7 @@ class RuntimeStore {
       + "CREATE TABLE IF NOT EXISTS service_cycles(service TEXT PRIMARY KEY,cycle INTEGER NOT NULL,cursor_url TEXT NOT NULL);"
       + "CREATE TABLE IF NOT EXISTS service_usage(service TEXT NOT NULL,number TEXT NOT NULL,cycle INTEGER NOT NULL,PRIMARY KEY(service,number));"
       + "CREATE TABLE IF NOT EXISTS numbers(database_url TEXT NOT NULL,device_id TEXT NOT NULL,number TEXT NOT NULL,verified_at INTEGER NOT NULL,online INTEGER NOT NULL,checked_at INTEGER NOT NULL,PRIMARY KEY(database_url,device_id));"
+      + "CREATE TABLE IF NOT EXISTS database_checks(database_url TEXT PRIMARY KEY,checked_at INTEGER NOT NULL);"
       + "CREATE INDEX IF NOT EXISTS numbers_ready ON numbers(online,verified_at DESC,checked_at DESC);"
       + "CREATE INDEX IF NOT EXISTS numbers_by_database ON numbers(database_url,online,verified_at,checked_at,number);"
       + "CREATE INDEX IF NOT EXISTS numbers_service_candidates ON numbers(online,checked_at,verified_at,database_url,number);");
@@ -259,9 +260,17 @@ class RuntimeStore {
   }
   markDatabaseOnline({ database, onlineDeviceIds = [], now = Date.now() }) {
     const ids = JSON.stringify(onlineDeviceIds);
-    return this.sql("UPDATE numbers SET online=(device_id IN (SELECT value FROM json_each(?))),checked_at=? "
+    const changes = this.sql("UPDATE numbers SET online=(device_id IN (SELECT value FROM json_each(?))),checked_at=? "
       + "WHERE database_url=? AND (online!=(device_id IN (SELECT value FROM json_each(?))) OR checked_at<=?)")
       .run(ids, now, database, ids, now - 8000).changes;
+    this.sql("INSERT INTO database_checks VALUES(?,?) ON CONFLICT(database_url) DO UPDATE SET checked_at=excluded.checked_at")
+      .run(database, now);
+    return changes;
+  }
+  verifiedDatabases({ databases = [], now = Date.now(), ttl = 10000 } = {}) {
+    if (!databases.length) return [];
+    return this.sql("SELECT database_url AS database FROM database_checks WHERE checked_at>? AND database_url IN (SELECT value FROM json_each(?))")
+      .all(now - ttl, JSON.stringify(databases)).map((row) => row.database);
   }
   releaseOrder(orderId) {
     this.sql("DELETE FROM leases WHERE order_id=?").run(orderId);

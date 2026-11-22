@@ -2015,13 +2015,14 @@ async function refreshReadyNumberQueue(service, store = null) {
       service: key, databases: metadata.databaseUrls, limit: numberReadyQueueSize,
       onlineTtl: activeClientsCacheTtlMs, freshOnly: true
     });
-    const now = checkedAt;
-    const verifiedCandidates = candidates.filter((candidate) => {
-      const snapshot = activeClientOnlineIds.get(candidate.database);
-      return snapshot && snapshot.expiresAt > now && snapshot.onlineIds.has(candidate.deviceId)
-        && (snapshot.complete || snapshot.checkedIds?.has(candidate.deviceId))
-        && Number(candidate.checkedAt) > now - activeClientsCacheTtlMs;
-    });
+    const verifiedDatabases = new Set(await runtime.call("verifiedDatabases", {
+      databases: metadata.databaseUrls, ttl: activeClientsCacheTtlMs
+    }));
+    // `candidates` comes from the shared SQLite inventory. Its online flag and
+    // checked_at are durable, so API workers can use status verified by the
+    // background leader even when their own in-memory snapshot is empty.
+    const verifiedCandidates = candidates.filter((candidate) => candidate.reused !== true
+      && verifiedDatabases.has(candidate.database));
     const queue = readyNumberQueues.get(key) || [];
     const seen = new Set(queue.map((candidate) => readyNumberKey(candidate)));
     for (const candidate of verifiedCandidates) {
@@ -2208,6 +2209,9 @@ async function findAvailableActiveNumber(
     }
     const tryInventory = async () => {
       const metadata = await store.call("metadata");
+      const verifiedDatabases = new Set(await store.call("verifiedDatabases", {
+        databases: metadata.databaseUrls, ttl: activeClientsCacheTtlMs
+      }));
       let lastVerificationError = null;
       let databasesChecked = 0;
       const candidateDatabaseUrls = () => metadata.databaseUrls.filter((database) =>
@@ -2225,13 +2229,9 @@ async function findAvailableActiveNumber(
 
         // A fresh pool snapshot already confirmed these devices are online.
         const freshCutoff = Date.now() - activeClientsCacheTtlMs;
-        const freshCandidates = candidates.filter((candidate) => {
-          const snapshot = activeClientOnlineIds.get(candidate.database);
-          return Boolean(snapshot && snapshot.expiresAt > Date.now()
-            && Number(candidate.checkedAt) > freshCutoff
-            && snapshot.onlineIds.has(candidate.deviceId)
-            && (snapshot.complete || snapshot.checkedIds.has(candidate.deviceId)));
-        });
+        const freshCandidates = candidates.filter((candidate) =>
+          candidate.reused !== true && verifiedDatabases.has(candidate.database)
+          && Number(candidate.checkedAt) > freshCutoff);
         const freshOrder = freshCandidates.length
           ? await claimCandidatesAtomically(freshCandidates)
           : null;

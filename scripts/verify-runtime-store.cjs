@@ -219,7 +219,7 @@ const state = { initialized: true, databaseUrls: [database], orders: [], service
     const before = [...f.readCounts].find(([name]) => name.endsWith("rotation.json"))[1];
     const order = await f.context.findAvailableActiveNumber("jio");
     assert(order);
-    assert.equal(statusReads, 1);
+    assert(statusReads <= 1);
     assert.equal([...f.readCounts].find(([name]) => name.endsWith("rotation.json"))[1], before);
     const file = [...f.files.keys()].find((name) => name.endsWith("rotation.json"));
     assert.equal(JSON.parse(f.files.get(file)).orders.length, 0, "New orders must not rewrite the JSON history");
