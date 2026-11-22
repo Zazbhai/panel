@@ -284,6 +284,16 @@ class RuntimeStore {
       .get(JSON.stringify(databases)).count;
     return { checkedDatabases, mappings };
   }
+  databasesWithMappings({ databases = [] } = {}) {
+    if (!databases.length) return [];
+    return this.sql("SELECT DISTINCT database_url AS database FROM numbers WHERE database_url IN (SELECT value FROM json_each(?))")
+      .all(JSON.stringify(databases)).map((row) => row.database);
+  }
+  databaseInventoryOrder({ databases = [] } = {}) {
+    if (!databases.length) return [];
+    return this.sql("SELECT database_url AS database,COUNT(*) AS mappings,SUM(CASE WHEN online=1 THEN 1 ELSE 0 END) AS online,MAX(checked_at) AS last_checked FROM numbers WHERE database_url IN (SELECT value FROM json_each(?)) GROUP BY database_url ORDER BY online DESC,mappings DESC,last_checked DESC")
+      .all(JSON.stringify(databases));
+  }
   refreshDatabaseInventory({ database, onlineDeviceIds = [], now = Date.now() }) {
     return this.transaction(() => {
       const ids = JSON.stringify(onlineDeviceIds);

@@ -60,7 +60,9 @@ const activeNumberCacheTtlMs = 30000;
 const numberFetchTimeoutMs = 30000;
 const numberStatusCheckTimeoutMs = readPositiveIntegerEnv("NUMBER_STATUS_CHECK_TIMEOUT_MS", 1500, 500, 10000);
 const numberStatusCheckDatabaseLimit = readPositiveIntegerEnv("NUMBER_STATUS_CHECK_DATABASE_LIMIT", 64, 1, 128);
-const activeClientsCacheTtlMs = 10000;
+// A full sweep spans many databases; keep each verified status usable long
+// enough for the leader to complete its next rolling pass.
+const activeClientsCacheTtlMs = readPositiveIntegerEnv("ACTIVE_CLIENT_STATUS_TTL_MS", 60000, 10000, 300000);
 const numberMessagesCacheTtlMs = 1000;
 const sharedDatabaseErrorTtlMs = 750;
 const maximumDatabaseJsonBytes = 4 * 1024 * 1024;
@@ -68,13 +70,14 @@ const maximumProviderResponseBytes = 1024 * 1024;
 const maximumSharedDatabaseJsonEntryBytes = 1024 * 1024;
 const maximumSharedDatabaseJsonCacheBytes = 8 * 1024 * 1024;
 const sharedDatabaseJsonCacheLimit = 256;
-const maximumConcurrentDatabaseReads = readPositiveIntegerEnv("MAX_CONCURRENT_DATABASE_READS", 16, 1, 64);
+const maximumConcurrentDatabaseReads = readPositiveIntegerEnv("MAX_CONCURRENT_DATABASE_READS", 32, 1, 64);
 const backgroundDatabaseReadLimit = Math.max(1, maximumConcurrentDatabaseReads - Math.min(2, maximumConcurrentDatabaseReads - 1));
 const numberStatusCheckConcurrency = Math.max(1, Math.min(3, maximumConcurrentDatabaseReads));
 const numberStatusCheckDeviceConcurrency = readPositiveIntegerEnv(
   "NUMBER_STATUS_CHECK_DEVICE_CONCURRENCY", 4, 1, 16
 );
-const numberMappingPrefetchConcurrency = readPositiveIntegerEnv("NUMBER_MAPPING_PREFETCH_CONCURRENCY", 16, 1, 32);
+const numberMappingPrefetchConcurrency = readPositiveIntegerEnv("NUMBER_MAPPING_PREFETCH_CONCURRENCY", 30, 1, 32);
+const numberMappingPrefetchIntervalMs = readPositiveIntegerEnv("NUMBER_MAPPING_PREFETCH_INTERVAL_MS", 15000, 5000, 300000);
 const numberReadyQueueWaitMs = readPositiveIntegerEnv("NUMBER_READY_QUEUE_WAIT_MS", 100, 10, 1000);
 const numberPoolDatabaseConcurrency = readPositiveIntegerEnv("NUMBER_POOL_DATABASE_CONCURRENCY", 2, 1, 8);
 const numberMappingDeviceConcurrency = readPositiveIntegerEnv(
@@ -990,6 +993,8 @@ async function initializeOrderExpirationTimers() {
   // Expiry is indexed and checked at claim/read time; no per-order timers or JSON rewrites.
   if (!await acquireInventoryWorkerLock()) return;
   setTimeout(startNumberMappingPrefetch, 1000).unref();
+  const mappingRefreshTimer = setInterval(startNumberMappingPrefetch, numberMappingPrefetchIntervalMs);
+  mappingRefreshTimer.unref();
   setTimeout(startNumberPoolWarmup, 1200).unref();
   if (!numberPoolWarmupTimer) {
     numberPoolWarmupTimer = setInterval(startNumberPoolWarmup, numberPoolWarmupIntervalMs);
@@ -1022,16 +1027,31 @@ async function prefetchAllNumberMappings() {
   const rotation = await readRotationMetadata();
   const databases = rotation.databaseUrls;
   const store = await getRuntimeStore();
+  const ordered = await store.call("databaseInventoryOrder", { databases });
+  const orderRank = new Map(ordered.map((item, index) => [item.database, index]));
+  databases.sort((left, right) => {
+    const leftRank = orderRank.get(left);
+    const rightRank = orderRank.get(right);
+    if (leftRank === undefined && rightRank === undefined) return 0;
+    if (leftRank === undefined) return 1;
+    if (rightRank === undefined) return -1;
+    return leftRank - rightRank;
+  });
+  const mappedDatabases = new Set(ordered.map((item) => item.database));
   numberMappingPrefetchState = {
     status: databases.length ? "running" : "complete",
     total: databases.length, completed: 0, failed: 0, mappings: 0,
     startedAt: Date.now(), completedAt: databases.length ? null : Date.now()
   };
   if (!databases.length) return;
+  let refreshedMappingCount = 0;
+  numberMappingPrefetchState.completed += databases.length - mappedDatabases.size;
   let nextDatabase = 0;
   const refreshDatabase = async () => {
     while (nextDatabase < databases.length) {
-      const database = databases[nextDatabase++];
+      const databaseIndex = nextDatabase++;
+      const database = databases[databaseIndex];
+      if (!mappedDatabases.has(database)) continue;
       let failed = false;
       try {
         const clients = await fetchSharedDatabaseJson(
@@ -1044,9 +1064,11 @@ async function prefetchAllNumberMappings() {
         const mappingCount = await store.call("refreshDatabaseInventory", {
           database, onlineDeviceIds: [...onlineIds], now: checkedAt
         });
-        numberMappingPrefetchState.mappings += mappingCount;
-      } catch {
+        refreshedMappingCount += mappingCount;
+      } catch (error) {
         failed = true;
+        const reason = error?.status ? `HTTP ${error.status}` : error?.code || error?.name || "request failed";
+        console.warn(`Inventory status refresh failed for database ${databaseIndex + 1}/${databases.length}: ${reason}`);
       } finally {
         await store.call("recordDatabaseCheck", { database, now: Date.now() }).catch(() => {});
         numberMappingPrefetchState.completed += 1;
@@ -1057,6 +1079,7 @@ async function prefetchAllNumberMappings() {
   await Promise.all(Array.from(
     { length: Math.min(numberMappingPrefetchConcurrency, databases.length) }, refreshDatabase
   ));
+  numberMappingPrefetchState.mappings = refreshedMappingCount;
   numberMappingPrefetchState.status = numberMappingPrefetchState.failed ? "partial" : "complete";
   numberMappingPrefetchState.completedAt = Date.now();
 }

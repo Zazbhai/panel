@@ -34,6 +34,7 @@ function configureService(f) {
     const f = serverFixture();
     const databases = ["https://refill-slow.firebaseio.com", database];
     const state = { databaseUrls: databases, serviceUsage: {}, orders: [], reserved: [] };
+    await f.context.getRuntimeStore();
     const started = [];
     let cancelled = 0;
     f.context.readActiveNumbers = async (database, _available, signal) => {
@@ -69,6 +70,8 @@ function configureService(f) {
   {
     const f = serverFixture();
     const databases = Array.from({ length: 5 }, (_, index) => `https://prefetch-${index}.firebaseio.com`);
+    await f.context.getRuntimeStore();
+    for (const database of databases) f.runtime.remember({ database, deviceId: `mapped-${database}`, number: "9000000001" });
     f.context.readRotationMetadata = async () => ({ databaseUrls: databases });
     let releaseSlow;
     const slow = new Promise((resolve) => { releaseSlow = resolve; });
@@ -88,7 +91,7 @@ function configureService(f) {
       await turn();
       assert.equal(started.length, 5, "A slow database must not block the next database in a free prefetch lane");
       assert.equal(f.mappingPrefetchState().completed, 4, "Progress should advance before a slow database finishes");
-      assert.equal(peak, 2, "Status preparation must retain its bounded concurrency limit");
+      assert.equal(peak, 2, "Status preparation should use its configured worker count");
     } finally {
       releaseSlow();
       await preparation;
@@ -239,6 +242,28 @@ function configureService(f) {
     assert.equal(refills, 1, "A refill below the ready-stock threshold should cool down instead of rescanning repeatedly");
   }
   {
+    const f = new serverFixture();
+    await f.context.getRuntimeStore();
+    const mappings = Array.from({ length: 3 }, (_, index) => ({
+      database, deviceId: `saved-${index}`, number: String(9000000400 + index)
+    }));
+    f.runtime.rememberBatch(mappings);
+    const online = { "saved-0": { status: true }, "saved-1": { status: false }, "saved-2": { status: true } };
+    f.fetch = async (url) => {
+      assert.equal(url, database + "/clients.json",
+        "Recurring refresh must query saved device statuses, not scan message history");
+      return { ok: true, status: 200, json: async () => online };
+    };
+    await f.context.prefetchAllNumberMappings();
+    const stock = f.runtime.stockSummary({ onlineTtl: 60000 });
+    assert.equal(stock.total, 3);
+    assert.equal(stock.online, 2,
+      "Background refresh must make saved online mappings available in local stock");
+    assert.equal(f.runtime.candidates({ service: "saved-service", databases: [database],
+      limit: 10, freshOnly: true }).length, 2);
+    assert.equal(f.requests.length, 1);
+  }
+  {
     const f = await inventoryFixture(12, 20000, false);
     f.fetch = async (url) => {
       assert.equal(url, database + "/clients.json",
@@ -341,7 +366,7 @@ function configureService(f) {
     const f = serverFixture();
     let release;
     const hold = new Promise((resolve) => { release = resolve; });
-    const occupied = Array.from({ length: 16 }, () =>
+    const occupied = Array.from({ length: 32 }, () =>
       f.context.withDatabaseReadSlot(() => hold));
     await turn();
     const controller = new AbortController();
@@ -363,7 +388,7 @@ function configureService(f) {
     const f = serverFixture();
     let release;
     const hold = new Promise((resolve) => { release = resolve; });
-    const active = Array.from({ length: 16 }, () => f.context.withDatabaseReadSlot(() => hold));
+    const active = Array.from({ length: 32 }, () => f.context.withDatabaseReadSlot(() => hold));
     await turn();
     const order = [];
     const background = f.context.withDatabaseReadSlot(async () => { order.push("background"); }, null, 1);
