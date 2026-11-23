@@ -117,7 +117,7 @@ const numberPoolWarmupIntervalMs = readPositiveIntegerEnv("NUMBER_POOL_WARMUP_IN
 const priorityStockWorkerCount = readPositiveIntegerEnv("PRIORITY_STOCK_WORKERS", 5, 1, 5);
 const priorityStockTarget = readPositiveIntegerEnv("PRIORITY_STOCK_TARGET", 2000, 1, 5000);
 const priorityStockIntervalMs = readPositiveIntegerEnv("PRIORITY_STOCK_INTERVAL_MS", 5000, 1000, 60000);
-const priorityStockJobTimeoutMs = readPositiveIntegerEnv("PRIORITY_STOCK_JOB_TIMEOUT_MS", 30000, 1000, 120000);
+const priorityStockJobTimeoutMs = readPositiveIntegerEnv("PRIORITY_STOCK_JOB_TIMEOUT_MS", 120000, 1000, 300000);
 // Allow a cold API allocation to wait up to thirty seconds for a slow database
 // read. Warm-pool requests still return immediately; this only affects cold
 // discovery and explicit NUMBER_REQUEST_TIMEOUT_MS overrides.
