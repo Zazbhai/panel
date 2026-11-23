@@ -622,8 +622,8 @@ function configureService(f) {
     });
     const response = await f.request(`/stubs/handler_api.php?action=getNumber&service=fixture&api_key=${f.apiKey}`);
     assert.equal(timeoutValues[0], 30000, "The foreground waiting budget must use the configured thirty-second maximum");
-    assert.equal(response.status, 503);
-    assert.equal(JSON.parse(response.body).code, "ALLOCATION_TIMEOUT");
+    assert.equal(response.status, 200);
+    assert.equal(response.body, "NO_NUMBERS");
     await turn();
     assert.equal(f.runtime.snapshot().orders.length, 0, "A request that times out must not create an order");
   }
@@ -640,8 +640,8 @@ function configureService(f) {
       });
     };
     const response = await f.request(`/stubs/handler_api.php?action=getNumber&service=fixture&api_key=${f.apiKey}`);
-    assert.equal(response.status, 503, "A failed claim must restore the request timeout");
-    assert.equal(JSON.parse(response.body).code, "ALLOCATION_TIMEOUT");
+    assert.equal(response.status, 200, "A failed claim must restore the request timeout");
+    assert.equal(response.body, "NO_NUMBERS");
     assert.equal(f.runtime.snapshot().orders.length, 0);
   }
   {

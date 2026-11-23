@@ -2811,10 +2811,7 @@ async function handleLocalOtpRequest(requestUrl, response) {
     } catch (error) {
       clearTimeout(allocationTimer);
       if (error.code === "ALLOCATION_TIMEOUT") {
-        sendJson(response, 503, {
-          error: "Number request exceeded its time limit. No order was created.",
-          code: "ALLOCATION_TIMEOUT"
-        }, { "Retry-After": "1" });
+        sendText(response, 200, "NO_NUMBERS");
         return;
       }
       console.error("Could not read configured services:", error.message);
@@ -2841,10 +2838,7 @@ async function handleLocalOtpRequest(requestUrl, response) {
       throwIfAborted(allocationController.signal);
     } catch (error) {
       if (error.code === "ALLOCATION_TIMEOUT") {
-        sendJson(response, 503, {
-          error: "Number request exceeded its time limit. No order was created.",
-          code: "ALLOCATION_TIMEOUT"
-        }, { "Retry-After": "1" });
+        sendText(response, 200, "NO_NUMBERS");
         return;
       }
       const temporarilyUnavailable = isTemporaryUpstreamError(error);
