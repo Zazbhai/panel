@@ -16,6 +16,7 @@ class RuntimeStore {
       + "CREATE INDEX IF NOT EXISTS orders_device ON orders(device_id);"
       + "CREATE INDEX IF NOT EXISTS orders_expiry ON orders(status,expires_at);"
       + "CREATE INDEX IF NOT EXISTS orders_received ON orders(received_at DESC);"
+      + "CREATE INDEX IF NOT EXISTS orders_demand ON orders(created_at DESC,service);"
       + "CREATE TABLE IF NOT EXISTS otps(order_id TEXT NOT NULL REFERENCES orders(id),key TEXT NOT NULL,code TEXT NOT NULL,received_at INTEGER NOT NULL,message_key TEXT,PRIMARY KEY(order_id,key));"
       + "CREATE INDEX IF NOT EXISTS otps_recent ON otps(received_at DESC);"
       + "CREATE TABLE IF NOT EXISTS messages(order_id TEXT NOT NULL REFERENCES orders(id),key TEXT NOT NULL,timestamp INTEGER NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(order_id,key));"
@@ -281,6 +282,30 @@ class RuntimeStore {
       + "WHERE database_url IN (SELECT value FROM json_each(?))")
       .all(JSON.stringify(databases));
   }
+  topOrderedServices({ services = [], since = Date.now() - 86400000, now = Date.now(), limit = 5 } = {}) {
+    if (!services.length) return [];
+    return this.sql("SELECT service,COUNT(*) AS orders FROM orders "
+      + "WHERE created_at>=? AND created_at<=? AND service IN (SELECT value FROM json_each(?)) "
+      + "GROUP BY service ORDER BY orders DESC,service LIMIT ?")
+      .all(since, now, JSON.stringify(services), Math.min(5, Math.max(1, limit)));
+  }
+  readyStockCount({ service, databases = null, now = Date.now(), onlineTtl = 30000,
+    mappingTtl = 86400000, limit = 5000 }) {
+    databases ||= this.metadata()?.databaseUrls || [];
+    if (!databases.length) return 0;
+    const cycle = this.sql("SELECT cycle FROM service_cycles WHERE service=?").get(service)?.cycle || 0;
+    // Count only numbers the atomic ready claim can actually use, and stop at
+    // the refill target instead of copying/sorting thousands of device records.
+    return this.sql("SELECT COUNT(*) AS n FROM (SELECT DISTINCT n.number FROM numbers n "
+      + "JOIN database_checks d ON d.database_url=n.database_url "
+      + "WHERE n.online=1 AND n.checked_at>? AND n.verified_at>? AND d.checked_at>? "
+      + "AND n.database_url IN (SELECT value FROM json_each(?)) "
+      + "AND NOT EXISTS(SELECT 1 FROM service_usage u WHERE u.service=? AND u.number=n.number AND u.cycle=?) "
+      + "AND NOT EXISTS(SELECT 1 FROM service_locks l WHERE l.service=? AND l.number=n.number) "
+      + "AND NOT EXISTS(SELECT 1 FROM leases r WHERE r.number=n.number AND r.expires_at>?) LIMIT ?)")
+      .get(now - onlineTtl, now - mappingTtl, now - onlineTtl, JSON.stringify(databases),
+        service, cycle, service, now, Math.min(5000, Math.max(1, limit))).n;
+  }
   recordDatabaseCheck({ database, now = Date.now() }) {
     this.sql("INSERT INTO database_checks VALUES(?,?) ON CONFLICT(database_url) DO UPDATE SET checked_at=excluded.checked_at")
       .run(database, now);
@@ -346,12 +371,18 @@ class RuntimeStore {
       const summary = this.stockSummary(options);
       const metadata = this.metadata();
       const progress = this.inventoryProgress({ databases: metadata?.databaseUrls || [] });
+      const priority = this.sql("SELECT value FROM meta WHERE key='priority_stock'").get();
       this.db.exec("COMMIT");
-      return { ...summary, inventoryProgress: progress };
+      return { ...summary, inventoryProgress: progress,
+        priorityStock: priority ? JSON.parse(priority.value) : null };
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+  savePriorityStockState(state) {
+    this.sql("INSERT INTO meta VALUES('priority_stock',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+      .run(JSON.stringify(state));
   }
   claimReady({ service, now = Date.now(), onlineTtl = 10000, mappingTtl = 86400000, ...options }) {
     return this.transaction(() => {

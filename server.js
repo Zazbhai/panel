@@ -114,6 +114,10 @@ const requestedNumberPoolServices = new Set();
 const numberPoolRefillCooldownMs = readPositiveIntegerEnv("NUMBER_POOL_REFILL_COOLDOWN_MS", 1000, 250, 30000);
 const numberPoolEmptyCooldownMs = readPositiveIntegerEnv("NUMBER_POOL_EMPTY_COOLDOWN_MS", 5000, 1000, 60000);
 const numberPoolWarmupIntervalMs = readPositiveIntegerEnv("NUMBER_POOL_WARMUP_INTERVAL_MS", 10000, 1000, 60000);
+const priorityStockWorkerCount = readPositiveIntegerEnv("PRIORITY_STOCK_WORKERS", 2, 1, 5);
+const priorityStockTarget = readPositiveIntegerEnv("PRIORITY_STOCK_TARGET", 2000, 1, 5000);
+const priorityStockIntervalMs = readPositiveIntegerEnv("PRIORITY_STOCK_INTERVAL_MS", 5000, 1000, 60000);
+const priorityStockJobTimeoutMs = readPositiveIntegerEnv("PRIORITY_STOCK_JOB_TIMEOUT_MS", 30000, 1000, 120000);
 // Allow a cold API allocation to wait up to thirty seconds for a slow database
 // read. Warm-pool requests still return immediately; this only affects cold
 // discovery and explicit NUMBER_REQUEST_TIMEOUT_MS overrides.
@@ -142,6 +146,11 @@ let numberMappingPrefetchLastProgressAt = 0;
 let numberMappingPrefetchRunId = 0;
 let numberPoolWarmupPromise = null;
 let numberPoolWarmupTimer = null;
+let priorityStockTimer = null;
+let priorityStockPromise = null;
+let priorityServiceRankCache = null;
+const priorityStockServices = new Set();
+let priorityStockState = { status: "idle", checkedAt: null, services: [] };
 let numberMappingPrefetchWatchdogTimer = null;
 let inventoryWorkerLockHandle = null;
 let numberMappingPrefetchState = {
@@ -247,7 +256,12 @@ function throwIfAborted(signal) {
 
 function waitForAbortable(promise, signal) {
   if (!signal) return promise;
-  if (signal.aborted) return Promise.reject(makeAbortError());
+  if (signal.aborted) {
+    // The operation may already have rejected before this wrapper sees the
+    // cancellation. Observe that rejection even though the caller stops now.
+    void Promise.resolve(promise).catch(() => {});
+    return Promise.reject(makeAbortError());
+  }
   return new Promise((resolve, reject) => {
     const abort = () => {
       cleanup();
@@ -503,6 +517,7 @@ async function readConfiguredServices() {
 async function saveConfiguredServices(services) {
   await writeJsonAtomically(servicesDataPath, services);
   configuredServicesCache = null;
+  priorityServiceRankCache = null;
 }
 
 async function writeJsonAtomically(filePath, value) {
@@ -1012,6 +1027,11 @@ async function initializeOrderExpirationTimers() {
   await (await getRuntimeStore()).call("expire");
   // Expiry is indexed and checked at claim/read time; no per-order timers or JSON rewrites.
   if (!await acquireInventoryWorkerLock()) return;
+  setTimeout(startPriorityStockWorkers, 800).unref();
+  if (!priorityStockTimer) {
+    priorityStockTimer = setInterval(startPriorityStockWorkers, priorityStockIntervalMs);
+    priorityStockTimer.unref();
+  }
   setTimeout(startNumberMappingPrefetch, 1000).unref();
   const mappingRefreshTimer = setInterval(startNumberMappingPrefetch, numberMappingPrefetchIntervalMs);
   mappingRefreshTimer.unref();
@@ -1266,6 +1286,80 @@ function startNumberPoolWarmup() {
     .catch((error) => console.error("Could not warm number pools:", error.message))
     .finally(() => { numberPoolWarmupPromise = null; });
   return numberPoolWarmupPromise;
+}
+
+async function runPriorityStockWorkers() {
+  priorityStockState.status = "running";
+  const rankController = new AbortController();
+  const rankTimeout = setTimeout(() => rankController.abort(), priorityStockJobTimeoutMs);
+  let ranked;
+  try {
+    if (!priorityServiceRankCache || priorityServiceRankCache.expiresAt <= Date.now()) {
+      const [store, configured] = await waitForAbortable(Promise.all([
+        getRuntimeStore(), readConfiguredServices()
+      ]), rankController.signal);
+      const enabled = configured.services.filter((service) =>
+        service.enabled === true && getEnabledTemplates(service).length > 0)
+        .map((service) => normalizeServiceName(service.name).toLowerCase());
+      ranked = await waitForAbortable(store.call("topOrderedServices", {
+        services: enabled, since: Date.now() - 86400000, limit: 5
+      }), rankController.signal);
+      priorityServiceRankCache = { services: ranked, expiresAt: Date.now() + 60000 };
+      priorityStockServices.clear();
+      for (const item of ranked) priorityStockServices.add(item.service);
+    } else ranked = priorityServiceRankCache.services;
+  } finally { clearTimeout(rankTimeout); }
+  const services = ranked.map((item) => ({
+    service: item.service, orders: item.orders, target: priorityStockTarget,
+    ready: null, status: "queued"
+  }));
+  priorityStockState.services = services;
+  let next = 0;
+  const worker = async () => {
+    while (next < services.length) {
+      const item = services[next++];
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), priorityStockJobTimeoutMs);
+      item.status = "refilling";
+      try {
+        const count = await waitForAbortable(refillNumberPool(item.service, controller.signal, {
+          priority: true, target: priorityStockTarget
+        }), controller.signal);
+        item.ready = Number.isInteger(count) ? count : null;
+        item.status = item.ready === null ? "retrying" : item.ready >= item.target ? "ready" : "low";
+      } catch (error) {
+        item.status = "retrying";
+        console.warn("Priority stock refill interrupted for " + item.service + ": "
+          + (error.code || error.name || "worker error"));
+      } finally { clearTimeout(timeout); }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(priorityStockWorkerCount, services.length) }, worker));
+  priorityStockState.status = "waiting";
+  priorityStockState.checkedAt = Date.now();
+}
+
+function startPriorityStockWorkers() {
+  if (priorityStockPromise) return priorityStockPromise;
+  // Independent of the full rotation pass: busy services can refill while
+  // discovery and ordinary service warmups continue in their own lanes.
+  priorityStockPromise = runPriorityStockWorkers().catch((error) => {
+    priorityStockState.status = "retrying";
+    console.warn("Priority stock worker failed; retrying on the next tick:",
+      error.code || error.name || "worker error");
+  }).then(async () => {
+    // Publish once per completed pass so all PM2 API processes report the same
+    // leader's worker status, without per-request storage reads.
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), priorityStockJobTimeoutMs);
+    try {
+      const store = await waitForAbortable(getRuntimeStore(), controller.signal);
+      await waitForAbortable(store.call("savePriorityStockState", priorityStockState), controller.signal);
+    } catch (error) {
+      console.warn("Could not save priority stock progress:", error.code || error.name || "storage error");
+    } finally { clearTimeout(timeout); }
+  }).finally(() => { priorityStockPromise = null; });
+  return priorityStockPromise;
 }
 
 function drainDatabaseReadQueue() {
@@ -1691,12 +1785,12 @@ async function readActiveNumbers(database, isAvailable = () => true, parentSigna
   // download the same device's SMS history just to rediscover its phone number.
   const store = await getRuntimeStore();
   const knownMappings = await store.call("mappings", database);
-  if (knownMappings.length) {
-    const activeIds = new Set(activeClients.map(([id]) => id));
-    await store.call("markDatabaseOnline", {
-      database, onlineDeviceIds: [...activeIds], now: snapshotCheckedAt, preserveOnEmpty: preserveEmptySnapshot
-    });
-  }
+  // Record the successful clients snapshot even for a previously unmapped
+  // database, so mappings discovered below immediately qualify for ready stock.
+  const activeIds = new Set(activeClients.map(([id]) => id));
+  await store.call("markDatabaseOnline", {
+    database, onlineDeviceIds: [...activeIds], now: snapshotCheckedAt, preserveOnEmpty: preserveEmptySnapshot
+  });
   activeClientsSnapshotFreshUntil.set(database, snapshotExpiresAt);
   if (activeClients.length === 0) {
     if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
@@ -1949,7 +2043,7 @@ async function runRotatingDeviceStatsJob(jobId) {
   }
 }
 
-async function readActiveNumberInventories(service, rotationState, requiredCandidates = 1, excludedNumbers = null, parentSignal = null, background = false, scanAll = false) {
+async function readActiveNumberInventories(service, rotationState, requiredCandidates = 1, excludedNumbers = null, parentSignal = null, background = false, scanAll = false, readPriority = background ? 1 : 0) {
   const configuredUrls = rotationState.databaseUrls;
   const serviceState = Object.hasOwn(rotationState.serviceUsage, service) ? rotationState.serviceUsage[service] : {
     cursorUrl: configuredUrls[0], usedNumbers: [], cycle: 0
@@ -1971,6 +2065,7 @@ async function readActiveNumberInventories(service, rotationState, requiredCandi
     : orderedUrls.slice().sort((left, right) =>
       (slowDatabases.get(left)?.expiresAt || 0) - (slowDatabases.get(right)?.expiresAt || 0)).slice(0, 1);
   const inventories = [];
+  const discoveryStore = background ? await getRuntimeStore() : null;
   const failures = [];
   let complete = scanUrls.length === orderedUrls.length;
   let stoppedEarly = false;
@@ -1991,7 +2086,13 @@ async function readActiveNumberInventories(service, rotationState, requiredCandi
       try {
         const inventory = {
           database,
-          ...await readActiveNumbers(database, isAvailable, controller.signal, requiredCandidates, excludedNumbers, scanAll, null, background ? 1 : 0)
+          ...await readActiveNumbers(database, isAvailable, controller.signal, requiredCandidates, excludedNumbers, scanAll,
+            discoveryStore ? async (entries, checkedAt) => {
+              throwIfAborted(controller.signal);
+              await discoveryStore.call("rememberBatch", entries.filter((entry) => entry.number).map((entry) => ({
+                database, deviceId: entry.deviceId, number: entry.number, now: checkedAt, verifiedAt: checkedAt
+              })));
+            } : null, readPriority)
         };
         if (controller.signal.aborted) return;
         inventories.push(inventory);
@@ -2114,29 +2215,37 @@ async function withServiceAllocationLock(service, operation, signal = null) {
   }
 }
 
-async function fillNumberPool(service, parentSignal = null) {
-  const store = await getRuntimeStore();
-  const { databaseUrls } = await store.call("metadata");
+async function fillNumberPool(service, parentSignal = null, preparation = {}) {
+  throwIfAborted(parentSignal);
+  const store = await waitForAbortable(getRuntimeStore(), parentSignal);
+  const call = (method, ...args) => waitForAbortable(store.call(method, ...args), parentSignal);
+  const { databaseUrls } = await call("metadata");
   if (!databaseUrls.length) return 0;
-  const options = { service, databases: databaseUrls, limit: numberPoolRefillThreshold,
+  const target = preparation.target || numberPoolRefillThreshold;
+  const options = { service, databases: databaseUrls, limit: target,
     onlineTtl: activeClientsCacheTtlMs, freshOnly: true };
-  const prepared = await store.call("candidates", options);
-  if (prepared.length >= numberPoolRefillThreshold) return prepared.length;
+  const readyCountForService = () => preparation.priority
+    ? call("readyStockCount", options)
+    : call("candidates", options).then((items) => items.length);
+  const preparedCount = await readyCountForService();
+  if (preparedCount >= target) return preparedCount;
   // Advance service cycles during background preparation, so a pool of used
   // but unlocked numbers is ready for fallback before an API call arrives.
-  if (await store.call("advanceCycle", { service, databases: databaseUrls })) {
-    const recycled = await store.call("candidates", options);
-    if (recycled.length >= numberPoolRefillThreshold) return recycled.length;
+  if (await call("advanceCycle", { service, databases: databaseUrls })) {
+    const recycledCount = await readyCountForService();
+    if (recycledCount >= target) return recycledCount;
   }
-  const state = await store.call("allocationState", service);
-  const scan = await readActiveNumberInventories(service, state, numberPoolSize, null, parentSignal, true, true);
-  await rememberInventories(store, scan.inventories);
-  let readyCount = (await store.call("candidates", options)).length;
-  if (readyCount < numberPoolRefillThreshold
-    && await store.call("advanceCycle", { service, databases: databaseUrls })) {
-    readyCount = (await store.call("candidates", options)).length;
+  const state = await call("allocationState", service);
+  const scan = await readActiveNumberInventories(service, state, Math.max(numberPoolSize, target),
+    null, parentSignal, true, true, preparation.priority ? 1 : 2);
+  throwIfAborted(parentSignal);
+  await waitForAbortable(rememberInventories(store, scan.inventories), parentSignal);
+  let readyCount = await readyCountForService();
+  if (readyCount < target
+    && await call("advanceCycle", { service, databases: databaseUrls })) {
+    readyCount = await readyCountForService();
   }
-  if (scan.failures.length) {
+  if (scan.failures.length && readyCount < target) {
     const error = scan.failures[0].error || new Error("The configured databases could not be checked.");
     error.status ||= 503;
     error.code ||= "UPSTREAM_UNAVAILABLE";
@@ -2199,26 +2308,34 @@ function requestReadyNumberQueueRefresh(service) {
 // Keep one discovery job per service so warmups can fetch from multiple services
 // in parallel without duplicate scans for the same service. The shared Firebase
 // read gate still caps total upstream work.
-function refillNumberPool(service, parentSignal = null) {
+function refillNumberPool(service, parentSignal = null, preparation = {}) {
   const key = normalizeServiceName(service).toLowerCase();
+  if (priorityStockServices.has(key)) preparation = { ...preparation, priority: true, target: priorityStockTarget };
   const active = activeNumberPoolRefills.get(key);
   if (active) return active;
   const pool = numberPools.get(key) || { retryAt: 0 };
   if (pool.retryAt > Date.now()) return Promise.resolve(pool.lastResult);
   pool.retryAt = Date.now() + numberPoolRefillCooldownMs;
   numberPools.set(key, pool);
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  parentSignal?.addEventListener("abort", abort, { once: true });
+  if (parentSignal?.aborted) abort();
+  const timeout = setTimeout(abort, priorityStockJobTimeoutMs);
+  const target = preparation.target || numberPoolRefillThreshold;
   const refill = new Promise((resolve) => setImmediate(resolve))
-    .then(() => fillNumberPool(key, parentSignal))
+    .then(() => waitForAbortable(fillNumberPool(key, controller.signal, preparation), controller.signal))
     .then((result) => {
       pool.lastResult = result;
       requestReadyNumberQueueRefresh(key);
       numberPoolFailures.delete(key);
-      pool.retryAt = Date.now() + (result >= numberPoolRefillThreshold
+      pool.retryAt = Date.now() + (result >= target
         ? numberPoolRefillCooldownMs
         : numberPoolEmptyCooldownMs);
       return result;
     })
     .catch((error) => {
+      pool.lastResult = null;
       pool.retryAt = Date.now() + Math.max(numberPoolEmptyCooldownMs, error.retryAfterMs || 0);
       numberPoolFailures.set(key, {
         error,
@@ -2228,6 +2345,9 @@ function refillNumberPool(service, parentSignal = null) {
       return null;
     })
     .finally(() => {
+      clearTimeout(timeout);
+      controller.abort();
+      parentSignal?.removeEventListener("abort", abort);
       activeNumberPoolRefills.delete(key);
     });
   activeNumberPoolRefills.set(key, refill);

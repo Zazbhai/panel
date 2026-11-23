@@ -5,7 +5,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const { createRequire } = require("node:module");
 
-module.exports = function serverFixture() {
+module.exports = function serverFixture(options = {}) {
   const serverPath = path.join(__dirname, "..", "server.js");
   const localRequire = createRequire(serverPath);
   const source = fs.readFileSync(serverPath, "utf8");
@@ -52,7 +52,8 @@ module.exports = function serverFixture() {
       return localRequire(name);
     },
     __dirname: path.dirname(serverPath),
-    process: { env: { DASHBOARD_API_KEY: apiKey, DASHBOARD_ADMIN_KEY: "synthetic-admin-key-".repeat(3) } },
+    process: { env: { DASHBOARD_API_KEY: apiKey, DASHBOARD_ADMIN_KEY: "synthetic-admin-key-".repeat(3),
+      ...options.env } },
     Buffer, URL, AbortSignal, AbortController, console, setImmediate,
     setTimeout: () => ({ unref() {} }), clearTimeout() {},
     fetch: async (url, options) => {

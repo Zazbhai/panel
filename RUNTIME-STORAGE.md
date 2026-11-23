@@ -10,6 +10,10 @@ Background sweeps keep low-watermark pools populated and check every configured 
 
 Stock totals and inventory progress share one read snapshot, cached for three seconds per server process. Once a snapshot exists, stock requests return it immediately while one background refresh updates an expired cache. Responses mark old snapshots with `stale: true`; the stocks page keeps the totals visible and shows their timestamp. The initial request after a process restart still needs a successful storage read.
 
+The inventory leader also runs an independent priority refill pool for the five enabled services with the most orders in the past 24 hours. Counts include all order statuses because they measure allocation demand. Ranking is refreshed every minute; the pool checks every five seconds when idle, with two concurrent service jobs and a target of 2,000 eligible numbers per service. It never waits for the full rotation pass. Fresh saved mappings are used before discovery; discovered mappings are persisted incrementally. Current-cycle attempts, permanent service locks, stale mappings/status, duplicate phone mappings, and active leases are excluded from the ready count. Stock remains shared, so eligibility counts for different services can overlap; workers never reserve numbers or create orders.
+
+Configure the pool with `PRIORITY_STOCK_WORKERS` (1–5, default 2), `PRIORITY_STOCK_TARGET` (1–5,000, default 2,000), `PRIORITY_STOCK_INTERVAL_MS` (default 5,000), and `PRIORITY_STOCK_JOB_TIMEOUT_MS` (default 30,000). Priority reads run ahead of ordinary service refill reads while retaining the shared Firebase concurrency cap and reserved customer request capacity. Refill jobs coalesce per service, abort on their deadline, and retry after a cooldown. `/stocks` shows the leader's last completed priority pass and its timestamp; this progress is shared through SQLite across PM2 processes. Targets are best-effort and require sufficient eligible online numbers.
+
 Ready claims and database inventory refresh transactions retry brief SQLite lock conflicts at most twice with a short delay. Allocation retries retain the original deadline; other storage errors are not retried.
 
 Back up runtime data with a consistent SQLite backup. With PM2 stopped, copy `runtime.sqlite` and any existing `runtime.sqlite-wal` and `runtime.sqlite-shm` alongside `rotation.json` and `services.json`. For a running process, use SQLite's backup facility, not an ordinary copy of the database file alone. `rotation.pre-sqlite.json` is a pre-migration fallback and does not contain subsequent orders or locks.
@@ -21,4 +25,5 @@ node scripts/verify-runtime-store.cjs
 node scripts/verify-backend-regressions.cjs
 node scripts/verify-ui-regressions.cjs
 node scripts/verify-ready-stock.cjs
+node scripts/verify-priority-stock.cjs
 ```

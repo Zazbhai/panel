@@ -5,6 +5,7 @@ const stockStatus = document.getElementById("stockStatus");
 const stockCounts = document.getElementById("stockCounts");
 const stockSources = document.getElementById("stockSources");
 const mappingPrefetchStatus = document.getElementById("mappingPrefetchStatus");
+const priorityStockStatus = document.getElementById("priorityStockStatus");
 const stockFields = {
   total: "stockTotal", online: "stockOnline", reserved: "stockReserved",
   offline: "stockOffline", needsCheck: "stockNeedsCheck"
@@ -48,6 +49,18 @@ async function loadStock() {
             : prefetch.status === "failed"
               ? "Inventory preparation failed before it completed. Check the server logs."
               : "Inventory preparation has not started.";
+    }
+    if (priorityStockStatus) {
+      const priority = data.priorityStock;
+      const entries = Array.isArray(priority?.services) ? priority.services.slice(0, 5) : [];
+      priorityStockStatus.textContent = entries.length
+        ? entries.map((entry) => {
+          const ready = Number.isSafeInteger(entry.ready) ? stockNumberFormat.format(entry.ready) : "Checking";
+          const target = Number.isSafeInteger(entry.target) ? stockNumberFormat.format(entry.target) : "—";
+          return entry.service + ": " + ready + " / " + target
+            + (entry.status === "retrying" ? " · retrying" : "");
+        }).join("\n") + (priority.checkedAt ? "\nChecked at " + stockTimeFormat.format(priority.checkedAt) + "." : "")
+        : "Waiting for service demand.";
     }
     stockStatus.classList.remove("error");
   } catch (error) {
