@@ -23,7 +23,7 @@ from telethon.errors import FloodWaitError, ChatForwardsRestrictedError
 API_ID = 30236390            # my.telegram.org se
 API_HASH = "81607d18a648614598a2198c6d860c5f"  # my.telegram.org se
 SOURCE = -1004418505510     # Fury SMS source channel from the current Telegram account
-TARGET = "@zazchutiyaj"    # aapka channel (@username ya -100... id)
+TARGET = "@jsisneisn"    # aapka channel (@username ya -100... id)
 START_FROM = 1              # purane posts kis number se shuru
 FORWARD_OLD = True          # purane posts bhejne hain?
 DELAY = 0.25                # har post ke beech seconds (flood control)
