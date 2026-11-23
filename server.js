@@ -1929,6 +1929,7 @@ async function readActiveNumbers(database, isAvailable = () => true, parentSigna
       // No eligible number in this batch; inspect its results for recycling and errors.
     }
     const results = await Promise.allSettled(reads);
+    const discovered = [];
     for (const result of results) {
       if (result.status === "rejected") {
         messageReadFailures += 1;
@@ -1938,9 +1939,13 @@ async function readActiveNumbers(database, isAvailable = () => true, parentSigna
       } else if (result.value.number && !numbers.has(result.value.number)) {
         cacheActiveNumber(database, result.value);
         numbers.set(result.value.number, result.value);
+        discovered.push(result.value);
       } else if (result.status === "fulfilled") {
         cacheActiveNumber(database, result.value);
       }
+    }
+    if (discovered.length && typeof onDiscover === "function") {
+      await onDiscover(discovered, snapshotCheckedAt);
     }
     if (parentSignal?.aborted) {
       if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
