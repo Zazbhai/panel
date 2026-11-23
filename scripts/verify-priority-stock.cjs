@@ -151,6 +151,8 @@ async function failureRecovery() {
   await f.context.startPriorityStockWorkers();
   assert(state(f).services.every((item) => item.status === "retrying"),
     "Hung jobs must time out instead of holding all lanes forever");
+  assert(state(f).services.every((item) => Number.isInteger(item.ready) && item.ready >= 0),
+    "Timed-out jobs must still publish the current eligible stock count");
   const now = Date.now() + 10000;
   f.context.Date = class extends Date { static now() { return now; } };
   f.context.fillNumberPool = async () => 8;

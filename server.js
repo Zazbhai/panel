@@ -1320,6 +1320,22 @@ async function runPriorityStockWorkers() {
     ready: null, status: "queued"
   }));
   priorityStockState.services = services;
+  const readReadyStock = async (service) => {
+    try {
+      const store = await getRuntimeStore();
+      const metadata = await store.call("metadata");
+      return store.call("readyStockCount", {
+        service,
+        databases: metadata?.databaseUrls || [],
+        onlineTtl: activeClientsCacheTtlMs,
+        limit: priorityStockTarget
+      });
+    } catch (error) {
+      console.warn("Could not read current priority stock for " + service + ": "
+        + (error.code || error.name || "storage error"));
+      return null;
+    }
+  };
   let next = 0;
   const worker = async () => {
     while (next < services.length) {
@@ -1331,9 +1347,10 @@ async function runPriorityStockWorkers() {
         const count = await waitForAbortable(refillNumberPool(item.service, controller.signal, {
           priority: true, target: priorityStockTarget
         }), controller.signal);
-        item.ready = Number.isInteger(count) ? count : null;
+        item.ready = Number.isInteger(count) ? count : await readReadyStock(item.service);
         item.status = item.ready === null ? "retrying" : item.ready >= item.target ? "ready" : "low";
       } catch (error) {
+        item.ready = await readReadyStock(item.service);
         item.status = "retrying";
         console.warn("Priority stock refill interrupted for " + item.service + ": "
           + (error.code || error.name || "worker error"));
