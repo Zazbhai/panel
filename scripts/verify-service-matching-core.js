@@ -1,7 +1,7 @@
 "use strict";
 
 const assert = require("node:assert/strict");
-const { matchServiceMessage } = require("../service-matching-core");
+const { matchServiceMessage, getEnabledTemplates } = require("../service-matching-core");
 
 const swiggy = {
   name: "Swiggy",
@@ -80,6 +80,12 @@ assert.deepEqual(matchServiceMessage(whatsapp, whatsappText), { code: "661572" }
 assert.deepEqual(matchServiceMessage(wildcard, "Wildcard App account was created for Maria Jane. Your verification code is 654321."), { code: "654321" });
 assert.deepEqual(matchServiceMessage(keywordOnly, "Quick Bank verification code: 482913"), { code: "482913" });
 assert.equal(matchServiceMessage(keywordOnly, "Quick Bank reference number: 482913"), null);
+const catchAll = { name: "Swiggy", enabled: true, minOtpLength: 4, maxOtpLength: 8,
+  templates: [{ text: "{{OTP}}", enabled: true }, { text: "{{OTP}} <>", enabled: true }] };
+assert.deepEqual(getEnabledTemplates(catchAll), [],
+  "A bare OTP-only template must be ignored even if old configuration still contains it");
+assert.equal(matchServiceMessage(catchAll, "Jio verification code: 123456", {}), null,
+  "An OTP-only service template must never route another app's code");
 const digitMarkerService = { templates: [{ text: "Account [DIGITS:3] code [OTP]", enabled: true }] };
 assert.deepEqual(matchServiceMessage(digitMarkerService, "Account 123 code 654321"), { code: "654321" });
 assert.equal(matchServiceMessage(digitMarkerService, "Account 12 code 654321"), null);

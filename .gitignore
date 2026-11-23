@@ -18,6 +18,7 @@ tmp_media/
 # Local runtime data
 rotation.json
 services.json
+services.json.backup-*
 runtime.sqlite
 runtime.sqlite-*
 .inventory-worker.lock

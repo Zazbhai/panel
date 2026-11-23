@@ -435,7 +435,7 @@ function validateServiceList(services) {
       || typeof service.id !== "string" || !service.id.trim() || service.id.length > 100
       || typeof service.name !== "string" || !service.name.trim() || service.name.length > 60
       || /\s/.test(service.name)
-      || !Array.isArray(service.templates) || service.templates.length === 0
+      || !Array.isArray(service.templates) || (service.enabled === true && service.templates.length === 0)
       || !Number.isInteger(service.minOtpLength) || service.minOtpLength < 1 || service.minOtpLength > 32
       || !Number.isInteger(service.maxOtpLength) || service.maxOtpLength < service.minOtpLength || service.maxOtpLength > 32
       || typeof service.senderFilter !== "string" || service.senderFilter.length > 100

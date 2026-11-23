@@ -5,6 +5,7 @@ const { randomBytes } = require("node:crypto");
 const OTP_CONTEXT_PATTERN = /\b(?:otp|one[\s-]?time(?:\s+password)?|verification|verify|passcode|password|security\s+code|code|pin)\b/gi;
 const VARIABLE_PATTERN = /<\s*#\s*>|#|\{\s*(\d{1,2})\s*digit\s*\}/gi;
 const OTP_PLACEHOLDER_PATTERN = /(?:\{\{OTP\}\}|\[OTP\])/i;
+const OTP_ONLY_PATTERN = /^[\s\p{P}\p{S}]*(?:\{\{\s*otp\s*\}\}|\[\s*otp\s*\])[\s\p{P}\p{S}]*$/iu;
 
 function getVariableContextDistance(text, index, length) {
   let distance = Infinity;
@@ -53,7 +54,8 @@ function convertSmsFormat(format) {
   }
   result += text.slice(lastIndex);
 
-  return result.length <= 5000 && OTP_PLACEHOLDER_PATTERN.test(result) ? result : null;
+  return result.length <= 5000 && OTP_PLACEHOLDER_PATTERN.test(result)
+    && !OTP_ONLY_PATTERN.test(result.trim()) ? result : null;
 }
 
 function templateKey(text) {

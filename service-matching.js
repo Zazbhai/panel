@@ -11,7 +11,9 @@
     return templates.filter((template) => template
       && template.enabled !== false
       && typeof template.text === "string"
-      && /(?:\{\{OTP\}\}|\[OTP\])/i.test(template.text));
+      && /(?:\{\{OTP\}\}|\[OTP\])/i.test(template.text)
+      && !/^[\s\p{P}\p{S}]*(?:\{\{\s*otp\s*\}\}|\[\s*otp\s*\])[\s\p{P}\p{S}]*$/iu
+        .test(template.text.trim()));
   }
 
   function escapeRegExp(value) {

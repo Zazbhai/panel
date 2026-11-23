@@ -10,7 +10,12 @@ function getEnabledTemplates(service) {
   return templates.filter((template) => template
     && template.enabled !== false
     && typeof template.text === "string"
-      && /(?:\{\{OTP\}\}|\[OTP\])/i.test(template.text));
+      && /(?:\{\{OTP\}\}|\[OTP\])/i.test(template.text)
+      // A bare OTP marker has no service-specific signal and matches every
+      // message containing a numeric code. Ignore it instead of routing a
+      // different app's OTP to this service.
+      && !/^[\s\p{P}\p{S}]*(?:\{\{\s*otp\s*\}\}|\[\s*otp\s*\])[\s\p{P}\p{S}]*$/iu
+        .test(template.text.trim()));
 }
 
 function escapeRegExp(value) {
