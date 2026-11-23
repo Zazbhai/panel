@@ -2810,7 +2810,7 @@ async function handleLocalOtpRequest(requestUrl, response) {
       throwIfAborted(allocationController.signal);
     } catch (error) {
       clearTimeout(allocationTimer);
-      if (error.code === "ALLOCATION_TIMEOUT") {
+      if (error.code === "ALLOCATION_TIMEOUT" || Date.now() >= allocationDeadline) {
         sendText(response, 200, "NO_NUMBERS");
         return;
       }
@@ -2837,7 +2837,7 @@ async function handleLocalOtpRequest(requestUrl, response) {
       );
       throwIfAborted(allocationController.signal);
     } catch (error) {
-      if (error.code === "ALLOCATION_TIMEOUT") {
+      if (error.code === "ALLOCATION_TIMEOUT" || Date.now() >= allocationDeadline) {
         sendText(response, 200, "NO_NUMBERS");
         return;
       }
