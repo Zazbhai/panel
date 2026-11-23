@@ -96,7 +96,7 @@ const priorityStockDatabaseConcurrency = readPositiveIntegerEnv(
   "PRIORITY_STOCK_DATABASE_CONCURRENCY", 8, 1, 16
 );
 const priorityStockDatabaseLimit = readPositiveIntegerEnv(
-  "PRIORITY_STOCK_DATABASE_LIMIT", 256, 8, 512
+  "PRIORITY_STOCK_DATABASE_LIMIT", 512, 8, 512
 );
 const numberMappingDeviceConcurrency = readPositiveIntegerEnv(
   "NUMBER_MAPPING_DEVICE_CONCURRENCY",
@@ -155,6 +155,7 @@ let numberPoolWarmupTimer = null;
 let priorityStockTimer = null;
 let priorityStockPromise = null;
 let priorityServiceRankCache = null;
+let priorityStockScanCursor = 0;
 const priorityStockServices = new Set();
 let priorityStockState = { status: "idle", checkedAt: null, services: [] };
 let numberMappingPrefetchWatchdogTimer = null;
@@ -1298,6 +1299,23 @@ function startNumberPoolWarmup() {
   return numberPoolWarmupPromise;
 }
 
+function selectPriorityStockDatabases(databaseUrls, ranked, limit) {
+  const all = [...new Set([...ranked, ...databaseUrls])];
+  if (all.length <= limit) return all;
+  const fixedCount = Math.min(Math.ceil(limit / 4), ranked.length);
+  const fixed = ranked.slice(0, fixedCount);
+  const rotating = all.filter((database) => !fixed.includes(database));
+  const rotatingCount = Math.max(0, limit - fixed.length);
+  const offset = rotating.length ? priorityStockScanCursor % rotating.length : 0;
+  priorityStockScanCursor = rotating.length
+    ? (offset + rotatingCount) % rotating.length
+    : 0;
+  const window = Array.from({ length: Math.min(rotatingCount, rotating.length) }, (_, index) =>
+    rotating[(offset + index) % rotating.length]
+  );
+  return [...fixed, ...window];
+}
+
 async function runPriorityStockWorkers() {
   priorityStockState.status = "running";
   const rankController = new AbortController();
@@ -2250,7 +2268,7 @@ async function fillNumberPool(service, parentSignal = null, preparation = {}) {
   if (preparation.priority && databaseUrls.length > priorityStockDatabaseLimit) {
     const inventoryOrder = await call("databaseInventoryOrder", { databases: databaseUrls });
     const ranked = inventoryOrder.map((item) => item.database);
-    const selected = [...new Set([...ranked, ...databaseUrls])].slice(0, priorityStockDatabaseLimit);
+    const selected = selectPriorityStockDatabases(databaseUrls, ranked, priorityStockDatabaseLimit);
     scanState = { ...state, databaseUrls: selected };
   }
   const scan = await readActiveNumberInventories(service, scanState, Math.max(numberPoolSize, target),

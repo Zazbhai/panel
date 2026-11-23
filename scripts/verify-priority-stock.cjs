@@ -66,6 +66,16 @@ function eligibility() {
 
 async function rankingAndLanes() {
   const f = await setup();
+  const urls = Array.from({ length: 12 }, (_, i) => "https://db" + i + ".firebaseio.com");
+  const rankedUrls = [urls[0], urls[1], urls[2]];
+  const firstWindow = f.context.selectPriorityStockDatabases(urls, rankedUrls, 8);
+  const secondWindow = f.context.selectPriorityStockDatabases(urls, rankedUrls, 8);
+  assert(firstWindow.includes(urls[0]) && firstWindow.includes(urls[1]),
+    "Priority scans should retain their strongest saved inventory databases");
+  assert(secondWindow.some((database) => !firstWindow.includes(database)),
+    "Priority scans must rotate through databases outside the first window");
+  assert.equal(new Set([...firstWindow, ...secondWindow]).size, urls.length,
+    "Consecutive bounded windows should cover the full database list");
   const ranked = f.runtime.topOrderedServices({
     services: [...Array.from({ length: 12 }, (_, i) => "service" + i), "ancient"], limit: 10
   });
