@@ -1124,8 +1124,12 @@ async function prefetchAllNumberMappings() {
       const taskTimeout = setTimeout(() => taskController.abort(), numberMappingPrefetchTaskTimeoutMs);
       runController.signal.addEventListener("abort", abortTask, { once: true });
       try {
+        const clientsEndpoint = `${database}/clients.json`;
+        deleteSharedDatabaseCacheEntry(clientsEndpoint);
+        sharedDatabaseJsonErrors.delete(clientsEndpoint);
         const clients = await fetchSharedDatabaseJson(
-          `${database}/clients.json`, numberStatusCheckTimeoutMs, activeClientsCacheTtlMs, taskController.signal, 1
+          clientsEndpoint, numberStatusCheckTimeoutMs, numberMappingPrefetchIntervalMs,
+          taskController.signal, 1
         );
         throwIfAborted(runController.signal);
         if (!clients || typeof clients !== "object" || Array.isArray(clients)) {
@@ -1320,22 +1324,6 @@ async function runPriorityStockWorkers() {
     ready: null, status: "queued"
   }));
   priorityStockState.services = services;
-  const readReadyStock = async (service) => {
-    try {
-      const store = await getRuntimeStore();
-      const metadata = await store.call("metadata");
-      return store.call("readyStockCount", {
-        service,
-        databases: metadata?.databaseUrls || [],
-        onlineTtl: activeClientsCacheTtlMs,
-        limit: priorityStockTarget
-      });
-    } catch (error) {
-      console.warn("Could not read current priority stock for " + service + ": "
-        + (error.code || error.name || "storage error"));
-      return null;
-    }
-  };
   let next = 0;
   const worker = async () => {
     while (next < services.length) {
@@ -1347,10 +1335,9 @@ async function runPriorityStockWorkers() {
         const count = await waitForAbortable(refillNumberPool(item.service, controller.signal, {
           priority: true, target: priorityStockTarget
         }), controller.signal);
-        item.ready = Number.isInteger(count) ? count : await readReadyStock(item.service);
+        item.ready = Number.isInteger(count) ? count : null;
         item.status = item.ready === null ? "retrying" : item.ready >= item.target ? "ready" : "low";
       } catch (error) {
-        item.ready = await readReadyStock(item.service);
         item.status = "retrying";
         console.warn("Priority stock refill interrupted for " + item.service + ": "
           + (error.code || error.name || "worker error"));
@@ -3370,12 +3357,12 @@ function refreshStockSummarySnapshot() {
     .then((value) => {
       const progress = value.inventoryProgress;
       const mappingPrefetch = { ...numberMappingPrefetchState };
+      mappingPrefetch.total = value.databaseCount;
+      mappingPrefetch.mappings = progress?.mappings || 0;
       // On another PM2 process the local prefetch state may be idle. Report
       // durable progress there without mixing previous passes into a live run.
       if (mappingPrefetch.status === "idle") {
-        mappingPrefetch.total = value.databaseCount;
         mappingPrefetch.completed = progress?.checkedDatabases || 0;
-        mappingPrefetch.mappings = progress?.mappings || 0;
       }
       const { inventoryProgress, ...summary } = value;
       stockSummaryCache = { value: { ...summary, mappingPrefetch }, expiresAt: Date.now() + 3000 };
