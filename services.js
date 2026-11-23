@@ -395,7 +395,7 @@ function makeServiceCard(service) {
   const settings = document.createElement("p");
   settings.className = "service-settings-summary";
   settings.textContent = [
-    `OTP length: ${service.minOtpLength}-${service.maxOtpLength} digits`,
+    `OTP length: ${service.minOtpLength}-${service.maxOtpLength} characters`,
     service.senderFilter ? `Sender contains: ${service.senderFilter}` : "",
     `Full text: ${service.sendFullText ? "On" : "Off"}`
   ].filter(Boolean).join(" | ");
@@ -570,9 +570,10 @@ function markSelectedOtp(messageTemplateInput) {
 
   const current = messageTemplateInput.value;
   const selected = current.slice(start, end);
-  const selectedDigits = selected.replace(/\D/g, "");
-  if (!/^\d(?:[\d\s-]*\d)?$/.test(selected) || selectedDigits.length < 1 || selectedDigits.length > 32) {
-    setStatus("Select only a numeric sample code containing 1 to 32 digits.", true);
+  const selectedCode = selected.replace(/[\s-]/g, "");
+  if (!/^[A-Za-z0-9](?:[A-Za-z0-9\s-]*[A-Za-z0-9])?$/.test(selected)
+    || selectedCode.length < 1 || selectedCode.length > 32) {
+    setStatus("Select an alphanumeric sample code containing 1 to 32 characters.", true);
     return;
   }
   if (/(?:\{\{OTP\}\}|\[OTP\])/i.test(current)) {
@@ -580,7 +581,10 @@ function markSelectedOtp(messageTemplateInput) {
     return;
   }
 
-  const repeatedCode = new RegExp(`(?<!\\d)${Array.from(selectedDigits).join("[\\s-]?")}(?!\\d)`, "g");
+  const escapedCode = Array.from(selectedCode)
+    .map((character) => character.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("[\\s-]?");
+  const repeatedCode = new RegExp(`(?<![A-Za-z0-9])${escapedCode}(?![A-Za-z0-9])`, "gi");
   messageTemplateInput.value = current.replace(repeatedCode, "{{OTP}}");
   setStatus("Sample code and matching copies replaced by OTP placeholders.", false);
 }
@@ -622,7 +626,7 @@ serviceForm.addEventListener("submit", async (event) => {
   const maxOtpLength = Number(maxOtpLengthInput.value);
   if (!Number.isInteger(minOtpLength) || !Number.isInteger(maxOtpLength)
     || minOtpLength < 1 || maxOtpLength < minOtpLength || maxOtpLength > 32) {
-    setStatus("Set a valid OTP digit range from 1 to 32 digits.", true);
+    setStatus("Set a valid OTP character range from 1 to 32 characters.", true);
     return;
   }
   const templates = Array.from(templateList.querySelectorAll(".template-editor")).map((row) => ({

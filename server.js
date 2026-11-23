@@ -682,7 +682,7 @@ function normalizeOrderOtpHistory(order) {
       || typeof entry !== "object"
       || Array.isArray(entry)
       || typeof entry.code !== "string"
-      || !/^\d{1,32}$/.test(entry.code)
+      || !/^[A-Za-z0-9]{1,32}$/.test(entry.code)
       || !Number.isFinite(entry.receivedAt)
       || (entry.messageKey !== null && typeof entry.messageKey !== "string"))) {
     throw new Error("The recent orders data has an invalid OTP history.");
@@ -801,7 +801,7 @@ async function readLegacyRotationState() {
       || !Number.isFinite(order.createdAt) || !Number.isFinite(order.expiresAt)
       || order.expiresAt <= order.createdAt
       || !["active", "completed", "cancelled", "expired"].includes(order.status)
-      || !(order.receivedOtp === null || (typeof order.receivedOtp === "string" && /^\d{1,32}$/.test(order.receivedOtp)))
+      || !(order.receivedOtp === null || (typeof order.receivedOtp === "string" && /^[A-Za-z0-9]{1,32}$/.test(order.receivedOtp)))
       || !(order.receivedAt === null || Number.isFinite(order.receivedAt))
       || (order.receivedOtp === null) !== (order.receivedAt === null)
       || order.receivedOtp !== (latestOtp ? latestOtp.code : null)

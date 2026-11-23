@@ -67,6 +67,12 @@ const keywordOnly = {
   senderFilter: "",
   templates: [{ text: "A configured format that will not match {{OTP}}", enabled: true }]
 };
+const alphaNumeric = {
+  name: "Instagram",
+  minOtpLength: 6,
+  maxOtpLength: 8,
+  templates: [{ text: "Your Instagram security code is {{OTP}}.", enabled: true }]
+};
 
 assert.deepEqual(matchServiceMessage(jio, jioText, { sender: "VM-JIO" }), { code: "989099" });
 assert.equal(matchServiceMessage(swiggy, jioText, { sender: "VM-JIO" }), null);
@@ -79,6 +85,7 @@ assert.deepEqual(matchServiceMessage(flipkart, flipkartText, { sender: "VA-FL-PK
 assert.deepEqual(matchServiceMessage(whatsapp, whatsappText), { code: "661572" });
 assert.deepEqual(matchServiceMessage(wildcard, "Wildcard App account was created for Maria Jane. Your verification code is 654321."), { code: "654321" });
 assert.deepEqual(matchServiceMessage(keywordOnly, "Quick Bank verification code: 482913"), { code: "482913" });
+assert.deepEqual(matchServiceMessage(alphaNumeric, "Your Instagram security code is A7b9X2."), { code: "A7b9X2" });
 assert.equal(matchServiceMessage(keywordOnly, "Quick Bank reference number: 482913"), null);
 const catchAll = { name: "Swiggy", enabled: true, minOtpLength: 4, maxOtpLength: 8,
   templates: [{ text: "{{OTP}}", enabled: true }, { text: "{{OTP}} <>", enabled: true }] };
@@ -99,7 +106,8 @@ for (const [service, text] of [
   [digitMarkerService, "Account 123 code 654321"],
   [digitMarkerService, "Account 12 code 654321"],
   [flipkart, flipkartText], [flipkart, flipkartText.replace("#634435", "#999999")],
-  [swiggy, jioText], [whatsapp, whatsappText]
+  [swiggy, jioText], [whatsapp, whatsappText],
+  [alphaNumeric, "Your Instagram security code is A7b9X2."]
 ]) {
   assert.equal(browser.window.serviceMatching.matches(service, text), Boolean(matchServiceMessage(service, text)));
 }

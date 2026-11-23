@@ -60,6 +60,7 @@
     const candidates = [];
     let match;
     while ((match = codeRegex.exec(text))) {
+      if (/^(?:otp|code|is|your|the|one|time|password|verification|verify|security|passcode|pin)$/i.test(match[0])) continue;
       const start = match.index;
       const end = start + match[0].length;
       contextPattern.lastIndex = 0;
@@ -69,7 +70,7 @@
         const contextEnd = context.index + context[0].length;
         distance = Math.min(distance, contextEnd <= start ? start - contextEnd : context.index >= end ? context.index - end : 0);
       }
-      if (distance <= 48) candidates.push({ code: match[0].replace(/\D/g, ""), distance });
+      if (distance <= 48) candidates.push({ code: match[0].replace(/[\s-]/g, ""), distance });
     }
     if (!candidates.length) return false;
     candidates.sort((left, right) => left.distance - right.distance);
@@ -90,7 +91,7 @@
         ? service.maxOtpLength
         : 8;
       if (minOtpLength < 1 || maxOtpLength < minOtpLength || maxOtpLength > 32) return false;
-      const codePattern = String.raw`(?<!\d)\d(?:[\s-]?\d){${minOtpLength - 1},${maxOtpLength - 1}}(?!\d)`;
+      const codePattern = String.raw`(?<![A-Za-z0-9])(?:[A-Za-z0-9]{${minOtpLength},${maxOtpLength}}|\d(?:[\s-]?\d){${minOtpLength - 1},${maxOtpLength - 1}})(?![A-Za-z0-9])`;
       matcher = {
         senderFilter,
         patterns: getEnabledTemplates(service).map((template) =>
@@ -108,7 +109,7 @@
     const matched = matcher.patterns.some((pattern) => {
       const match = pattern.exec(text);
       if (!match?.[1]) return false;
-      const codes = match.slice(1).map((code) => code.replace(/\D/g, ""));
+      const codes = match.slice(1).map((code) => code.replace(/[\s-]/g, ""));
       return codes.every((code) => code === codes[0]);
     });
     if (matched) return true;

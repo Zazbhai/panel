@@ -55,7 +55,7 @@ function getMatchers(service) {
   const minOtpLength = Number.isInteger(service?.minOtpLength) ? service.minOtpLength : 4;
   const maxOtpLength = Number.isInteger(service?.maxOtpLength) ? service.maxOtpLength : 8;
   if (minOtpLength < 1 || maxOtpLength < minOtpLength || maxOtpLength > 32) return [];
-  const codePattern = String.raw`(?<!\d)\d(?:[\s-]?\d){${minOtpLength - 1},${maxOtpLength - 1}}(?!\d)`;
+  const codePattern = String.raw`(?<![A-Za-z0-9])(?:[A-Za-z0-9]{${minOtpLength},${maxOtpLength}}|\d(?:[\s-]?\d){${minOtpLength - 1},${maxOtpLength - 1}})(?![A-Za-z0-9])`;
   return getEnabledTemplates(service).map((template) => makeTemplatePattern(template.text, codePattern));
 }
 
@@ -73,6 +73,7 @@ function matchByServiceKeyword(service, text, codePattern) {
   const candidates = [];
   let match;
   while ((match = codeRegex.exec(text))) {
+    if (/^(?:otp|code|is|your|the|one|time|password|verification|verify|security|passcode|pin)$/i.test(match[0])) continue;
     const start = match.index;
     const end = start + match[0].length;
     contextPattern.lastIndex = 0;
@@ -82,7 +83,7 @@ function matchByServiceKeyword(service, text, codePattern) {
       const contextEnd = context.index + context[0].length;
       distance = Math.min(distance, contextEnd <= start ? start - contextEnd : context.index >= end ? context.index - end : 0);
     }
-    if (distance <= 48) candidates.push({ code: match[0].replace(/\D/g, ""), distance });
+    if (distance <= 48) candidates.push({ code: match[0].replace(/[\s-]/g, ""), distance });
   }
   if (!candidates.length) return null;
   candidates.sort((left, right) => left.distance - right.distance);
@@ -104,7 +105,7 @@ function matchServiceMessage(service, text, message = {}) {
   for (const pattern of getMatchers(service)) {
     const match = pattern.exec(text);
     if (match && match[1]) {
-      const codes = match.slice(1).map((code) => code.replace(/\D/g, ""));
+      const codes = match.slice(1).map((code) => code.replace(/[\s-]/g, ""));
       if (codes.every((code) => code === codes[0])) return { code: codes[0] };
     }
   }
