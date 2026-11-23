@@ -148,6 +148,22 @@ async function prepareMappings() {
   assert.equal(f.requests.length, reads, "A full prepared service must not fetch Firebase again");
 }
 
+async function priorityDiscoveryIsIncremental() {
+  const f = fixture({ env: { PRIORITY_STOCK_SCAN_CANDIDATES: "256" } });
+  await f.context.getRuntimeStore();
+  let args;
+  f.context.readActiveNumberInventories = async (...values) => {
+    args = values;
+    return { inventories: [], failures: [] };
+  };
+  const count = await f.context.fillNumberPool("popular", null, { priority: true, target: 2000 });
+  assert.equal(count, 0);
+  assert.equal(args[2], 256, "Priority workers should discover numbers in bounded batches");
+  assert.equal(args[6], false, "Priority discovery must return without exhausting each database");
+  assert.equal(args[7], 1, "Priority reads must use the priority lane");
+  assert.equal(args[8], 8, "Priority database concurrency should remain bounded");
+}
+
 async function failureRecovery() {
   const f = await setup();
   const cancelled = new AbortController();
@@ -220,6 +236,7 @@ async function partialDiscoverySurvivesAbort() {
   eligibility();
   await rankingAndLanes();
   await prepareMappings();
+  await priorityDiscoveryIsIncremental();
   await failureRecovery();
   await readScheduling();
   await partialDiscoverySurvivesAbort();

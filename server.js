@@ -98,6 +98,9 @@ const priorityStockDatabaseConcurrency = readPositiveIntegerEnv(
 const priorityStockDatabaseLimit = readPositiveIntegerEnv(
   "PRIORITY_STOCK_DATABASE_LIMIT", 512, 8, 512
 );
+const priorityStockScanCandidates = readPositiveIntegerEnv(
+  "PRIORITY_STOCK_SCAN_CANDIDATES", 256, 32, 2000
+);
 const numberMappingDeviceConcurrency = readPositiveIntegerEnv(
   "NUMBER_MAPPING_DEVICE_CONCURRENCY",
   Math.max(1, Math.min(4, backgroundDatabaseReadLimit)),
@@ -2271,8 +2274,11 @@ async function fillNumberPool(service, parentSignal = null, preparation = {}) {
     const selected = selectPriorityStockDatabases(databaseUrls, ranked, priorityStockDatabaseLimit);
     scanState = { ...state, databaseUrls: selected };
   }
-  const scan = await readActiveNumberInventories(service, scanState, Math.max(numberPoolSize, target),
-    null, parentSignal, true, true, preparation.priority ? 1 : 2,
+  const scanCandidates = preparation.priority
+    ? Math.min(priorityStockScanCandidates, Math.max(numberPoolSize, target))
+    : Math.max(numberPoolSize, target);
+  const scan = await readActiveNumberInventories(service, scanState, scanCandidates,
+    null, parentSignal, true, preparation.priority ? false : true, preparation.priority ? 1 : 2,
     preparation.priority ? priorityStockDatabaseConcurrency : numberPoolDatabaseConcurrency);
   throwIfAborted(parentSignal);
   await waitForAbortable(rememberInventories(store, scan.inventories), parentSignal);
