@@ -67,6 +67,15 @@ def save_done(mid):
     open(DONE_FILE, "w").write(str(mid))
 
 
+async def wait_for_telegram_flood(seconds):
+    remaining = max(0, int(seconds))
+    while remaining > 0:
+        interval = min(60, remaining)
+        print(f"Telegram cooldown: {remaining}s remaining; resuming automatically.", flush=True)
+        await asyncio.sleep(interval)
+        remaining -= interval
+
+
 DATABASE_URL_RE = re.compile(
     r"https?://[A-Za-z0-9.-]+\.(?:firebaseio\.com|firebasedatabase\.app)(?:/[^\s]*)?",
     re.IGNORECASE,
@@ -164,20 +173,32 @@ async def send(msg):
                     await client.send_message(TARGET, msg.text)
             return
         except FloodWaitError as e:
-            print(f"Telegram ne rukne ko kaha: {e.seconds}s wait...")
-            await asyncio.sleep(e.seconds + 1)
+            await wait_for_telegram_flood(e.seconds + 1)
 
 
 async def forward_old():
-    start = last_done() + 1
+    cursor = last_done()
+    start = cursor + 1
     print(f"Purane posts #{start} se forward ho rahe hain...")
-    async for msg in client.iter_messages(SOURCE, min_id=start - 1, reverse=True):
-        if msg.action:  # service messages skip
-            continue
-        await send(msg)
-        save_done(msg.id)
-        print(f"Forwarded #{msg.id}")
-        await asyncio.sleep(DELAY)
+    while True:
+        try:
+            async for msg in client.iter_messages(SOURCE, min_id=cursor, reverse=True):
+                if msg.id <= cursor:
+                    continue
+                if msg.action:  # service messages skip
+                    cursor = msg.id
+                    save_done(cursor)
+                    continue
+                await send(msg)
+                cursor = msg.id
+                save_done(cursor)
+                print(f"Forwarded #{msg.id}")
+                await asyncio.sleep(DELAY)
+            break
+        except FloodWaitError as e:
+            await wait_for_telegram_flood(e.seconds + 1)
+            cursor = max(cursor, last_done())
+            print(f"History fetch resumed after #{cursor}.", flush=True)
     await wait_for_database_updates()
     print("Purane posts complete.")
 
