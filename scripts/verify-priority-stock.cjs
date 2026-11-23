@@ -19,11 +19,11 @@ function state(f) { return vm.runInContext("JSON.parse(JSON.stringify(prioritySt
 async function setup() {
   const f = fixture({ env: { PRIORITY_STOCK_TARGET: "8", PRIORITY_STOCK_WORKERS: "2" } });
   await f.context.getRuntimeStore();
-  const services = Array.from({ length: 6 }, (_, i) => ({
+  const services = Array.from({ length: 12 }, (_, i) => ({
     id: "service-" + i, name: "service" + i, enabled: true,
     templates: [{ text: "service" + i + " OTP {{OTP}}", enabled: true }]
   }));
-  for (let i = 0; i < services.length; i++) seedDemand(f.runtime, services[i].name, 10 - i);
+  for (let i = 0; i < services.length; i++) seedDemand(f.runtime, services[i].name, 30 - i);
   seedDemand(f.runtime, "disabled", 100);
   seedDemand(f.runtime, "bare", 99);
   seedDemand(f.runtime, "ancient", 100, Date.now() - 2 * 86400000);
@@ -67,9 +67,9 @@ function eligibility() {
 async function rankingAndLanes() {
   const f = await setup();
   const ranked = f.runtime.topOrderedServices({
-    services: ["service0", "service1", "service2", "service3", "service4", "service5", "ancient"]
+    services: [...Array.from({ length: 12 }, (_, i) => "service" + i), "ancient"], limit: 10
   });
-  assert.deepEqual(ranked.map((row) => row.service), ["service0", "service1", "service2", "service3", "service4"]);
+  assert.deepEqual(ranked.map((row) => row.service), Array.from({ length: 10 }, (_, i) => "service" + i));
   const initialOrders = f.runtime.sql("SELECT COUNT(*) AS n FROM orders").get().n;
   vm.runInContext("numberMappingPrefetchPromise = new Promise(() => {});", f.context);
   let active = 0, peak = 0;
@@ -100,7 +100,7 @@ async function rankingAndLanes() {
   assert(state(f).services.every((item) => item.ready === 8 && item.status === "ready"));
   assert.equal(f.runtime.sql("SELECT COUNT(*) AS n FROM orders").get().n, initialOrders,
     "Preparing priority stock must not create customer orders");
-  assert.equal(f.runtime.stockSnapshot().priorityStock.services.length, 5,
+  assert.equal(f.runtime.stockSnapshot().priorityStock.services.length, 10,
     "Leader progress must be visible from shared storage");
   assert.equal(f.requests.length, 0);
 
@@ -213,5 +213,5 @@ async function partialDiscoverySurvivesAbort() {
   await failureRecovery();
   await readScheduling();
   await partialDiscoverySurvivesAbort();
-  console.log("PASS: top-five demand ranking, independent bounded lanes, coalescing, eligible stock, mapping persistence and timeout recovery.");
+  console.log("PASS: top-ten demand ranking, independent bounded lanes, coalescing, eligible stock, mapping persistence and timeout recovery.");
 })().catch((error) => { console.error(error); process.exitCode = 1; });

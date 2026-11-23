@@ -287,7 +287,7 @@ class RuntimeStore {
     return this.sql("SELECT service,COUNT(*) AS orders FROM orders "
       + "WHERE created_at>=? AND created_at<=? AND service IN (SELECT value FROM json_each(?)) "
       + "GROUP BY service ORDER BY orders DESC,service LIMIT ?")
-      .all(since, now, JSON.stringify(services), Math.min(5, Math.max(1, limit)));
+      .all(since, now, JSON.stringify(services), Math.min(10, Math.max(1, limit)));
   }
   readyStockCount({ service, databases = null, now = Date.now(), onlineTtl = 30000,
     mappingTtl = 86400000, limit = 5000 }) {

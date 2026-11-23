@@ -52,7 +52,7 @@ async function loadStock() {
     }
     if (priorityStockStatus) {
       const priority = data.priorityStock;
-      const entries = Array.isArray(priority?.services) ? priority.services.slice(0, 5) : [];
+      const entries = Array.isArray(priority?.services) ? priority.services.slice(0, 10) : [];
       priorityStockStatus.textContent = entries.length
         ? entries.map((entry) => {
           const ready = Number.isSafeInteger(entry.ready) ? stockNumberFormat.format(entry.ready) : "Checking";

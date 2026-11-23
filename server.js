@@ -114,7 +114,7 @@ const requestedNumberPoolServices = new Set();
 const numberPoolRefillCooldownMs = readPositiveIntegerEnv("NUMBER_POOL_REFILL_COOLDOWN_MS", 1000, 250, 30000);
 const numberPoolEmptyCooldownMs = readPositiveIntegerEnv("NUMBER_POOL_EMPTY_COOLDOWN_MS", 5000, 1000, 60000);
 const numberPoolWarmupIntervalMs = readPositiveIntegerEnv("NUMBER_POOL_WARMUP_INTERVAL_MS", 10000, 1000, 60000);
-const priorityStockWorkerCount = readPositiveIntegerEnv("PRIORITY_STOCK_WORKERS", 2, 1, 5);
+const priorityStockWorkerCount = readPositiveIntegerEnv("PRIORITY_STOCK_WORKERS", 5, 1, 5);
 const priorityStockTarget = readPositiveIntegerEnv("PRIORITY_STOCK_TARGET", 2000, 1, 5000);
 const priorityStockIntervalMs = readPositiveIntegerEnv("PRIORITY_STOCK_INTERVAL_MS", 5000, 1000, 60000);
 const priorityStockJobTimeoutMs = readPositiveIntegerEnv("PRIORITY_STOCK_JOB_TIMEOUT_MS", 30000, 1000, 120000);
@@ -1302,7 +1302,7 @@ async function runPriorityStockWorkers() {
         service.enabled === true && getEnabledTemplates(service).length > 0)
         .map((service) => normalizeServiceName(service.name).toLowerCase());
       ranked = await waitForAbortable(store.call("topOrderedServices", {
-        services: enabled, since: Date.now() - 86400000, limit: 5
+        services: enabled, since: Date.now() - 86400000, limit: 10
       }), rankController.signal);
       priorityServiceRankCache = { services: ranked, expiresAt: Date.now() + 60000 };
       priorityStockServices.clear();
