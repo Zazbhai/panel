@@ -95,6 +95,9 @@ const numberPoolDatabaseConcurrency = readPositiveIntegerEnv("NUMBER_POOL_DATABA
 const priorityStockDatabaseConcurrency = readPositiveIntegerEnv(
   "PRIORITY_STOCK_DATABASE_CONCURRENCY", 8, 1, 16
 );
+const priorityStockDatabaseLimit = readPositiveIntegerEnv(
+  "PRIORITY_STOCK_DATABASE_LIMIT", 256, 8, 512
+);
 const numberMappingDeviceConcurrency = readPositiveIntegerEnv(
   "NUMBER_MAPPING_DEVICE_CONCURRENCY",
   Math.max(1, Math.min(4, backgroundDatabaseReadLimit)),
@@ -2239,7 +2242,14 @@ async function fillNumberPool(service, parentSignal = null, preparation = {}) {
     if (recycledCount >= target) return recycledCount;
   }
   const state = await call("allocationState", service);
-  const scan = await readActiveNumberInventories(service, state, Math.max(numberPoolSize, target),
+  let scanState = state;
+  if (preparation.priority && databaseUrls.length > priorityStockDatabaseLimit) {
+    const inventoryOrder = await call("databaseInventoryOrder", { databases: databaseUrls });
+    const ranked = inventoryOrder.map((item) => item.database);
+    const selected = [...new Set([...ranked, ...databaseUrls])].slice(0, priorityStockDatabaseLimit);
+    scanState = { ...state, databaseUrls: selected };
+  }
+  const scan = await readActiveNumberInventories(service, scanState, Math.max(numberPoolSize, target),
     null, parentSignal, true, true, preparation.priority ? 1 : 2,
     preparation.priority ? priorityStockDatabaseConcurrency : numberPoolDatabaseConcurrency);
   throwIfAborted(parentSignal);
@@ -2249,7 +2259,7 @@ async function fillNumberPool(service, parentSignal = null, preparation = {}) {
     && await call("advanceCycle", { service, databases: databaseUrls })) {
     readyCount = await readyCountForService();
   }
-  if (scan.failures.length && readyCount < target) {
+  if (scan.failures.length && readyCount < target && !preparation.priority) {
     const error = scan.failures[0].error || new Error("The configured databases could not be checked.");
     error.status ||= 503;
     error.code ||= "UPSTREAM_UNAVAILABLE";
