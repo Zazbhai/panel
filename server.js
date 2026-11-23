@@ -92,6 +92,9 @@ const numberMappingDiscoveryTaskTimeoutMs = readPositiveIntegerEnv(
 );
 const numberReadyQueueWaitMs = readPositiveIntegerEnv("NUMBER_READY_QUEUE_WAIT_MS", 100, 10, 1000);
 const numberPoolDatabaseConcurrency = readPositiveIntegerEnv("NUMBER_POOL_DATABASE_CONCURRENCY", 2, 1, 8);
+const priorityStockDatabaseConcurrency = readPositiveIntegerEnv(
+  "PRIORITY_STOCK_DATABASE_CONCURRENCY", 8, 1, 16
+);
 const numberMappingDeviceConcurrency = readPositiveIntegerEnv(
   "NUMBER_MAPPING_DEVICE_CONCURRENCY",
   Math.max(1, Math.min(4, backgroundDatabaseReadLimit)),
@@ -2043,7 +2046,7 @@ async function runRotatingDeviceStatsJob(jobId) {
   }
 }
 
-async function readActiveNumberInventories(service, rotationState, requiredCandidates = 1, excludedNumbers = null, parentSignal = null, background = false, scanAll = false, readPriority = background ? 1 : 0) {
+async function readActiveNumberInventories(service, rotationState, requiredCandidates = 1, excludedNumbers = null, parentSignal = null, background = false, scanAll = false, readPriority = background ? 1 : 0, databaseConcurrency = numberPoolDatabaseConcurrency) {
   const configuredUrls = rotationState.databaseUrls;
   const serviceState = Object.hasOwn(rotationState.serviceUsage, service) ? rotationState.serviceUsage[service] : {
     cursorUrl: configuredUrls[0], usedNumbers: [], cycle: 0
@@ -2120,7 +2123,7 @@ async function readActiveNumberInventories(service, rotationState, requiredCandi
     }
   };
   await Promise.all(Array.from(
-    { length: Math.min(requiredCandidates > 1 ? numberPoolDatabaseConcurrency : databasePingConcurrency, scanUrls.length) },
+    { length: Math.min(requiredCandidates > 1 ? databaseConcurrency : databasePingConcurrency, scanUrls.length) },
     scanDatabase
   ));
   if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
@@ -2237,7 +2240,8 @@ async function fillNumberPool(service, parentSignal = null, preparation = {}) {
   }
   const state = await call("allocationState", service);
   const scan = await readActiveNumberInventories(service, state, Math.max(numberPoolSize, target),
-    null, parentSignal, true, true, preparation.priority ? 1 : 2);
+    null, parentSignal, true, true, preparation.priority ? 1 : 2,
+    preparation.priority ? priorityStockDatabaseConcurrency : numberPoolDatabaseConcurrency);
   throwIfAborted(parentSignal);
   await waitForAbortable(rememberInventories(store, scan.inventories), parentSignal);
   let readyCount = await readyCountForService();
@@ -2312,9 +2316,16 @@ function refillNumberPool(service, parentSignal = null, preparation = {}) {
   const key = normalizeServiceName(service).toLowerCase();
   if (priorityStockServices.has(key)) preparation = { ...preparation, priority: true, target: priorityStockTarget };
   const active = activeNumberPoolRefills.get(key);
-  if (active) return active;
+  if (active) {
+    if (preparation.priority !== true) return active;
+    const target = preparation.target || priorityStockTarget;
+    return active.then((result) => {
+      if (Number.isInteger(result) && result >= target) return result;
+      return refillNumberPool(key, parentSignal, preparation);
+    });
+  }
   const pool = numberPools.get(key) || { retryAt: 0 };
-  if (pool.retryAt > Date.now()) return Promise.resolve(pool.lastResult);
+  if (pool.retryAt > Date.now() && preparation.priority !== true) return Promise.resolve(pool.lastResult);
   pool.retryAt = Date.now() + numberPoolRefillCooldownMs;
   numberPools.set(key, pool);
   const controller = new AbortController();
