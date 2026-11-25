@@ -37,6 +37,9 @@ If dashboard registration fails, the worker sends the URL and error to the targe
 channel(s) for that route. To also send failures through a Telegram bot, set
 `DATABASE_FAILURE_BOT_TOKEN` and `DATABASE_FAILURE_BOT_CHAT_ID` in the environment
 or adjacent `.env`. The bot must be started and allowed to message that chat.
+Failure alerts are spaced at 1.1 seconds by default; change this with
+`DATABASE_FAILURE_BOT_INTERVAL_SECONDS`. Invalid bot credentials or a missing
+chat are reported with the Bot API HTTP status and then disabled for the run.
 
 Output is next to test.py, in firebase_batches/:
 

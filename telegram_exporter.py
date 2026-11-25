@@ -158,10 +158,18 @@ def send_bot_message(token, chat_id, text):
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=15) as response:
-        result = json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"Telegram Bot API HTTP {error.code}: {detail}") from error
+    except (OSError, ValueError) as error:
+        raise RuntimeError(f"Telegram Bot API request failed: {error}") from error
     if not isinstance(result, dict) or result.get("ok") is not True:
-        raise RuntimeError("Telegram Bot API did not accept the failure notice.")
+        description = result.get("description") if isinstance(result, dict) else None
+        raise RuntimeError("Telegram Bot API rejected the failure notice"
+                           + (f": {description}" if description else "."))
 
 
 class HistoryExporter:
@@ -420,20 +428,42 @@ async def run(api_id, api_hash, routes, base_dir):
     client = TelegramClient(str(base_dir / "userbot_session"), api_id, api_hash)
     bot_token = load_setting("DATABASE_FAILURE_BOT_TOKEN", base_dir)
     bot_chat_id = load_setting("DATABASE_FAILURE_BOT_CHAT_ID", base_dir)
+    try:
+        bot_alert_interval = float(load_setting(
+            "DATABASE_FAILURE_BOT_INTERVAL_SECONDS", base_dir
+        ) or "1.1")
+    except ValueError:
+        bot_alert_interval = 1.1
+    bot_alert_interval = max(0.0, bot_alert_interval)
+    bot_alert_lock = asyncio.Lock()
+    bot_last_alert_at = 0.0
+    bot_alert_disabled = False
 
     async def notify_database_failure(url, detail, targets):
+        nonlocal bot_last_alert_at, bot_alert_disabled
         message = f"Database registration failed.\n{url}\n{detail[:2000]}"
         for target in targets:
             try:
                 await client.send_message(target, message)
             except Exception as error:
                 print(f"Could not notify target {target} about {url}: {error}", flush=True)
-        if bot_token and bot_chat_id:
+        if bot_token and bot_chat_id and not bot_alert_disabled:
             try:
-                await asyncio.to_thread(send_bot_message, bot_token, bot_chat_id, message)
+                async with bot_alert_lock:
+                    if bot_last_alert_at:
+                        delay = bot_alert_interval - (asyncio.get_running_loop().time() - bot_last_alert_at)
+                        if delay > 0:
+                            await asyncio.sleep(delay)
+                    await asyncio.to_thread(send_bot_message, bot_token, bot_chat_id, message)
+                    bot_last_alert_at = asyncio.get_running_loop().time()
+            except RuntimeError as error:
+                error_text = str(error)
+                print(f"Could not send database failure to configured bot: {error_text}", flush=True)
+                if " HTTP 400:" in error_text or " HTTP 401:" in error_text or " HTTP 403:" in error_text:
+                    bot_alert_disabled = True
             except Exception as error:
                 print("Could not send database failure to configured bot: "
-                      f"{type(error).__name__}.", flush=True)
+                      f"{type(error).__name__}: {error}", flush=True)
         else:
             print("Bot failure alerts disabled; set DATABASE_FAILURE_BOT_TOKEN and "
                   "DATABASE_FAILURE_BOT_CHAT_ID in .env.", flush=True)
