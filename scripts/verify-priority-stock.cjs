@@ -70,12 +70,15 @@ async function rankingAndLanes() {
   const rankedUrls = [urls[0], urls[1], urls[2]];
   const firstWindow = f.context.selectPriorityStockDatabases(urls, rankedUrls, 8);
   const secondWindow = f.context.selectPriorityStockDatabases(urls, rankedUrls, 8);
+  const freshUrl = "https://new-db.firebaseio.com";
+  const freshWindow = f.context.selectPriorityStockDatabases(urls, rankedUrls, 8, [freshUrl]);
   assert(firstWindow.includes(urls[0]) && firstWindow.includes(urls[1]),
     "Priority scans should retain their strongest saved inventory databases");
   assert(secondWindow.some((database) => !firstWindow.includes(database)),
     "Priority scans must rotate through databases outside the first window");
   assert.equal(new Set([...firstWindow, ...secondWindow]).size, urls.length,
     "Consecutive bounded windows should cover the full database list");
+  assert(freshWindow.includes(freshUrl), "Never-checked databases must enter priority scans immediately");
   const ranked = f.runtime.topOrderedServices({
     services: [...Array.from({ length: 12 }, (_, i) => "service" + i), "ancient"], limit: 10
   });
@@ -164,6 +167,48 @@ async function priorityDiscoveryIsIncremental() {
   assert.equal(args[8], 8, "Priority database concurrency should remain bounded");
 }
 
+async function addedDatabaseFeedsPriorityStock() {
+  const f = fixture();
+  await f.context.getRuntimeStore();
+  const addedDatabase = "https://new-priority.firebaseio.com";
+  let rejectAdded = false;
+  f.fetch = async (url) => {
+    if (url.startsWith(addedDatabase) && url.endsWith("?shallow=true")) {
+      return rejectAdded
+        ? { ok: false, status: 423, json: async () => ({}) }
+        : { ok: true, status: 200, json: async () => ({}) };
+    }
+    if (url === addedDatabase + "/clients.json") {
+      return { ok: true, status: 200, json: async () => ({ device42: { status: true } }) };
+    }
+    if (url === addedDatabase + "/messages/device42.json") {
+      return { ok: true, status: 200, json: async () => ({ sms: {
+        message: "Jio number 9876543210", timestamp: Date.now()
+      } }) };
+    }
+    throw new Error("Unexpected synthetic URL " + url);
+  };
+  const rejected = await f.request("/api/addDatabaseUrl?api_key=" + f.apiKey, {
+    method: "POST", body: { databaseUrl: addedDatabase }
+  });
+  assert.equal(rejected.status, 200);
+  assert.equal(JSON.parse(rejected.body).added, true);
+
+  rejectAdded = true;
+  const lockedDatabase = "https://locked-priority.firebaseio.com";
+  const locked = await f.request("/api/addDatabaseUrl?api_key=" + f.apiKey, {
+    method: "POST", body: { databaseUrl: lockedDatabase }
+  });
+  assert.equal(locked.status, 502, "HTTP 423 databases must not be admitted to rotation");
+  assert(!f.runtime.metadata().databaseUrls.includes(lockedDatabase));
+
+  const ready = await f.context.fillNumberPool("instagram", null, { priority: true, target: 1 });
+  assert.equal(ready, 1, "Newly added database should contribute eligible priority stock");
+  const mapping = f.runtime.mappings(addedDatabase);
+  assert.deepEqual(mapping.map((row) => [row.deviceId, row.number]), [["device42", "9876543210"]]);
+  assert.equal(f.runtime.readyStockCount({ service: "instagram", onlineTtl: 60000 }), 1);
+}
+
 async function failureRecovery() {
   const f = await setup();
   const cancelled = new AbortController();
@@ -237,6 +282,7 @@ async function partialDiscoverySurvivesAbort() {
   await rankingAndLanes();
   await prepareMappings();
   await priorityDiscoveryIsIncremental();
+  await addedDatabaseFeedsPriorityStock();
   await failureRecovery();
   await readScheduling();
   await partialDiscoverySurvivesAbort();

@@ -1302,11 +1302,11 @@ function startNumberPoolWarmup() {
   return numberPoolWarmupPromise;
 }
 
-function selectPriorityStockDatabases(databaseUrls, ranked, limit) {
-  const all = [...new Set([...ranked, ...databaseUrls])];
+function selectPriorityStockDatabases(databaseUrls, ranked, limit, fresh = []) {
+  const all = [...new Set([...fresh, ...ranked, ...databaseUrls])];
   if (all.length <= limit) return all;
-  const fixedCount = Math.min(Math.ceil(limit / 4), ranked.length);
-  const fixed = ranked.slice(0, fixedCount);
+  const fixedCount = Math.min(Math.ceil(limit / 4), Math.max(ranked.length, fresh.length));
+  const fixed = all.slice(0, fixedCount);
   const rotating = all.filter((database) => !fixed.includes(database));
   const rotatingCount = Math.max(0, limit - fixed.length);
   const offset = rotating.length ? priorityStockScanCursor % rotating.length : 0;
@@ -2274,9 +2274,16 @@ async function fillNumberPool(service, parentSignal = null, preparation = {}) {
   const state = await call("allocationState", service);
   let scanState = state;
   if (preparation.priority && databaseUrls.length > priorityStockDatabaseLimit) {
-    const inventoryOrder = await call("databaseInventoryOrder", { databases: databaseUrls });
+    const [inventoryOrder, checkTimes] = await Promise.all([
+      call("databaseInventoryOrder", { databases: databaseUrls }),
+      call("databaseCheckTimes", { databases: databaseUrls })
+    ]);
     const ranked = inventoryOrder.map((item) => item.database);
-    const selected = selectPriorityStockDatabases(databaseUrls, ranked, priorityStockDatabaseLimit);
+    const checked = new Set(checkTimes.map((item) => item.database));
+    const fresh = databaseUrls.filter((database) => !checked.has(database));
+    const selected = selectPriorityStockDatabases(
+      databaseUrls, ranked, priorityStockDatabaseLimit, fresh
+    );
     scanState = { ...state, databaseUrls: selected };
   }
   const scanCandidates = preparation.priority
