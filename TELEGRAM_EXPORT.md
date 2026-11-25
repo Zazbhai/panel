@@ -1,6 +1,6 @@
 # Firebase link export
 
-Upload these three files together to your server's panel directory:
+Upload these files together to your server's panel directory:
 
 - test.py
 - telegram_exporter.py
@@ -10,10 +10,33 @@ Keep your existing Telegram session file. Inside the existing Python environment
 
     python3 test.py --batch-size 1000
 
-This exports Firebase Realtime Database URLs to local TXT files, one URL per
-line. It does not forward Telegram posts, copy media, or add databases to the
-dashboard. All matching URLs in each message, caption, hidden text link or URL
-button are extracted. Duplicate URLs are skipped across messages and restarts.
+Edit `ROUTES` in `test.py`. Add one object per source-to-target pair:
+
+    ROUTES = [
+        {"source": -1004418505510, "target": "@target_one"},
+        {"source": "@other_source", "target": "@target_two"},
+        {"source": -1004418505510, "target": "@backup_target"},
+    ]
+
+Each pair starts its own concurrent history/live worker with an independent
+checkpoint. Repeating a source sends its history and new posts to each listed
+target. Each worker saves extracted Firebase URLs into the shared deduplicated
+SQLite/TXT output before forwarding, then queues them for dashboard registration.
+URL checks run concurrently with a bounded pool, so forwarding does not wait for
+the dashboard checks. A URL rejected by Firebase is logged and eligible for
+submission again when it appears in a later post.
+
+Messages are forwarded to their configured targets. All Firebase URLs in each
+message, caption, hidden text link or URL button are exported to local TXT files,
+one URL per line, and submitted to the dashboard's `/api/addDatabaseUrl` endpoint.
+The endpoint defaults to `http://127.0.0.1:3000/api/addDatabaseUrl`; set
+`DASHBOARD_ADD_DATABASE_URL_ENDPOINT` if the dashboard uses another address.
+`DASHBOARD_API_KEY` is read from the environment or the adjacent `.env` file.
+Duplicate TXT URLs are skipped across messages and restarts.
+If dashboard registration fails, the worker sends the URL and error to the target
+channel(s) for that route. To also send failures through a Telegram bot, set
+`DATABASE_FAILURE_BOT_TOKEN` and `DATABASE_FAILURE_BOT_CHAT_ID` in the environment
+or adjacent `.env`. The bot must be started and allowed to message that chat.
 
 Output is next to test.py, in firebase_batches/:
 
@@ -29,14 +52,18 @@ different size, use a new folder:
 
     python3 test.py --batch-size 500 --output-dir firebase_batches_500
 
-The SQLite file holds deduplication and channel-specific progress. Keep it when
+The SQLite file holds deduplication and route-specific progress. Keep it when
 restarting. Missing TXT files are regenerated from it at startup.
+Each route also writes a plain-text message ID checkpoint beside `test.py`,
+named `last_done_<source-id>_<target-id>.txt`. For the example route, it will be
+`last_done_-1004418505510_<target-peer-id>.txt`. The SQLite cursor and text file
+are both updated only after Telegram confirms that message was forwarded.
 
-The first run scans all available source history, newest first. It deliberately
-ignores the old forwarding last_done.txt so previously forwarded messages also
-become TXT output. Afterward, events wake the exporter and polling every 10
-seconds catches missed notifications. History progress advances only when the
-whole scan has been saved; an interrupted scan safely replays without duplicates.
+The first run scans available history for each configured source-target route,
+oldest first, then keeps watching for new posts. Events wake workers and polling
+every 10 seconds catches missed notifications. Each route advances its own
+checkpoint only after a message was forwarded; a failed or interrupted message
+is retried without skipping it. Firebase URL output is globally deduplicated.
 
 To explicitly recheck older available messages:
 
@@ -46,12 +73,13 @@ To start at a particular message ID:
 
     python3 test.py --rescan --from-id 3861
 
-Use --rescan to recover URLs added by edits while the exporter was offline.
-Telegram must expose the history to the logged-in account; deleted or inaccessible
-messages cannot be recovered by the script. This version resolves the configured
-source exactly, without matching unrelated channel IDs by their suffix.
+Use --rescan to replay history for every configured route; already exported URLs
+remain deduplicated, but posts will be forwarded again. Telegram must expose the
+history to the logged-in account; deleted or inaccessible messages cannot be
+recovered by the script. Each route resolves its configured source and target
+explicitly.
 
-Stop with Ctrl+C. No target channel is needed.
+Stop with Ctrl+C.
 
 Offline checks (no Telegram login or network requests):
 

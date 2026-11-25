@@ -1,8 +1,12 @@
 """Offline export regressions: no Telegram login, provider or dashboard calls."""
 import asyncio
+import io
 from pathlib import Path
 import sys
 import tempfile
+import threading
+import time
+import urllib.error
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -11,7 +15,10 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from firebase_batches import FirebaseBatchWriter
-from telegram_exporter import HistoryExporter, IncompleteHistoryError, extract_database_urls
+from telegram_exporter import (
+    ChannelRouteWorker, DashboardDatabaseQueue, HistoryExporter,
+    IncompleteHistoryError, extract_database_urls,
+)
 
 
 def message(number, text=None, **kwargs):
@@ -37,10 +44,9 @@ class FakeClient:
 
     async def iter_messages(self, _source, *, limit, offset_id, min_id, reverse, wait_time):
         assert limit is None
-        assert reverse is False
         assert wait_time >= 0
         self.iterations += 1
-        snapshot = sorted(self.messages, key=lambda msg: msg.id, reverse=True)
+        snapshot = sorted(self.messages, key=lambda msg: msg.id, reverse=not reverse)
         eligible = [msg for msg in snapshot if min_id < msg.id < offset_id]
         for index, msg in enumerate(eligible):
             if index % 100 == 0:
@@ -269,6 +275,165 @@ class HistoryTests(unittest.IsolatedAsyncioTestCase):
         await exporter.run(SyntheticFloodWait, interval=0.001)
         self.assertEqual(self.writer.count, 2)
         self.assertEqual(self.writer.cursor("source-id"), 2)
+
+
+class RouteWorkerTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.writer = FirebaseBatchWriter(Path(self.folder.name), 1000)
+
+    async def asyncTearDown(self):
+        self.writer.close()
+        self.folder.cleanup()
+
+    async def test_multiple_targets_run_independently_with_route_cursors(self):
+        source = "source"
+        messages = [message(1, "https://one.firebaseio.com https://two.firebaseio.com"),
+                    message(2, "no URL")]
+        messages[0].entities = [SimpleNamespace(url="https://hidden.three.firebaseio.com")]
+
+        class RecordingDashboardQueue:
+            def __init__(self):
+                self.submissions = []
+
+            def enqueue(self, urls, target):
+                self.submissions.append((target, list(urls)))
+
+        class RouteClient(FakeClient):
+            def __init__(self):
+                super().__init__(messages)
+                self.deliveries = []
+                self.active_forwards = 0
+                self.peak_forwards = 0
+
+            async def forward_messages(self, target, msg):
+                self.active_forwards += 1
+                self.peak_forwards = max(self.peak_forwards, self.active_forwards)
+                await asyncio.sleep(0.001)
+                self.deliveries.append((target, msg.id))
+                self.active_forwards -= 1
+
+            async def iter_messages(self, entity, **kwargs):
+                assert entity == source
+                async for item in super().iter_messages(entity, **kwargs):
+                    yield item
+
+        client = RouteClient()
+        dashboard = RecordingDashboardQueue()
+        first = ChannelRouteWorker(client, source, "source-id", "target-a", "target-a-id", self.writer,
+                                   dashboard_queue=dashboard, checkpoint_dir=self.folder.name, wait_time=0,
+                                   log=lambda *_args, **_kwargs: None)
+        second = ChannelRouteWorker(client, source, "source-id", "target-b", "target-b-id", self.writer,
+                                    dashboard_queue=dashboard, checkpoint_dir=self.folder.name, wait_time=0,
+                                    log=lambda *_args, **_kwargs: None)
+        await asyncio.gather(first.scan(), second.scan())
+        self.assertCountEqual(client.deliveries, [
+            ("target-a", 1), ("target-a", 2), ("target-b", 1), ("target-b", 2),
+        ])
+        self.assertEqual(self.writer.cursor("route:source-id:target-a-id"), 2)
+        self.assertEqual(self.writer.cursor("route:source-id:target-b-id"), 2)
+        self.assertEqual((Path(self.folder.name) / "last_done_source-id_target-a-id.txt").read_text(), "2")
+        self.assertEqual((Path(self.folder.name) / "last_done_source-id_target-b-id.txt").read_text(), "2")
+        self.assertEqual(self.writer.count, 3, "Every link in a message should be exported")
+        expected_urls = [
+            "https://one.firebaseio.com/",
+            "https://two.firebaseio.com/",
+            "https://hidden.three.firebaseio.com/",
+        ]
+        self.assertEqual(extract_database_urls(messages[0]), expected_urls)
+        self.assertEqual(dashboard.submissions, [
+            ("target-a", expected_urls), ("target-b", expected_urls),
+            ("target-a", []), ("target-b", []),
+        ], "Every message URL should be submitted for every configured route")
+        self.assertEqual(client.peak_forwards, 2, "Source-target workers must run concurrently")
+
+    async def test_route_checkpoints_only_messages_successfully_forwarded(self):
+        source = "source"
+        messages = [message(1), message(2), message(3)]
+
+        class FlakyRouteClient(FakeClient):
+            def __init__(self):
+                super().__init__(messages)
+                self.fail_once = True
+                self.deliveries = []
+
+            async def forward_messages(self, target, msg):
+                if msg.id == 2 and self.fail_once:
+                    self.fail_once = False
+                    raise SyntheticFloodWait(0)
+                self.deliveries.append((target, msg.id))
+
+        client = FlakyRouteClient()
+        worker = ChannelRouteWorker(client, source, "source-id", "target", "target-id", self.writer,
+                                    checkpoint_dir=self.folder.name, wait_time=0,
+                                    log=lambda *_args, **_kwargs: None)
+        with self.assertRaises(SyntheticFloodWait):
+            await worker.scan()
+        self.assertEqual(worker.cursor, 1)
+        self.assertEqual(self.writer.cursor(worker.cursor_key), 1)
+        checkpoint = Path(self.folder.name) / "last_done_source-id_target-id.txt"
+        self.assertEqual(checkpoint.read_text(), "1")
+        await worker.scan()
+        self.assertEqual(client.deliveries, [("target", 1), ("target", 2), ("target", 3)])
+        self.assertEqual(worker.cursor, 3)
+        self.assertEqual(checkpoint.read_text(), "3")
+
+
+class DashboardQueueTests(unittest.IsolatedAsyncioTestCase):
+    async def test_dashboard_url_checks_are_deduplicated_and_bounded(self):
+        queue = DashboardDatabaseQueue("http://fixture/api/addDatabaseUrl", "key", concurrency=2,
+                                       log=lambda *_args, **_kwargs: None)
+        lock = threading.Lock()
+        active = 0
+        peak = 0
+        added = []
+
+        def request(url):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            time.sleep(0.01)
+            added.append(url)
+            with lock:
+                active -= 1
+
+        queue._request = request
+        urls = [f"https://db-{index}.firebaseio.com/" for index in range(5)]
+        queue.enqueue(urls[:3])
+        queue.enqueue(urls[1:])
+        await queue.drain()
+        self.assertCountEqual(added, urls)
+        self.assertGreater(peak, 1, "Dashboard checks should run in parallel")
+        self.assertLessEqual(peak, 2, "Dashboard checks must honor configured concurrency")
+
+    async def test_failed_database_notifies_all_route_targets(self):
+        notifications = []
+
+        async def notify(url, detail, targets):
+            notifications.append((url, detail, targets))
+
+        queue = DashboardDatabaseQueue(
+            "http://fixture/api/addDatabaseUrl", "key", on_failure=notify,
+            log=lambda *_args, **_kwargs: None,
+        )
+
+        def reject(_url):
+            raise urllib.error.HTTPError(
+                "http://fixture", 502, "rejected", {},
+                io.BytesIO(b'{"error":"Firebase returned HTTP 423"}'),
+            )
+
+        queue._request = reject
+        url = "https://failed.firebaseio.com/"
+        queue.enqueue([url], "target-a")
+        queue.enqueue([url], "target-b")
+        await asyncio.sleep(0.02)
+        await queue.drain()
+        self.assertEqual(len(notifications), 1)
+        self.assertEqual(notifications[0][0], url)
+        self.assertIn("HTTP 502", notifications[0][1])
+        self.assertCountEqual(notifications[0][2], ["target-a", "target-b"])
 
 
 if __name__ == "__main__":

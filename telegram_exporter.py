@@ -1,10 +1,14 @@
 """Export every Firebase database URL in Telegram history to local TXT batches."""
 import argparse
 import asyncio
+import json
 import math
 import os
 import re
 from pathlib import Path
+import urllib.error
+import urllib.parse
+import urllib.request
 from urllib.parse import urlsplit, urlunsplit
 
 from firebase_batches import FirebaseBatchWriter
@@ -44,6 +48,101 @@ def extract_database_urls(message):
 
 class IncompleteHistoryError(RuntimeError):
     pass
+
+
+def load_setting(name, base_dir):
+    if os.getenv(name):
+        return os.environ[name]
+    env_file = Path(base_dir) / ".env"
+    if not env_file.exists():
+        return ""
+    for line in env_file.read_text(encoding="utf-8-sig").splitlines():
+        match = re.match(rf"^\s*(?:export\s+)?{re.escape(name)}\s*=\s*(.*?)\s*$", line)
+        if match:
+            value = match.group(1)
+            if value.startswith(("'", '"')) and value[-1:] == value[:1]:
+                return value[1:-1]
+            return value.split("#", 1)[0].strip()
+    return ""
+
+
+class DashboardDatabaseQueue:
+    """Add discovered URLs to the dashboard with bounded concurrent checks."""
+    def __init__(self, endpoint, api_key, *, concurrency=4, on_failure=None, log=print):
+        self.endpoint = endpoint
+        self.api_key = api_key
+        self.slots = asyncio.Semaphore(concurrency)
+        self.log = log
+        self.seen = set()
+        self.pending = set()
+        self.targets = {}
+        self.on_failure = on_failure
+
+    def enqueue(self, urls, target=None):
+        if not self.api_key:
+            return
+        for url in urls:
+            if target is not None:
+                self.targets.setdefault(url, set()).add(target)
+            if url in self.seen:
+                continue
+            self.seen.add(url)
+            task = asyncio.create_task(self._submit(url))
+            self.pending.add(task)
+            task.add_done_callback(self.pending.discard)
+
+    def _request(self, url):
+        parts = urllib.parse.urlsplit(self.endpoint)
+        query = dict(urllib.parse.parse_qsl(parts.query))
+        query["api_key"] = self.api_key
+        endpoint = urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(query)))
+        request = urllib.request.Request(
+            endpoint,
+            data=json.dumps({"databaseUrl": url}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=15) as response:
+            response.read()
+
+    async def _submit(self, url):
+        try:
+            async with self.slots:
+                await asyncio.to_thread(self._request, url)
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode("utf-8", errors="replace").strip()
+            self.log(f"Dashboard rejected {url} (HTTP {error.code}): {detail}", flush=True)
+            self.seen.discard(url)
+            await self._notify_failure(url, f"HTTP {error.code}: {detail}")
+        except (OSError, ValueError) as error:
+            self.log(f"Could not add database URL {url}: {error}", flush=True)
+            self.seen.discard(url)
+            await self._notify_failure(url, str(error))
+
+    async def _notify_failure(self, url, detail):
+        if self.on_failure:
+            try:
+                await self.on_failure(url, detail, tuple(self.targets.get(url, ())))
+            except Exception as error:
+                self.log(f"Could not send failure notification for {url}: {error}", flush=True)
+
+    async def drain(self):
+        if self.pending:
+            await asyncio.gather(*tuple(self.pending), return_exceptions=True)
+
+
+def send_bot_message(token, chat_id, text):
+    endpoint = f"https://api.telegram.org/bot{urllib.parse.quote(token, safe=':')}/sendMessage"
+    request = urllib.request.Request(
+        endpoint,
+        data=urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=15) as response:
+        result = json.loads(response.read().decode("utf-8"))
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        raise RuntimeError("Telegram Bot API did not accept the failure notice.")
 
 
 class HistoryExporter:
@@ -128,6 +227,124 @@ class HistoryExporter:
                 await asyncio.sleep(interval)
 
 
+class ChannelRouteWorker:
+    def __init__(self, client, source, source_id, target, target_id, writer,
+                 *, dashboard_queue=None, checkpoint_dir=".", start_from=1,
+                 rescan=False, wait_time=1, log=print):
+        self.client = client
+        self.source = source
+        self.source_id = source_id
+        self.target = target
+        self.target_id = target_id
+        self.writer = writer
+        self.dashboard_queue = dashboard_queue
+        self.cursor_key = f"route:{source_id}:{target_id}"
+        safe_source = re.sub(r"[^A-Za-z0-9_-]+", "_", str(source_id)).strip("_")
+        safe_target = re.sub(r"[^A-Za-z0-9_-]+", "_", str(target_id)).strip("_")
+        self.checkpoint_path = Path(checkpoint_dir) / f"last_done_{safe_source}_{safe_target}.txt"
+        file_cursor = self._read_checkpoint(start_from - 1)
+        database_cursor = writer.cursor(self.cursor_key, start_from)
+        self.cursor = start_from - 1 if rescan else max(database_cursor, file_cursor)
+        if rescan:
+            writer.save_cursor(self.cursor_key, self.cursor, reset=True)
+            self._save_checkpoint(self.cursor)
+        else:
+            writer.save_cursor(self.cursor_key, self.cursor)
+            if file_cursor != self.cursor:
+                self._save_checkpoint(self.cursor)
+        self.wait_time = wait_time
+        self.log = log
+        self.lock = asyncio.Lock()
+        self.wake = asyncio.Event()
+
+    def _read_checkpoint(self, fallback):
+        try:
+            value = int(self.checkpoint_path.read_text(encoding="utf-8").strip())
+            return max(0, value)
+        except (OSError, ValueError):
+            return fallback
+
+    def _save_checkpoint(self, message_id):
+        self.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.checkpoint_path.with_name(self.checkpoint_path.name + ".tmp")
+        temporary.write_text(str(message_id), encoding="utf-8")
+        os.replace(temporary, self.checkpoint_path)
+
+    async def scan(self):
+        """Forward chronologically and checkpoint only after each delivery."""
+        async with self.lock:
+            newest = await self.client.get_messages(self.source, limit=1)
+            if not newest:
+                return 0
+            latest = newest[0].id
+            if latest < self.cursor:
+                raise IncompleteHistoryError(
+                    f"Source {self.source_id} newest ID #{latest} is below route "
+                    f"checkpoint #{self.cursor}."
+                )
+            if latest == self.cursor:
+                return 0
+            delivered = 0
+            self.log(
+                f"Route {self.source_id} -> {self.target_id}: "
+                f"scanning #{self.cursor + 1} through #{latest}...", flush=True,
+            )
+            async for message in self.client.iter_messages(
+                self.source, limit=None, offset_id=latest + 1,
+                min_id=self.cursor, reverse=True, wait_time=self.wait_time,
+            ):
+                if not self.cursor < message.id <= latest:
+                    continue
+                urls = extract_database_urls(message)
+                self.writer.add_urls(urls)
+                if self.dashboard_queue:
+                    self.dashboard_queue.enqueue(urls, self.target)
+                await self.client.forward_messages(self.target, message)
+                self.writer.save_cursor(self.cursor_key, message.id)
+                self._save_checkpoint(message.id)
+                self.cursor = message.id
+                delivered += 1
+            if not delivered:
+                raise IncompleteHistoryError(
+                    f"Source {self.source_id} reported post #{latest}, but its "
+                    "history returned no messages after the route checkpoint."
+                )
+            self.log(
+                f"Route {self.source_id} -> {self.target_id}: delivered "
+                f"{delivered}; checkpoint #{self.cursor}; {self.writer.count} "
+                "unique Firebase URLs saved.", flush=True,
+            )
+            return delivered
+
+    def notify(self, _event=None):
+        self.wake.set()
+
+    async def save_edited_links(self, event):
+        urls = extract_database_urls(event.message)
+        self.writer.add_urls(urls)
+        if self.dashboard_queue:
+            self.dashboard_queue.enqueue(urls, self.target)
+        self.wake.set()
+
+    async def run(self, flood_error, *, interval=10):
+        route = f"{self.source_id} -> {self.target_id}"
+        while self.client.is_connected():
+            self.wake.clear()
+            try:
+                await self.scan()
+                if self.wake.is_set():
+                    continue
+                await asyncio.wait_for(self.wake.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                pass
+            except flood_error as error:
+                self.log(f"Route {route}: Telegram cooldown {error.seconds + 1}s.", flush=True)
+                await asyncio.sleep(error.seconds + 1)
+            except Exception as error:
+                self.log(f"Route {route}: retry in {interval}s after {error}.", flush=True)
+                await asyncio.sleep(interval)
+
+
 def arguments(base_dir):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--batch-size", type=int,
@@ -145,12 +362,40 @@ def arguments(base_dir):
     return args
 
 
-async def run(api_id, api_hash, source, base_dir):
+async def run(api_id, api_hash, routes, base_dir):
     from telethon import TelegramClient, events, utils
     from telethon.errors import FloodWaitError
 
     args = arguments(base_dir)
+    dashboard_endpoint = os.getenv(
+        "DASHBOARD_ADD_DATABASE_URL_ENDPOINT", "http://127.0.0.1:3000/api/addDatabaseUrl"
+    )
     client = TelegramClient(str(base_dir / "userbot_session"), api_id, api_hash)
+    bot_token = load_setting("DATABASE_FAILURE_BOT_TOKEN", base_dir)
+    bot_chat_id = load_setting("DATABASE_FAILURE_BOT_CHAT_ID", base_dir)
+
+    async def notify_database_failure(url, detail, targets):
+        message = f"Database registration failed.\n{url}\n{detail[:2000]}"
+        for target in targets:
+            try:
+                await client.send_message(target, message)
+            except Exception as error:
+                print(f"Could not notify target {target} about {url}: {error}", flush=True)
+        if bot_token and bot_chat_id:
+            try:
+                await asyncio.to_thread(send_bot_message, bot_token, bot_chat_id, message)
+            except Exception as error:
+                print("Could not send database failure to configured bot: "
+                      f"{type(error).__name__}.", flush=True)
+        else:
+            print("Bot failure alerts disabled; set DATABASE_FAILURE_BOT_TOKEN and "
+                  "DATABASE_FAILURE_BOT_CHAT_ID in .env.", flush=True)
+
+    dashboard_queue = DashboardDatabaseQueue(
+        dashboard_endpoint,
+        load_setting("DASHBOARD_API_KEY", base_dir),
+        on_failure=notify_database_failure,
+    )
     try:
         def phone_number():
             phone = input("Apna phone number daalo (+91XXXXXXXXXX), bot token NAHI: ").strip()
@@ -163,50 +408,63 @@ async def run(api_id, api_hash, source, base_dir):
         if me.bot:
             raise RuntimeError("A Telegram user account session is required, not a bot session.")
         print(f"Login: {me.first_name} - channels load ho rahe hain...", flush=True)
-        entity = None
-        async for dialog in client.iter_dialogs():
-            if str(dialog.id) == str(source):
-                entity = dialog.entity
-                break
-        if entity is None:
-            entity = await client.get_entity(source)
-        source_id = utils.get_peer_id(entity)
-        print(f"Source mila: {getattr(entity, 'title', source_id)} ({source_id})", flush=True)
-        with FirebaseBatchWriter(args.output_dir, args.batch_size) as writer:
-            exporter = HistoryExporter(
-                client, entity, source_id, writer,
-                start_from=args.from_id, rescan=args.rescan,
-            )
-
-            async def wake_scan(_event):
-                exporter.wake.set()
-
-            async def save_edit(event):
-                async with exporter.lock:
-                    writer.add_urls(extract_database_urls(event.message))
-                    exporter.wake.set()
-
-            client.add_event_handler(wake_scan, events.NewMessage(chats=entity))
-            client.add_event_handler(save_edit, events.MessageEdited(chats=entity))
+        if not routes:
+            raise ValueError("Configure at least one source/target route in test.py.")
+        resolved_routes = []
+        for route in routes:
+            source_ref = route["source"]
+            target_ref = route["target"]
+            source_entity = await client.get_entity(source_ref)
+            target_entity = await client.get_entity(target_ref)
+            source_id = utils.get_peer_id(source_entity)
+            target_id = utils.get_peer_id(target_entity)
+            resolved_routes.append((source_entity, source_id, target_entity, target_id))
             print(
-                f"Export #{exporter.cursor + 1} se; {writer.count} existing links. "
-                f"Output: {writer.output_dir}; {args.batch_size} links per batch. "
-                "Old forwarding last_done.txt is intentionally not used.",
+                f"Route ready: {getattr(source_entity, 'title', source_id)} "
+                f"({source_id}) -> {getattr(target_entity, 'title', target_id)} "
+                f"({target_id})", flush=True,
+            )
+        with FirebaseBatchWriter(args.output_dir, args.batch_size) as writer:
+            workers = []
+            handlers = []
+            for source_entity, source_id, target_entity, target_id in resolved_routes:
+                route_worker = ChannelRouteWorker(
+                    client, source_entity, source_id, target_entity, target_id, writer,
+                    dashboard_queue=dashboard_queue,
+                    checkpoint_dir=base_dir,
+                    start_from=args.from_id, rescan=args.rescan,
+                )
+                new_handler = route_worker.notify
+                edit_handler = route_worker.save_edited_links
+                new_event = events.NewMessage(chats=source_entity)
+                edit_event = events.MessageEdited(chats=source_entity)
+                client.add_event_handler(new_handler, new_event)
+                client.add_event_handler(edit_handler, edit_event)
+                handlers.extend([(new_handler, new_event), (edit_handler, edit_event)])
+                workers.append(asyncio.create_task(
+                    route_worker.run(FloodWaitError, interval=args.poll_interval),
+                    name=f"route-{source_id}-to-{target_id}",
+                ))
+            print(
+                f"Started {len(workers)} route workers. Output: {writer.output_dir}; "
+                f"{args.batch_size} links per batch; {writer.count} unique links already saved.",
                 flush=True,
             )
-            worker = asyncio.create_task(exporter.run(FloodWaitError, interval=args.poll_interval))
             disconnected = asyncio.ensure_future(client.disconnected)
             try:
                 done, _pending = await asyncio.wait(
-                    [worker, disconnected], return_when=asyncio.FIRST_COMPLETED,
+                    [*workers, disconnected], return_when=asyncio.FIRST_COMPLETED,
                 )
-                if worker in done:
-                    await worker
+                for worker in workers:
+                    if worker in done:
+                        await worker
             finally:
-                client.remove_event_handler(wake_scan)
-                client.remove_event_handler(save_edit)
-                worker.cancel()
-                await asyncio.gather(worker, return_exceptions=True)
-                print(f"Export stopped. {writer.count} unique links saved.", flush=True)
+                for handler, event_type in handlers:
+                    client.remove_event_handler(handler, event_type)
+                for worker in workers:
+                    worker.cancel()
+                await asyncio.gather(*workers, return_exceptions=True)
+                await dashboard_queue.drain()
+                print(f"Workers stopped. {writer.count} unique links saved.", flush=True)
     finally:
         await client.disconnect()
