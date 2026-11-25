@@ -20,8 +20,11 @@ Edit `ROUTES` in `test.py`. Add one object per source-to-target pair:
 
 Each pair starts its own concurrent history/live worker with an independent
 checkpoint. Repeating a source sends its history and new posts to each listed
-target. Each worker saves extracted Firebase URLs into the shared deduplicated
-SQLite/TXT output before forwarding, then queues them for dashboard registration.
+target. For a history pass, each worker first extracts all Firebase URLs and
+waits for their dashboard registration attempts to finish, then forwards the
+messages oldest-first. Each worker saves extracted URLs into the shared
+deduplicated SQLite/TXT output before forwarding. A failed registration is
+reported and does not block message delivery.
 URL checks run concurrently with a bounded pool, so forwarding does not wait for
 the dashboard checks. A URL rejected by Firebase is logged and eligible for
 submission again when it appears in a later post.

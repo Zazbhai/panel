@@ -355,6 +355,9 @@ class RouteWorkerTests(unittest.IsolatedAsyncioTestCase):
             def enqueue(self, urls, target):
                 self.submissions.append((target, list(urls)))
 
+            async def drain(self):
+                return None
+
         class RouteClient(FakeClient):
             def __init__(self):
                 super().__init__(messages)
@@ -397,11 +400,35 @@ class RouteWorkerTests(unittest.IsolatedAsyncioTestCase):
             "https://hidden.three.firebaseio.com/",
         ]
         self.assertEqual(extract_database_urls(messages[0]), expected_urls)
-        self.assertEqual(dashboard.submissions, [
+        self.assertCountEqual(dashboard.submissions, [
             ("target-a", expected_urls), ("target-b", expected_urls),
             ("target-a", []), ("target-b", []),
         ], "Every message URL should be submitted for every configured route")
         self.assertEqual(client.peak_forwards, 2, "Source-target workers must run concurrently")
+
+    async def test_all_links_register_before_first_forward(self):
+        source = "source"
+        messages = [message(1, "https://one.firebaseio.com"), message(2, "https://two.firebaseio.com")]
+        events = []
+
+        class OrderedDashboardQueue:
+            def enqueue(self, urls, target):
+                events.append(("enqueue", target, list(urls)))
+
+            async def drain(self):
+                events.append(("drain",))
+
+        class OrderedClient(FakeClient):
+            async def forward_messages(self, target, msg):
+                events.append(("forward", msg.id))
+
+        client = OrderedClient(messages)
+        worker = ChannelRouteWorker(client, source, "source-id", "target", "target-id", self.writer,
+                                    dashboard_queue=OrderedDashboardQueue(), checkpoint_dir=self.folder.name,
+                                    wait_time=0, log=lambda *_args, **_kwargs: None)
+        await worker.scan()
+        self.assertEqual([item[0] for item in events],
+                         ["enqueue", "enqueue", "drain", "forward", "forward"])
 
     async def test_route_checkpoints_only_messages_successfully_forwarded(self):
         source = "source"

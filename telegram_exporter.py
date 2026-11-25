@@ -378,14 +378,23 @@ class ChannelRouteWorker:
                 )
             self.log(
                 f"Route {self.source_id} -> {self.target_id}: fetched "
-                f"{len(history)} posts; forwarding oldest-first...", flush=True,
+                f"{len(history)} posts; registering links before forwarding...", flush=True,
             )
-            delivered = 0
-            for message in reversed(history):
+            message_urls = []
+            for message in history:
                 urls = extract_database_urls(message)
+                message_urls.append((message, urls))
                 self.writer.add_urls(urls)
                 if self.dashboard_queue:
                     self.dashboard_queue.enqueue(urls, self.target)
+            if self.dashboard_queue:
+                await self.dashboard_queue.drain()
+            self.log(
+                f"Route {self.source_id} -> {self.target_id}: database registration "
+                f"attempts complete; forwarding oldest-first...", flush=True,
+            )
+            delivered = 0
+            for message, _urls in reversed(message_urls):
                 if is_unforwardable_message(message):
                     self.log(
                         f"Route {self.source_id} -> {self.target_id}: skipped "
@@ -413,6 +422,7 @@ class ChannelRouteWorker:
         self.writer.add_urls(urls)
         if self.dashboard_queue:
             self.dashboard_queue.enqueue(urls, self.target)
+            await self.dashboard_queue.drain()
         self.wake.set()
 
     async def run(self, flood_error, *, interval=10):
