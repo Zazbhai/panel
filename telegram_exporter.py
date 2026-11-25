@@ -290,6 +290,7 @@ class ChannelRouteWorker:
             # Read that reliable order, then replay the range oldest-first so
             # forwarding and checkpoints remain chronological.
             history = []
+            fetched = 0
             self.log(
                 f"Route {self.source_id} -> {self.target_id}: "
                 f"scanning #{self.cursor + 1} through #{latest}...", flush=True,
@@ -301,12 +302,23 @@ class ChannelRouteWorker:
                 if not self.cursor < message.id <= latest:
                     continue
                 history.append(message)
+                fetched += 1
+                if fetched % 1000 == 0:
+                    self.log(
+                        f"Route {self.source_id} -> {self.target_id}: fetched "
+                        f"{fetched} posts through #{message.id}; preparing delivery...",
+                        flush=True,
+                    )
             if not history:
                 raise IncompleteHistoryError(
                     f"Source {self.source_id} reported post #{latest}, but its "
                     "history returned no messages after the route checkpoint. "
                     "The checkpoint was not advanced."
                 )
+            self.log(
+                f"Route {self.source_id} -> {self.target_id}: fetched "
+                f"{len(history)} posts; forwarding oldest-first...", flush=True,
+            )
             delivered = 0
             for message in reversed(history):
                 urls = extract_database_urls(message)
@@ -437,11 +449,15 @@ async def run(api_id, api_hash, routes, base_dir):
             workers = []
             handlers = []
             for source_entity, source_id, target_entity, target_id in resolved_routes:
+                history_wait_time = float(os.getenv("TELEGRAM_HISTORY_WAIT_TIME", "0.25"))
+                if not math.isfinite(history_wait_time) or history_wait_time < 0:
+                    raise ValueError("TELEGRAM_HISTORY_WAIT_TIME must be a non-negative number.")
                 route_worker = ChannelRouteWorker(
                     client, source_entity, source_id, target_entity, target_id, writer,
                     dashboard_queue=dashboard_queue,
                     checkpoint_dir=base_dir,
                     start_from=args.from_id, rescan=args.rescan,
+                    wait_time=history_wait_time,
                 )
                 new_handler = route_worker.notify
                 edit_handler = route_worker.save_edited_links

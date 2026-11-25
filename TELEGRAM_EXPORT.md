@@ -81,6 +81,11 @@ explicitly.
 
 Stop with Ctrl+C.
 
+Large history scans log progress while Telegram history is being fetched. The
+route worker uses a 0.25 second pause between history pages by default. Set
+`TELEGRAM_HISTORY_WAIT_TIME` in `.env` to increase it when Telegram responds
+with flood waits, for example `TELEGRAM_HISTORY_WAIT_TIME=1`.
+
 Offline checks (no Telegram login or network requests):
 
     python3 scripts/verify-userbot.py
