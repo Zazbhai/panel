@@ -378,6 +378,34 @@ class RouteWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(worker.cursor, 3)
         self.assertEqual(checkpoint.read_text(), "3")
 
+    async def test_route_uses_reliable_history_order_when_reverse_slice_is_empty(self):
+        source = "source"
+        messages = [message(1), message(2), message(3)]
+
+        class ReverseBrokenClient(FakeClient):
+            def __init__(self, messages):
+                super().__init__(messages)
+                self.deliveries = []
+
+            async def forward_messages(self, target, msg):
+                self.deliveries.append((target, msg.id))
+
+            async def iter_messages(self, entity, **kwargs):
+                if kwargs["reverse"]:
+                    if False:
+                        yield None
+                    return
+                async for item in super().iter_messages(entity, **kwargs):
+                    yield item
+
+        client = ReverseBrokenClient(messages)
+        worker = ChannelRouteWorker(client, source, "source-id", "target", "target-id", self.writer,
+                                    checkpoint_dir=self.folder.name, wait_time=0,
+                                    log=lambda *_args, **_kwargs: None)
+        await worker.scan()
+        self.assertEqual(worker.cursor, 3)
+        self.assertEqual([item[1] for item in client.deliveries], [1, 2, 3])
+
 
 class DashboardQueueTests(unittest.IsolatedAsyncioTestCase):
     async def test_dashboard_url_checks_are_deduplicated_and_bounded(self):

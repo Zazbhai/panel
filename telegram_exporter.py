@@ -284,17 +284,31 @@ class ChannelRouteWorker:
                 )
             if latest == self.cursor:
                 return 0
-            delivered = 0
+            # Telegram can return an empty page for a reverse iterator when
+            # offset_id is the current newest post, even though the same
+            # history is available through the normal newest-first iterator.
+            # Read that reliable order, then replay the range oldest-first so
+            # forwarding and checkpoints remain chronological.
+            history = []
             self.log(
                 f"Route {self.source_id} -> {self.target_id}: "
                 f"scanning #{self.cursor + 1} through #{latest}...", flush=True,
             )
             async for message in self.client.iter_messages(
                 self.source, limit=None, offset_id=latest + 1,
-                min_id=self.cursor, reverse=True, wait_time=self.wait_time,
+                min_id=self.cursor, reverse=False, wait_time=self.wait_time,
             ):
                 if not self.cursor < message.id <= latest:
                     continue
+                history.append(message)
+            if not history:
+                raise IncompleteHistoryError(
+                    f"Source {self.source_id} reported post #{latest}, but its "
+                    "history returned no messages after the route checkpoint. "
+                    "The checkpoint was not advanced."
+                )
+            delivered = 0
+            for message in reversed(history):
                 urls = extract_database_urls(message)
                 self.writer.add_urls(urls)
                 if self.dashboard_queue:
@@ -304,11 +318,6 @@ class ChannelRouteWorker:
                 self._save_checkpoint(message.id)
                 self.cursor = message.id
                 delivered += 1
-            if not delivered:
-                raise IncompleteHistoryError(
-                    f"Source {self.source_id} reported post #{latest}, but its "
-                    "history returned no messages after the route checkpoint."
-                )
             self.log(
                 f"Route {self.source_id} -> {self.target_id}: delivered "
                 f"{delivered}; checkpoint #{self.cursor}; {self.writer.count} "

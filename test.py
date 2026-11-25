@@ -10,7 +10,7 @@ API_HASH = "81607d18a648614598a2198c6d860c5f"
 ROUTES = [
     # Add one entry per source/target pair. Repeat a source to forward it to
     # multiple targets; every pair gets its own history cursor and worker.
-    {"source": -1004418505510, "target": "@zazchutiyaj"},
+    {"source": -1004492989164, "target": -1005794536077},
     # {"source": "@another_source", "target": "@another_target"},
 ]
 
