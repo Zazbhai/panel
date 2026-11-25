@@ -84,6 +84,16 @@ explicitly.
 
 Stop with Ctrl+C.
 
+To import every URL already saved in `firebase_batches/` into rotation without
+replacing the current list, run:
+
+    python3 import_firebase_batches.py --concurrency 16
+
+The importer deduplicates locally, lets the dashboard validate each Firebase
+database, reports existing URLs separately, and writes rejected URLs with their
+error to `firebase_batch_import_failures.txt`. Use `--dry-run` to inspect the
+batch count without making dashboard requests.
+
 Large history scans log progress while Telegram history is being fetched. The
 route worker uses a 0.25 second pause between history pages by default. Set
 `TELEGRAM_HISTORY_WAIT_TIME` in `.env` to increase it when Telegram responds
