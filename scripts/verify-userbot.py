@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT))
 from firebase_batches import FirebaseBatchWriter
 from telegram_exporter import (
     ChannelRouteWorker, DashboardDatabaseQueue, HistoryExporter,
-    IncompleteHistoryError, extract_database_urls,
+    IncompleteHistoryError, extract_database_urls, resolve_route_entity,
 )
 
 
@@ -93,6 +93,43 @@ class ExtractionTests(unittest.TestCase):
             "https://notfirebase.com"
         )), ["https://one.firebaseio.com/"])
         self.assertEqual(extract_database_urls(message(1, "")), [])
+
+
+class EntityResolutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_numeric_id_falls_back_to_visible_dialogs(self):
+        entity = SimpleNamespace(id=123, title="Source")
+
+        class Client:
+            async def get_entity(self, _reference):
+                raise ValueError("not cached")
+
+            async def iter_dialogs(self, limit=None):
+                yield SimpleNamespace(entity=entity)
+
+        class Utils:
+            @staticmethod
+            def get_peer_id(value):
+                return value.id
+
+        resolved = await resolve_route_entity(Client(), 123, role="source channel", utils=Utils)
+        self.assertIs(resolved, entity)
+
+    async def test_missing_channel_has_actionable_error(self):
+        class Client:
+            async def get_entity(self, _reference):
+                raise ValueError("not cached")
+
+            async def iter_dialogs(self, limit=None):
+                if False:
+                    yield None
+
+        class Utils:
+            @staticmethod
+            def get_peer_id(value):
+                return value.id
+
+        with self.assertRaisesRegex(RuntimeError, "must be a member"):
+            await resolve_route_entity(Client(), -100123, role="source channel", utils=Utils)
 
 
 class BatchTests(unittest.TestCase):

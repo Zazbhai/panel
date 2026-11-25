@@ -55,6 +55,40 @@ def is_unforwardable_message(message):
     return type(message).__name__ in {"MessageService", "MessageEmpty"}
 
 
+async def resolve_route_entity(client, reference, *, role, utils):
+    """Resolve a route peer, falling back to dialogs when IDs are uncached."""
+    try:
+        return await client.get_entity(reference)
+    except (ValueError, TypeError, KeyError) as original_error:
+        wanted_id = None
+        if isinstance(reference, int) or (
+            isinstance(reference, str) and re.fullmatch(r"-?\d+", reference.strip())
+        ):
+            wanted_id = int(reference)
+        wanted_name = str(reference).lstrip("@").casefold()
+        try:
+            async for dialog in client.iter_dialogs(limit=None):
+                entity = dialog.entity
+                peer_id = utils.get_peer_id(entity)
+                username = getattr(entity, "username", None)
+                title = getattr(entity, "title", None)
+                if ((wanted_id is not None and peer_id == wanted_id)
+                    or (wanted_id is None and (
+                        str(username or "").casefold() == wanted_name
+                        or str(title or "").casefold() == wanted_name))):
+                    return entity
+        except Exception as dialog_error:
+            raise RuntimeError(
+                f"Could not resolve {role} {reference!r} from Telegram dialogs: "
+                f"{dialog_error}"
+            ) from dialog_error
+        raise RuntimeError(
+            f"Could not resolve {role} {reference!r}. The logged-in account must "
+            "be a member of that channel, or use its @username. "
+            f"Initial Telegram error: {original_error}"
+        ) from original_error
+
+
 def load_setting(name, base_dir):
     if os.getenv(name):
         return os.environ[name]
@@ -491,8 +525,12 @@ async def run(api_id, api_hash, routes, base_dir):
         for route in routes:
             source_ref = route["source"]
             target_ref = route["target"]
-            source_entity = await client.get_entity(source_ref)
-            target_entity = await client.get_entity(target_ref)
+            source_entity = await resolve_route_entity(
+                client, source_ref, role="source channel", utils=utils
+            )
+            target_entity = await resolve_route_entity(
+                client, target_ref, role="target channel", utils=utils
+            )
             source_id = utils.get_peer_id(source_entity)
             target_id = utils.get_peer_id(target_entity)
             resolved_routes.append((source_entity, source_id, target_entity, target_id))

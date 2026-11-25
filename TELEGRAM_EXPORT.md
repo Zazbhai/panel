@@ -80,7 +80,11 @@ Use --rescan to replay history for every configured route; already exported URLs
 remain deduplicated, but posts will be forwarded again. Telegram must expose the
 history to the logged-in account; deleted or inaccessible messages cannot be
 recovered by the script. Each route resolves its configured source and target
-explicitly.
+explicitly. Numeric IDs are resolved from the logged-in account's Telegram
+dialogs, so that account must be a member of both channels. When available,
+using a channel's `@username` in `test.py` is the most reliable form. An
+unresolvable route exits before scanning and identifies the missing source or
+target.
 
 Stop with Ctrl+C.
 
