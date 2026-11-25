@@ -121,6 +121,28 @@ async function stockCache() {
   console.log("PASS: cached stock responds during delayed storage refresh; duplicate refreshes are coalesced.");
 }
 
+async function manualFreshStockCheck() {
+  const f = fixture();
+  await f.context.getRuntimeStore();
+  const database = "https://fixture.firebaseio.com";
+  const now = Date.now();
+  f.runtime.remember({ database, deviceId: "known-device", number: "9666666001", now, verifiedAt: now });
+  f.runtime.recordDatabaseCheck({ database, now: now - 600000 });
+  f.fetch = async (url) => {
+    assert.equal(url, database + "/clients.json");
+    return { ok: true, json: async () => ({ "known-device": { status: true } }) };
+  };
+  const response = await f.request("/api/stocks/check", { method: "POST", admin: true });
+  assert.equal(response.status, 202);
+  const state = () => vm.runInContext("manualInventoryCheckState", f.context);
+  for (let i = 0; i < 100 && state().status === "running"; i++) await new Promise(setImmediate);
+  assert.equal(state().status, "complete");
+  assert.equal(f.runtime.verifiedDatabases({ databases: [database], ttl: 60000 }).length, 1,
+    "Manual check should refresh the database's verification time");
+  assert.equal(f.runtime.readyStockCount({ service: "rush", onlineTtl: 60000 }), 1,
+    "Freshly checked mappings should be available to stock counts");
+}
+
 async function readyApi() {
   const f = fixture();
   const store = await f.context.getRuntimeStore();
@@ -304,5 +326,5 @@ async function briefWriteLock() {
 }
 
 (async () => {
-  readyEligibility(); databaseStockBreakdown(); emptySnapshotSafety(); await briefWriteLock(); await diskBurst(); await stockCache(); await readyApi(); await stockUi();
+  readyEligibility(); databaseStockBreakdown(); emptySnapshotSafety(); await briefWriteLock(); await diskBurst(); await stockCache(); await manualFreshStockCheck(); await readyApi(); await stockUi();
 })().catch((error) => { console.error(error); process.exitCode = 1; });

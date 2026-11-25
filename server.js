@@ -150,6 +150,8 @@ let recentOrdersCache = null;
 let stockSummaryCache = null;
 let stockSummaryPending = null;
 let numberMappingPrefetchPromise = null;
+let manualInventoryCheckPromise = null;
+let manualInventoryCheckState = { status: "idle", total: 0, completed: 0, failed: 0, checkedAt: null };
 let numberMappingPrefetchAbortController = null;
 let numberMappingPrefetchLastProgressAt = 0;
 let numberMappingPrefetchRunId = 0;
@@ -1255,6 +1257,72 @@ function startNumberMappingPrefetch() {
       numberMappingPrefetchPromise = null;
     });
   return numberMappingPrefetchPromise;
+}
+
+function startManualInventoryCheck() {
+  if (manualInventoryCheckPromise) return manualInventoryCheckPromise;
+  manualInventoryCheckState = {
+    status: "running", total: 0, completed: 0, failed: 0, checkedAt: null
+  };
+  manualInventoryCheckPromise = (async () => {
+    const store = await getRuntimeStore();
+    const metadata = await store.call("metadata");
+    const databases = metadata?.databaseUrls || [];
+    const checkTimes = await store.call("databaseCheckTimes", { databases });
+    const checkedAt = new Map(checkTimes.map((item) => [item.database, item.checkedAt]));
+    const cutoff = Date.now() - activeClientsCacheTtlMs;
+    const stale = databases.filter((database) => (checkedAt.get(database) || 0) <= cutoff);
+    if (!stale.length) {
+      manualInventoryCheckState = {
+        status: "complete", total: 0, completed: 0, failed: 0, checkedAt: Date.now()
+      };
+      return { ...manualInventoryCheckState };
+    }
+    manualInventoryCheckState = {
+      status: "running", total: stale.length, completed: 0, failed: 0, checkedAt: null
+    };
+    let next = 0;
+    const worker = async () => {
+      while (next < stale.length) {
+        const database = stale[next++];
+        const endpoint = `${database}/clients.json`;
+        deleteSharedDatabaseCacheEntry(endpoint);
+        sharedDatabaseJsonErrors.delete(endpoint);
+        try {
+          const clients = await fetchSharedDatabaseJson(
+            endpoint, numberStatusCheckTimeoutMs, activeClientsCacheTtlMs, null, 1
+          );
+          if (!clients || typeof clients !== "object" || Array.isArray(clients)) {
+            throw new Error("Firebase returned an invalid clients list.");
+          }
+          const now = Date.now();
+          const onlineIds = rememberActiveClientIds(database, clients, now + activeClientsCacheTtlMs);
+          await store.call("refreshDatabaseInventory", {
+            database, onlineDeviceIds: [...onlineIds], now
+          });
+        } catch (error) {
+          manualInventoryCheckState.failed += 1;
+          console.warn("Manual inventory status check failed for " + database + ": "
+            + (error?.status ? "HTTP " + error.status : error?.code || error?.name || "request failed"));
+        } finally {
+          manualInventoryCheckState.completed += 1;
+        }
+      }
+    };
+    await Promise.all(Array.from(
+      { length: Math.min(numberMappingPrefetchConcurrency, stale.length) }, worker
+    ));
+    manualInventoryCheckState.status = manualInventoryCheckState.failed ? "partial" : "complete";
+    manualInventoryCheckState.checkedAt = Date.now();
+    return { ...manualInventoryCheckState };
+  })().catch((error) => {
+    manualInventoryCheckState = {
+      ...manualInventoryCheckState, status: "failed", checkedAt: Date.now()
+    };
+    console.error("Manual inventory check failed:", error.message);
+    return { ...manualInventoryCheckState };
+  }).finally(() => { manualInventoryCheckPromise = null; });
+  return manualInventoryCheckPromise;
 }
 
 function monitorNumberMappingPrefetch() {
@@ -3601,6 +3669,20 @@ async function handleRequest(request, response) {
       console.error("Could not read recent orders:", error.message);
       sendJson(response, 500, { error: "Could not read recent orders." });
     }
+    return;
+  }
+  if (requestUrl.pathname === "/api/stocks/check") {
+    if (request.method === "GET") {
+      sendJson(response, 200, manualInventoryCheckState);
+      return;
+    }
+    if (request.method !== "POST") {
+      response.writeHead(405, { Allow: "GET, POST" });
+      response.end("Method Not Allowed");
+      return;
+    }
+    if (!manualInventoryCheckPromise) void startManualInventoryCheck();
+    sendJson(response, 202, manualInventoryCheckState);
     return;
   }
   if (requestUrl.pathname === "/api/rotation/device-stats") {

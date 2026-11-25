@@ -1,11 +1,13 @@
 "use strict";
 
 const stockButton = document.getElementById("refreshStock");
+const checkFreshStockButton = document.getElementById("checkFreshStock");
 const stockStatus = document.getElementById("stockStatus");
 const stockCounts = document.getElementById("stockCounts");
 const stockSources = document.getElementById("stockSources");
 const mappingPrefetchStatus = document.getElementById("mappingPrefetchStatus");
 const priorityStockStatus = document.getElementById("priorityStockStatus");
+const manualInventoryCheckStatus = document.getElementById("manualInventoryCheckStatus");
 const databaseStockSearch = document.getElementById("databaseStockSearch");
 const databaseStockRows = document.getElementById("databaseStockRows");
 const databaseStockCount = document.getElementById("databaseStockCount");
@@ -68,6 +70,43 @@ function renderDatabaseStock() {
   databaseStockRows.replaceChildren(fragment);
 }
 
+async function loadManualInventoryCheckStatus() {
+  if (!manualInventoryCheckStatus) return;
+  try {
+    const response = await window.dashboardApiFetch("/api/stocks/check");
+    const state = await response.json();
+    if (!response.ok || !state || typeof state.status !== "string") return;
+    manualInventoryCheckStatus.textContent = state.status === "running"
+      ? `Checking stale database numbers: ${stockNumberFormat.format(state.completed || 0)} of ${stockNumberFormat.format(state.total || 0)} databases checked; ${stockNumberFormat.format(state.failed || 0)} failed.`
+      : state.status === "partial"
+        ? `Fresh checks complete: ${stockNumberFormat.format(state.total || 0)} databases checked; ${stockNumberFormat.format(state.failed || 0)} failed.`
+        : state.status === "complete" && state.total > 0
+          ? `Fresh checks complete for ${stockNumberFormat.format(state.total)} stale databases.`
+          : state.status === "failed"
+            ? "The fresh database check failed. See server logs."
+            : "";
+    checkFreshStockButton.disabled = state.status === "running";
+  } catch {
+    // The stock summary remains usable if progress status is unavailable.
+  }
+}
+
+async function checkFreshStock() {
+  if (checkFreshStockButton.disabled) return;
+  checkFreshStockButton.disabled = true;
+  manualInventoryCheckStatus.textContent = "Starting a fresh check of stale databases…";
+  try {
+    const response = await window.dashboardApiFetch("/api/stocks/check", { method: "POST" });
+    const state = await response.json();
+    if (!response.ok) throw new Error(state?.error || `Fresh check failed (HTTP ${response.status}).`);
+    await loadManualInventoryCheckStatus();
+    await loadStock();
+  } catch (error) {
+    manualInventoryCheckStatus.textContent = error.message || "Could not start the fresh database check.";
+    checkFreshStockButton.disabled = false;
+  }
+}
+
 async function loadStock() {
   if (stockButton.disabled) return;
   stockButton.disabled = true;
@@ -122,6 +161,7 @@ async function loadStock() {
         }).join("\n") + (priority.checkedAt ? "\nChecked at " + stockTimeFormat.format(priority.checkedAt) + "." : "")
         : "Waiting for service demand.";
     }
+    await loadManualInventoryCheckStatus();
     stockStatus.classList.remove("error");
   } catch (error) {
     const detail = error.name === "AbortError" ? "The stock request timed out."
@@ -138,6 +178,7 @@ async function loadStock() {
 }
 
 stockButton.addEventListener("click", loadStock);
+checkFreshStockButton?.addEventListener("click", checkFreshStock);
 databaseStockSearch?.addEventListener("input", () => {
   databaseStockPageNumber = 0;
   renderDatabaseStock();
