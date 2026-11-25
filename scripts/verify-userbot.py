@@ -488,6 +488,26 @@ class DashboardQueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("HTTP 502", notifications[0][1])
         self.assertCountEqual(notifications[0][2], ["target-a", "target-b"])
 
+    async def test_failed_database_accepts_unhashable_telethon_targets(self):
+        notifications = []
+
+        async def notify(_url, _detail, targets):
+            notifications.append(targets)
+
+        queue = DashboardDatabaseQueue("http://fixture/api", "key", on_failure=notify,
+                                       log=lambda *_args, **_kwargs: None)
+        target = SimpleNamespace(id=123, title="channel")
+
+        def reject(_url):
+            raise urllib.error.HTTPError("http://fixture", 423, "locked", {}, io.BytesIO(b"locked"))
+
+        queue._request = reject
+        url = "https://fixture.firebaseio.com/"
+        queue.enqueue([url], target)
+        queue.enqueue([url], target)
+        await queue.drain()
+        self.assertEqual(notifications, [(target,)])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

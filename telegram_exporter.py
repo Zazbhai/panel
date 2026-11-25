@@ -83,12 +83,26 @@ class DashboardDatabaseQueue:
         self.targets = {}
         self.on_failure = on_failure
 
+    @staticmethod
+    def _target_key(target):
+        peer_id = getattr(target, "id", None)
+        if peer_id is not None:
+            return (type(target).__name__, peer_id)
+        try:
+            hash(target)
+        except TypeError:
+            return (type(target).__name__, repr(target))
+        return (type(target).__name__, target)
+
     def enqueue(self, urls, target=None):
         if not self.api_key:
             return
         for url in urls:
             if target is not None:
-                self.targets.setdefault(url, set()).add(target)
+                targets = self.targets.setdefault(url, [])
+                target_key = self._target_key(target)
+                if not any(self._target_key(existing) == target_key for existing in targets):
+                    targets.append(target)
             if url in self.seen:
                 continue
             self.seen.add(url)
