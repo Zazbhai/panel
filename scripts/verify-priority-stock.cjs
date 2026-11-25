@@ -165,6 +165,31 @@ async function priorityDiscoveryIsIncremental() {
   assert.equal(args[6], false, "Priority discovery must return without exhausting each database");
   assert.equal(args[7], 1, "Priority reads must use the priority lane");
   assert.equal(args[8], 8, "Priority database concurrency should remain bounded");
+  assert.equal(args[9].remaining, 256, "Each priority service pass should have a finite total read budget");
+}
+
+async function priorityMessageReadBudgetIsSharedAcrossDatabases() {
+  const f = fixture();
+  const databases = ["https://budget-a.firebaseio.com", "https://budget-b.firebaseio.com"];
+  await f.context.getRuntimeStore();
+  f.runtime.setMetadata({ initialized: true, databaseUrls: databases });
+  const messageReads = [];
+  f.fetch = async (url) => {
+    if (url.endsWith("/clients.json")) return { ok: true, json: async () =>
+      Object.fromEntries(Array.from({ length: 6 }, (_, index) => [`device-${index}`, { status: true }])) };
+    if (url.includes("/messages/")) {
+      messageReads.push(url);
+      return { ok: true, json: async () => ({ sms: { message: "No number in this message" } }) };
+    }
+    throw new Error("Unexpected database read " + url);
+  };
+  const budget = { remaining: 3 };
+  await f.context.readActiveNumberInventories(
+    "instagram", { databaseUrls: databases, serviceUsage: {}, orders: [] },
+    8, null, null, true, false, 1, 2, budget
+  );
+  assert.equal(messageReads.length, 3, "The whole service pass must not exceed its total Firebase message budget");
+  assert.equal(budget.remaining, 0);
 }
 
 async function addedDatabaseFeedsPriorityStock() {
@@ -282,6 +307,7 @@ async function partialDiscoverySurvivesAbort() {
   await rankingAndLanes();
   await prepareMappings();
   await priorityDiscoveryIsIncremental();
+  await priorityMessageReadBudgetIsSharedAcrossDatabases();
   await addedDatabaseFeedsPriorityStock();
   await failureRecovery();
   await readScheduling();

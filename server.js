@@ -1776,7 +1776,7 @@ function rememberActiveClientIds(database, clients, expiresAt) {
   return onlineIds;
 }
 
-async function readActiveNumbers(database, isAvailable = () => true, parentSignal = null, requiredCandidates = 1, excludedNumbers = null, scanAll = false, onDiscover = null, readPriority = scanAll ? 1 : 0, preserveEmptySnapshot = false) {
+async function readActiveNumbers(database, isAvailable = () => true, parentSignal = null, requiredCandidates = 1, excludedNumbers = null, scanAll = false, onDiscover = null, readPriority = scanAll ? 1 : 0, preserveEmptySnapshot = false, messageReadBudget = null) {
   const clients = await fetchSharedDatabaseJson(
     `${database}/clients.json`,
     numberFetchTimeoutMs,
@@ -1897,11 +1897,15 @@ async function readActiveNumbers(database, isAvailable = () => true, parentSigna
     }
   }
   for (let index = 0; index < candidates.length;) {
-    const batchSize = requiredCandidates > 1 ? Math.min(8, 48 - messageReads) : 8;
+    const remainingBudget = messageReadBudget ? messageReadBudget.remaining : Infinity;
+    const batchSize = requiredCandidates > 1
+      ? Math.min(8, 48 - messageReads, remainingBudget)
+      : Math.min(8, remainingBudget);
     if (batchSize <= 0) break;
     const batch = candidates.slice(index, index + batchSize);
     index += batch.length;
     messageReads += batch.length;
+    if (messageReadBudget) messageReadBudget.remaining -= batch.length;
     const reads = batch.map(async ([deviceId]) => ({
       deviceId,
       number: getLatestCarrierNumber(await fetchSharedDatabaseJson(
@@ -2079,7 +2083,7 @@ async function runRotatingDeviceStatsJob(jobId) {
   }
 }
 
-async function readActiveNumberInventories(service, rotationState, requiredCandidates = 1, excludedNumbers = null, parentSignal = null, background = false, scanAll = false, readPriority = background ? 1 : 0, databaseConcurrency = numberPoolDatabaseConcurrency) {
+async function readActiveNumberInventories(service, rotationState, requiredCandidates = 1, excludedNumbers = null, parentSignal = null, background = false, scanAll = false, readPriority = background ? 1 : 0, databaseConcurrency = numberPoolDatabaseConcurrency, messageReadBudget = null) {
   const configuredUrls = rotationState.databaseUrls;
   const serviceState = Object.hasOwn(rotationState.serviceUsage, service) ? rotationState.serviceUsage[service] : {
     cursorUrl: configuredUrls[0], usedNumbers: [], cycle: 0
@@ -2128,7 +2132,7 @@ async function readActiveNumberInventories(service, rotationState, requiredCandi
               await discoveryStore.call("rememberBatch", entries.filter((entry) => entry.number).map((entry) => ({
                 database, deviceId: entry.deviceId, number: entry.number, now: checkedAt, verifiedAt: checkedAt
               })));
-            } : null, readPriority)
+            } : null, readPriority, false, messageReadBudget)
         };
         if (controller.signal.aborted) return;
         inventories.push(inventory);
@@ -2289,9 +2293,11 @@ async function fillNumberPool(service, parentSignal = null, preparation = {}) {
   const scanCandidates = preparation.priority
     ? Math.min(priorityStockScanCandidates, Math.max(numberPoolSize, target))
     : Math.max(numberPoolSize, target);
+  const messageReadBudget = preparation.priority ? { remaining: scanCandidates } : null;
   const scan = await readActiveNumberInventories(service, scanState, scanCandidates,
     null, parentSignal, true, preparation.priority ? false : true, preparation.priority ? 1 : 2,
-    preparation.priority ? priorityStockDatabaseConcurrency : numberPoolDatabaseConcurrency);
+    preparation.priority ? priorityStockDatabaseConcurrency : numberPoolDatabaseConcurrency,
+    messageReadBudget);
   throwIfAborted(parentSignal);
   await waitForAbortable(rememberInventories(store, scan.inventories), parentSignal);
   let readyCount = await readyCountForService();
