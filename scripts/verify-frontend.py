@@ -67,7 +67,7 @@ class Fixture:
             elif path == '/api/health': data = {'status': 'ok'}
             elif path == '/api/services': data = {'initialized': True, 'services': [] if self.empty else self.services}
             elif path == '/api/rotation': data = {'initialized': True, 'databaseUrls': self.rotation}
-            elif path == '/api/stocks': data = {'total': 12, 'online': 6, 'reserved': 3, 'offline': 2, 'needsCheck': 1, 'databaseCount': 2, 'checkedAt': 1794921000000, 'mappingPrefetch': {'status': 'running', 'total': 2, 'completed': 1, 'failed': 0}}
+            elif path == '/api/stocks': data = {'total': 12, 'online': 6, 'reserved': 3, 'offline': 2, 'needsCheck': 1, 'databaseCount': 2, 'checkedAt': 1794921000000, 'databaseStock': [{'database': DATABASE, 'savedNumbers': 12, 'online': 6, 'reserved': 3, 'offline': 2, 'needsCheck': 1, 'checkedAt': 1794921000000}, {'database': 'https://empty-preview.firebaseio.com/', 'savedNumbers': 0, 'online': 0, 'reserved': 0, 'offline': 0, 'needsCheck': 0, 'checkedAt': None}], 'mappingPrefetch': {'status': 'running', 'total': 2, 'completed': 1, 'failed': 0}}
             elif path == '/api/sections': data = {'devices': True, 'clients': True}
             elif path == '/api/data': data = {} if self.empty else CLIENTS if section == 'clients' else DEVICES
             elif path == '/api/device-record': data = DEVICES['test-device-01']
@@ -128,6 +128,9 @@ def main():
         ready(page, '/stocks')
         expect(page.locator('#stockTotal')).to_have_text('12')
         expect(page.locator('#stockOnline')).to_have_text('6')
+        expect(page.locator('#databaseStockRows tr')).to_have_count(2)
+        expect(page.locator('#databaseStockRows')).to_contain_text('https://empty-preview.firebaseio.com/')
+        expect(page.locator('#databaseStockRows')).to_contain_text('Never')
         fixture.failure = '/api/stocks'
         page.locator('#refreshStock').click()
         expect(page.locator('#stockStatus')).to_contain_text('Could not refresh')

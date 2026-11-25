@@ -340,6 +340,18 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
 .stock-online dd { color: var(--success); }
 .stock-note { margin: 16px 0 0; }
 .stock-panel .status { margin: 8px 0 0; }
+.database-stock-section { min-width: 0; max-width: 100%; margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--line); }
+.database-stock-toolbar { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin: 14px 0; }
+.database-stock-search { width: min(100%, 420px); }
+.database-stock-wrap { width: 100%; min-width: 0; max-width: 100%; overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; }
+.database-stock-table { min-width: 900px; }
+.database-stock-table th, .database-stock-table td { padding: 10px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.database-stock-table th { position: sticky; top: 0; background: var(--soft); color: var(--muted); font-weight: 600; }
+.database-stock-table tbody tr:last-child td { border-bottom: 0; }
+.database-stock-table td:first-child { max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
+.database-stock-number { text-align: right; font-variant-numeric: tabular-nums; }
+.database-stock-pagination { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 12px; }
+.database-stock-pagination button { min-height: 34px; padding: 6px 10px; }
 .stock-grid[aria-busy="true"] dd { width: 4.5rem; height: 2rem; border-radius: 4px; color: transparent; background: linear-gradient(90deg, var(--soft) 20%, #fff 50%, var(--soft) 80%); background-size: 220% 100%; animation: stock-shimmer 1.2s ease-in-out infinite; }
 @keyframes stock-shimmer { to { background-position-x: -220%; } }
 @media (prefers-reduced-motion: reduce) { .stock-grid[aria-busy="true"] dd { animation: none; } }
@@ -347,6 +359,10 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
   .stock-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .stock-total { grid-column: 1 / -1; }
   .stock-stat { padding: 12px; }
+}
+@media (max-width: 600px) {
+  .database-stock-toolbar { align-items: stretch; flex-direction: column; gap: 8px; }
+  .database-stock-search { width: 100%; }
 }
   </style>
 </head>
@@ -390,6 +406,35 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
       <h3>Priority stock · top 10 services</h3>
       <p class="hint">Ranked by orders in the past 24 hours. Up to five services refill at once; eligible stock is shared across services.</p>
       <p class="status" id="priorityStockStatus" role="status" style="white-space: pre-line">Waiting for service demand.</p>
+      <section class="database-stock-section" aria-labelledby="databaseStockHeading">
+        <h3 id="databaseStockHeading">Stock by database</h3>
+        <p class="hint">Saved phone mappings by configured database. Duplicate phone numbers on different databases appear in each database's count.</p>
+        <div class="database-stock-toolbar">
+          <label class="field database-stock-search" for="databaseStockSearch">Search databases
+            <input id="databaseStockSearch" type="search" autocomplete="off" placeholder="Filter by database URL">
+          </label>
+          <span id="databaseStockCount" class="hint" role="status" aria-live="polite">Loading databases…</span>
+        </div>
+        <div class="database-stock-wrap">
+          <table class="database-stock-table">
+            <thead><tr>
+              <th scope="col">Database URL</th>
+              <th scope="col" class="database-stock-number">Saved</th>
+              <th scope="col" class="database-stock-number">Online</th>
+              <th scope="col" class="database-stock-number">Reserved</th>
+              <th scope="col" class="database-stock-number">Offline</th>
+              <th scope="col" class="database-stock-number">Needs check</th>
+              <th scope="col">Last checked</th>
+            </tr></thead>
+            <tbody id="databaseStockRows"><tr><td colspan="7">Loading…</td></tr></tbody>
+          </table>
+        </div>
+        <div class="database-stock-pagination">
+          <button id="databaseStockPrevious" class="secondary" type="button" aria-label="Previous database page" disabled>Previous</button>
+          <span id="databaseStockPage" class="hint">Page 1</span>
+          <button id="databaseStockNext" class="secondary" type="button" aria-label="Next database page" disabled>Next</button>
+        </div>
+      </section>
     </section>
   </main>
   <script data-dashboard-ui>

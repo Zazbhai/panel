@@ -328,6 +328,32 @@ class RuntimeStore {
     return this.sql("SELECT database_url AS database,COUNT(*) AS mappings,SUM(CASE WHEN online=1 THEN 1 ELSE 0 END) AS online,MAX(checked_at) AS last_checked FROM numbers WHERE database_url IN (SELECT value FROM json_each(?)) GROUP BY database_url ORDER BY online DESC,mappings DESC,last_checked DESC")
       .all(JSON.stringify(databases));
   }
+  databaseStockSummary({ now = Date.now(), onlineTtl = 10000 } = {}) {
+    const databases = this.metadata()?.databaseUrls || [];
+    if (!databases.length) return [];
+    return this.sql("WITH configured AS (SELECT value AS database_url FROM json_each(?)), "
+      + "per_number AS (SELECT n.database_url,n.number,MAX(CASE "
+      + "WHEN l.number IS NOT NULL THEN 4 "
+      + "WHEN n.verified_at<=? OR n.checked_at<=? OR COALESCE(d.checked_at,0)<=? THEN 1 "
+      + "WHEN n.online=1 THEN 3 ELSE 2 END) AS state "
+      + "FROM numbers n LEFT JOIN leases l ON l.number=n.number AND l.expires_at>? "
+      + "LEFT JOIN database_checks d ON d.database_url=n.database_url "
+      + "WHERE n.database_url IN (SELECT database_url FROM configured) GROUP BY n.database_url,n.number), "
+      + "counts AS (SELECT database_url,COUNT(*) AS savedNumbers,"
+      + "COUNT(CASE WHEN state=3 THEN 1 END) AS online,"
+      + "COUNT(CASE WHEN state=4 THEN 1 END) AS reserved,"
+      + "COUNT(CASE WHEN state=2 THEN 1 END) AS offline,"
+      + "COUNT(CASE WHEN state=1 THEN 1 END) AS needsCheck "
+      + "FROM per_number GROUP BY database_url) "
+      + "SELECT c.database_url AS database,COALESCE(n.savedNumbers,0) AS savedNumbers,"
+      + "COALESCE(n.online,0) AS online,COALESCE(n.reserved,0) AS reserved,"
+      + "COALESCE(n.offline,0) AS offline,COALESCE(n.needsCheck,0) AS needsCheck,"
+      + "d.checked_at AS checkedAt FROM configured c "
+      + "LEFT JOIN counts n ON n.database_url=c.database_url "
+      + "LEFT JOIN database_checks d ON d.database_url=c.database_url "
+      + "ORDER BY savedNumbers DESC,c.database_url")
+      .all(JSON.stringify(databases), now - 86400000, now - onlineTtl, now - onlineTtl, now);
+  }
   refreshDatabaseInventory({ database, onlineDeviceIds = [], now = Date.now() }) {
     return this.transaction(() => {
       // Do not erase a populated database on a transient empty clients.json
@@ -372,9 +398,11 @@ class RuntimeStore {
       const metadata = this.metadata();
       const progress = this.inventoryProgress({ databases: metadata?.databaseUrls || [] });
       const priority = this.sql("SELECT value FROM meta WHERE key='priority_stock'").get();
+      const databaseStock = this.databaseStockSummary(options);
       this.db.exec("COMMIT");
       return { ...summary, inventoryProgress: progress,
-        priorityStock: priority ? JSON.parse(priority.value) : null };
+        priorityStock: priority ? JSON.parse(priority.value) : null,
+        databaseStock };
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;

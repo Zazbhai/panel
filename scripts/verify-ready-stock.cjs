@@ -185,6 +185,38 @@ function readyEligibility() {
   } finally { store.close(); }
 }
 
+function databaseStockBreakdown() {
+  const store = new RuntimeStore(":memory:");
+  try {
+    const first = "https://mapped.firebaseio.com";
+    const empty = "https://empty.firebaseio.com";
+    const now = Date.now();
+    store.initialize({ initialized: true, databaseUrls: [first, empty] });
+    store.rememberBatch([
+      { database: first, deviceId: "online", number: "9555555001", now, verifiedAt: now },
+      { database: first, deviceId: "reserved", number: "9555555002", now, verifiedAt: now },
+      { database: first, deviceId: "offline", number: "9555555003", online: false, now, verifiedAt: now },
+      { database: first, deviceId: "stale", number: "9555555004", now, verifiedAt: now - 86400001 }
+    ]);
+    store.markDatabaseOnline({ database: first, onlineDeviceIds: ["online", "reserved", "stale"], now });
+    store.recordDatabaseCheck({ database: empty, now });
+    assert(store.claimReady({ service: "rush", onlineTtl: 60000 }), "Seed one lease for reserved count");
+    const rows = store.stockSnapshot({ onlineTtl: 60000 }).databaseStock;
+    assert.equal(rows.length, 2, "Every configured database must be included, even empty ones");
+    const mapped = rows.find((row) => row.database === first);
+    const noStock = rows.find((row) => row.database === empty);
+    assert.deepEqual(
+      [mapped.savedNumbers, mapped.online, mapped.reserved, mapped.offline, mapped.needsCheck],
+      [4, 1, 1, 1, 1]
+    );
+    assert.deepEqual(
+      [noStock.savedNumbers, noStock.online, noStock.reserved, noStock.offline, noStock.needsCheck],
+      [0, 0, 0, 0, 0]
+    );
+    assert.equal(noStock.checkedAt, now);
+  } finally { store.close(); }
+}
+
 function emptySnapshotSafety() {
   const store = new RuntimeStore(":memory:");
   try {
@@ -203,17 +235,22 @@ async function stockUi() {
   const elements = new Map();
   const element = (id) => {
     if (!elements.has(id)) elements.set(id, {
-      textContent: "", disabled: false, attributes: {}, classList: { add() {}, remove() {} },
-      setAttribute(name, value) { this.attributes[name] = value; }
+      textContent: "", value: "", disabled: false, attributes: {}, classList: { add() {}, remove() {} },
+      setAttribute(name, value) { this.attributes[name] = value; },
+      append() {}, replaceChildren() {}
     });
     return elements.get(id);
   };
   let respond = async () => ({ ok: true, json: async () => ({
     total: 2000, online: 1900, reserved: 100, offline: 0, needsCheck: 0,
-    databaseCount: 100, checkedAt: Date.now()
+    databaseCount: 100, checkedAt: Date.now(), databaseStock: []
   }) });
   const context = vm.createContext({
-    document: { getElementById: element },
+    document: {
+      getElementById: element,
+      createElement: () => ({ textContent: "", append() {} }),
+      createDocumentFragment: () => ({ append() {} })
+    },
     window: { dashboardApiFetch: () => respond() },
     Intl, Date, AbortController, setTimeout, clearTimeout
   });
@@ -267,5 +304,5 @@ async function briefWriteLock() {
 }
 
 (async () => {
-  readyEligibility(); emptySnapshotSafety(); await briefWriteLock(); await diskBurst(); await stockCache(); await readyApi(); await stockUi();
+  readyEligibility(); databaseStockBreakdown(); emptySnapshotSafety(); await briefWriteLock(); await diskBurst(); await stockCache(); await readyApi(); await stockUi();
 })().catch((error) => { console.error(error); process.exitCode = 1; });
