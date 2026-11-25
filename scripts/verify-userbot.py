@@ -406,6 +406,31 @@ class RouteWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(worker.cursor, 3)
         self.assertEqual([item[1] for item in client.deliveries], [1, 2, 3])
 
+    async def test_route_skips_service_messages_and_continues_checkpoint(self):
+        source = "source"
+        # Use a named type so the production type-name guard matches Telethon.
+        ServiceMessage = type("MessageService", (), {})
+        service = ServiceMessage()
+        service.id = 2
+        service.text = ""
+        messages = [message(1), service, message(3)]
+
+        class RouteClient(FakeClient):
+            def __init__(self, items):
+                super().__init__(items)
+                self.deliveries = []
+
+            async def forward_messages(self, target, msg):
+                self.deliveries.append((target, msg.id))
+
+        client = RouteClient(messages)
+        worker = ChannelRouteWorker(client, source, "source-id", "target", "target-id", self.writer,
+                                    checkpoint_dir=self.folder.name, wait_time=0,
+                                    log=lambda *_args, **_kwargs: None)
+        await worker.scan()
+        self.assertEqual(worker.cursor, 3)
+        self.assertEqual([item[1] for item in client.deliveries], [1, 3])
+
 
 class DashboardQueueTests(unittest.IsolatedAsyncioTestCase):
     async def test_dashboard_url_checks_are_deduplicated_and_bounded(self):

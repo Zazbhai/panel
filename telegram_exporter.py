@@ -50,6 +50,11 @@ class IncompleteHistoryError(RuntimeError):
     pass
 
 
+def is_unforwardable_message(message):
+    """Telegram service/empty messages cannot be forwarded to a channel."""
+    return type(message).__name__ in {"MessageService", "MessageEmpty"}
+
+
 def load_setting(name, base_dir):
     if os.getenv(name):
         return os.environ[name]
@@ -325,7 +330,14 @@ class ChannelRouteWorker:
                 self.writer.add_urls(urls)
                 if self.dashboard_queue:
                     self.dashboard_queue.enqueue(urls, self.target)
-                await self.client.forward_messages(self.target, message)
+                if is_unforwardable_message(message):
+                    self.log(
+                        f"Route {self.source_id} -> {self.target_id}: skipped "
+                        f"unforwardable Telegram {type(message).__name__} #{message.id}.",
+                        flush=True,
+                    )
+                else:
+                    await self.client.forward_messages(self.target, message)
                 self.writer.save_cursor(self.cursor_key, message.id)
                 self._save_checkpoint(message.id)
                 self.cursor = message.id
