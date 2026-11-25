@@ -24,6 +24,7 @@ const databaseStockPageSize = 100;
 let stockHasTotals = false;
 let databaseStockItems = [];
 let databaseStockPageNumber = 0;
+let databaseStockHasLoaded = false;
 
 function renderDatabaseStock() {
   if (!databaseStockRows) return;
@@ -68,6 +69,26 @@ function renderDatabaseStock() {
     fragment.append(row);
   }
   databaseStockRows.replaceChildren(fragment);
+}
+
+async function loadDatabaseStockSummary() {
+  if (!databaseStockRows) return;
+  try {
+    const response = await window.dashboardApiFetch("/api/stocks/databases");
+    const result = await response.json();
+    if (!response.ok) throw new Error(result?.error || `Database stock request failed (HTTP ${response.status}).`);
+    if (!Array.isArray(result.databaseStock)) {
+      if (!databaseStockHasLoaded) databaseStockCount.textContent = "Loading database inventory…";
+      return;
+    }
+    databaseStockItems = result.databaseStock.filter((item) => item && typeof item.database === "string"
+      && ["savedNumbers", "online", "reserved", "offline", "needsCheck"]
+        .every((key) => Number.isSafeInteger(item[key]) && item[key] >= 0));
+    databaseStockHasLoaded = true;
+    renderDatabaseStock();
+  } catch (error) {
+    if (!databaseStockHasLoaded) databaseStockCount.textContent = "Database breakdown unavailable; retrying.";
+  }
 }
 
 async function loadManualInventoryCheckStatus() {
@@ -125,12 +146,7 @@ async function loadStock() {
       document.getElementById(id).textContent = stockNumberFormat.format(data[key]);
     }
     stockSources.textContent = `${stockNumberFormat.format(data.databaseCount)} configured database${data.databaseCount === 1 ? "" : "s"}`;
-    databaseStockItems = Array.isArray(data.databaseStock)
-      ? data.databaseStock.filter((item) => item && typeof item.database === "string"
-        && ["savedNumbers", "online", "reserved", "offline", "needsCheck"]
-          .every((key) => Number.isSafeInteger(item[key]) && item[key] >= 0))
-      : [];
-    renderDatabaseStock();
+    void loadDatabaseStockSummary();
     stockHasTotals = true;
     stockStatus.textContent = data.stale
       ? `Showing totals from ${updated}; refreshing in the background.`

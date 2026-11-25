@@ -149,6 +149,8 @@ const activeClientOnlineIds = new Map();
 let recentOrdersCache = null;
 let stockSummaryCache = null;
 let stockSummaryPending = null;
+let databaseStockSummaryCache = null;
+let databaseStockSummaryPending = null;
 let numberMappingPrefetchPromise = null;
 let manualInventoryCheckPromise = null;
 let manualInventoryCheckState = { status: "idle", total: 0, completed: 0, failed: 0, checkedAt: null };
@@ -3482,6 +3484,23 @@ function refreshStockSummarySnapshot() {
   return stockSummaryPending;
 }
 
+const databaseStockCacheTtlMs = 30000;
+
+function refreshDatabaseStockSnapshot() {
+  if (databaseStockSummaryPending) return databaseStockSummaryPending;
+  databaseStockSummaryPending = getRuntimeStore()
+    .then((store) => store.call("databaseStockSummary", { onlineTtl: activeClientsCacheTtlMs }))
+    .then((databaseStock) => {
+      databaseStockSummaryCache = {
+        value: databaseStock,
+        expiresAt: Date.now() + databaseStockCacheTtlMs
+      };
+      return databaseStock;
+    })
+    .finally(() => { databaseStockSummaryPending = null; });
+  return databaseStockSummaryPending;
+}
+
 async function handleRequest(request, response) {
   const requestUrl = new URL(request.url, "http://localhost");
   if (requestUrl.pathname === "/api/auth/session") {
@@ -3669,6 +3688,32 @@ async function handleRequest(request, response) {
       console.error("Could not read recent orders:", error.message);
       sendJson(response, 500, { error: "Could not read recent orders." });
     }
+    return;
+  }
+  if (requestUrl.pathname === "/api/stocks/databases") {
+    if (request.method !== "GET") {
+      response.writeHead(405, { Allow: "GET" });
+      response.end("Method Not Allowed");
+      return;
+    }
+    const current = databaseStockSummaryCache;
+    if (current?.value) {
+      if (current.expiresAt <= Date.now()) {
+        void refreshDatabaseStockSnapshot().catch((error) => {
+          console.warn("Database stock breakdown refresh failed:", error.code || error.name || "storage error");
+        });
+      }
+      sendJson(response, 200, {
+        databaseStock: current.value,
+        stale: current.expiresAt <= Date.now(),
+        refreshing: Boolean(databaseStockSummaryPending)
+      });
+      return;
+    }
+    void refreshDatabaseStockSnapshot().catch((error) => {
+      console.warn("Initial database stock breakdown failed:", error.code || error.name || "storage error");
+    });
+    sendJson(response, 200, { databaseStock: null, stale: true, refreshing: true });
     return;
   }
   if (requestUrl.pathname === "/api/stocks/check") {

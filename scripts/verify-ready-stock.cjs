@@ -223,7 +223,7 @@ function databaseStockBreakdown() {
     store.markDatabaseOnline({ database: first, onlineDeviceIds: ["online", "reserved", "stale"], now });
     store.recordDatabaseCheck({ database: empty, now });
     assert(store.claimReady({ service: "rush", onlineTtl: 60000 }), "Seed one lease for reserved count");
-    const rows = store.stockSnapshot({ onlineTtl: 60000 }).databaseStock;
+    const rows = store.databaseStockSummary({ onlineTtl: 60000 });
     assert.equal(rows.length, 2, "Every configured database must be included, even empty ones");
     const mapped = rows.find((row) => row.database === first);
     const noStock = rows.find((row) => row.database === empty);

@@ -68,7 +68,8 @@ class Fixture:
             elif path == '/api/services': data = {'initialized': True, 'services': [] if self.empty else self.services}
             elif path == '/api/rotation': data = {'initialized': True, 'databaseUrls': self.rotation}
             elif path == '/api/stocks/check': data = {'status': 'idle', 'total': 0, 'completed': 0, 'failed': 0}
-            elif path == '/api/stocks': data = {'total': 12, 'online': 6, 'reserved': 3, 'offline': 2, 'needsCheck': 1, 'databaseCount': 2, 'checkedAt': 1794921000000, 'databaseStock': [{'database': DATABASE, 'savedNumbers': 12, 'online': 6, 'reserved': 3, 'offline': 2, 'needsCheck': 1, 'checkedAt': 1794921000000}, {'database': 'https://empty-preview.firebaseio.com/', 'savedNumbers': 0, 'online': 0, 'reserved': 0, 'offline': 0, 'needsCheck': 0, 'checkedAt': None}], 'mappingPrefetch': {'status': 'running', 'total': 2, 'completed': 1, 'failed': 0}}
+            elif path == '/api/stocks/databases': data = {'databaseStock': [{'database': DATABASE, 'savedNumbers': 12, 'online': 6, 'reserved': 3, 'offline': 2, 'needsCheck': 1, 'checkedAt': 1794921000000}, {'database': 'https://empty-preview.firebaseio.com/', 'savedNumbers': 0, 'online': 0, 'reserved': 0, 'offline': 0, 'needsCheck': 0, 'checkedAt': None}], 'stale': False, 'refreshing': False}
+            elif path == '/api/stocks': data = {'total': 12, 'online': 6, 'reserved': 3, 'offline': 2, 'needsCheck': 1, 'databaseCount': 2, 'checkedAt': 1794921000000, 'mappingPrefetch': {'status': 'running', 'total': 2, 'completed': 1, 'failed': 0}}
             elif path == '/api/sections': data = {'devices': True, 'clients': True}
             elif path == '/api/data': data = {} if self.empty else CLIENTS if section == 'clients' else DEVICES
             elif path == '/api/device-record': data = DEVICES['test-device-01']

@@ -630,5 +630,22 @@ function completedOrder() {
     );
     assert.equal(f.requests.length, 0, "Stocks summary must not fetch from Firebase");
   }
+  {
+    const f = serverFixture();
+    const store = await f.context.getRuntimeStore();
+    const original = store.call.bind(store);
+    let release;
+    store.call = async (method, ...args) => {
+      if (method === "databaseStockSummary") await new Promise((resolve) => { release = resolve; });
+      return original(method, ...args);
+    };
+    const summary = await f.request("/api/stocks", { admin: true });
+    assert.equal(summary.status, 200, "Global stock totals must not wait for per-database aggregation");
+    const details = await f.request("/api/stocks/databases", { admin: true });
+    assert.equal(details.status, 200);
+    assert.equal(JSON.parse(details.body).refreshing, true);
+    await new Promise(setImmediate);
+    release();
+  }
   console.log("PASS: expiry, missing clients cleanup, permission failures, history limits, out-of-order OTPs, saved-only feed and admin-only local stock summary.");
 })().catch((error) => { console.error(error); process.exitCode = 1; });

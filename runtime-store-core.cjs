@@ -398,11 +398,9 @@ class RuntimeStore {
       const metadata = this.metadata();
       const progress = this.inventoryProgress({ databases: metadata?.databaseUrls || [] });
       const priority = this.sql("SELECT value FROM meta WHERE key='priority_stock'").get();
-      const databaseStock = this.databaseStockSummary(options);
       this.db.exec("COMMIT");
       return { ...summary, inventoryProgress: progress,
-        priorityStock: priority ? JSON.parse(priority.value) : null,
-        databaseStock };
+        priorityStock: priority ? JSON.parse(priority.value) : null };
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
