@@ -522,15 +522,24 @@ async def run(api_id, api_hash, routes, base_dir):
         if not routes:
             raise ValueError("Configure at least one source/target route in test.py.")
         resolved_routes = []
+        skipped_routes = []
         for route in routes:
             source_ref = route["source"]
             target_ref = route["target"]
-            source_entity = await resolve_route_entity(
-                client, source_ref, role="source channel", utils=utils
-            )
-            target_entity = await resolve_route_entity(
-                client, target_ref, role="target channel", utils=utils
-            )
+            try:
+                source_entity = await resolve_route_entity(
+                    client, source_ref, role="source channel", utils=utils
+                )
+                target_entity = await resolve_route_entity(
+                    client, target_ref, role="target channel", utils=utils
+                )
+            except Exception as error:
+                skipped_routes.append((source_ref, target_ref, str(error)))
+                print(
+                    f"Route skipped: {source_ref!r} -> {target_ref!r}: {error}",
+                    flush=True,
+                )
+                continue
             source_id = utils.get_peer_id(source_entity)
             target_id = utils.get_peer_id(target_entity)
             resolved_routes.append((source_entity, source_id, target_entity, target_id))
@@ -539,6 +548,13 @@ async def run(api_id, api_hash, routes, base_dir):
                 f"({source_id}) -> {getattr(target_entity, 'title', target_id)} "
                 f"({target_id})", flush=True,
             )
+        if skipped_routes:
+            print(
+                f"Skipped {len(skipped_routes)} route(s); continuing with "
+                f"{len(resolved_routes)} available route(s).", flush=True,
+            )
+        if not resolved_routes:
+            raise RuntimeError("No configured route could be resolved; nothing to start.")
         with FirebaseBatchWriter(args.output_dir, args.batch_size) as writer:
             workers = []
             handlers = []

@@ -131,6 +131,25 @@ class EntityResolutionTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, "must be a member"):
             await resolve_route_entity(Client(), -100123, role="source channel", utils=Utils)
 
+    async def test_route_setup_can_skip_one_unresolved_route(self):
+        routes = [("missing", "target"), ("source", "target")]
+        resolved = []
+        skipped = []
+
+        async def resolve(reference, role):
+            if reference == "missing":
+                raise RuntimeError(f"Could not resolve {role} {reference!r}")
+            return reference
+
+        for source, target in routes:
+            try:
+                resolved.append((await resolve(source, "source channel"),
+                                 await resolve(target, "target channel")))
+            except Exception as error:
+                skipped.append((source, target, str(error)))
+        self.assertEqual(resolved, [("source", "target")])
+        self.assertEqual(len(skipped), 1)
+
 
 class BatchTests(unittest.TestCase):
     def setUp(self):
