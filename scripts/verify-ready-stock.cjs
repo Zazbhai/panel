@@ -169,6 +169,46 @@ async function readyApi() {
   console.log("PASS: 100 HTTP handler allocations; one SQLite claim each; no queue rebuilds or Firebase reads.");
 }
 
+async function manualFreshStockFailures() {
+  const f = fixture();
+  await f.context.getRuntimeStore();
+  const databases = ["locked", "forbidden", "timeout", "network", "invalid-json", "invalid-clients", "too-large"]
+    .map((name) => `https://${name}.firebaseio.com`);
+  f.runtime.setMetadata({ databaseUrls: databases });
+  f.fetch = async (url) => {
+    if (url.includes("locked.")) return { ok: false, status: 423 };
+    if (url.includes("forbidden.")) return { ok: false, status: 403 };
+    if (url.includes("timeout.")) throw Object.assign(new Error("Timed out"), { name: "TimeoutError", code: "UPSTREAM_TIMEOUT" });
+    if (url.includes("network.")) throw Object.assign(new Error("fetch failed"), { cause: { code: "ENOTFOUND" } });
+    if (url.includes("invalid-json.")) return { ok: true, json: async () => { throw new SyntaxError("Bad JSON"); } };
+    if (url.includes("too-large.")) return { ok: true, headers: { get: () => String(1024 ** 4) } };
+    return { ok: true, json: async () => [] };
+  };
+  assert.notEqual((await f.request("/api/stocks/check")).status, 200,
+    "Failure URLs must remain restricted to an authenticated admin");
+  await f.request("/api/stocks/check", { method: "POST", admin: true });
+  await vm.runInContext("manualInventoryCheckPromise", f.context);
+  const report = JSON.parse((await f.request("/api/stocks/check", { admin: true })).body);
+  assert.equal(report.status, "partial");
+  assert.equal(report.completed, databases.length);
+  assert.equal(report.failed, databases.length);
+  assert.equal(report.failures.length, databases.length, "Every failed database must have a reason");
+  const reasons = new Map(report.failures.map((item) => [item.database, item.reason]));
+  for (const [i, pattern] of [/HTTP 423: Locked/, /HTTP 403: Forbidden/, /timed out/,
+    /ENOTFOUND/, /invalid JSON/, /invalid clients list/, /RESPONSE_TOO_LARGE/].entries()) {
+    assert.match(reasons.get(databases[i]), pattern);
+  }
+  assert(report.failures.every((item) => Number.isSafeInteger(item.checkedAt)));
+  f.fetch = async () => ({ ok: true, json: async () => ({}) });
+  await f.request("/api/stocks/check", { method: "POST", admin: true });
+  await vm.runInContext("manualInventoryCheckPromise", f.context);
+  const retry = JSON.parse((await f.request("/api/stocks/check", { admin: true })).body);
+  assert.equal(retry.status, "complete");
+  assert.equal(retry.failed, 0);
+  assert.deepEqual(retry.failures, [], "A new check must replace the previous failure report");
+  console.log("PASS: fresh-check API reports every database error, restricts admin access and resets on retry.");
+}
+
 function readyEligibility() {
   const store = new RuntimeStore(":memory:");
   try {
@@ -326,5 +366,5 @@ async function briefWriteLock() {
 }
 
 (async () => {
-  readyEligibility(); databaseStockBreakdown(); emptySnapshotSafety(); await briefWriteLock(); await diskBurst(); await stockCache(); await manualFreshStockCheck(); await readyApi(); await stockUi();
+  readyEligibility(); databaseStockBreakdown(); emptySnapshotSafety(); await briefWriteLock(); await diskBurst(); await stockCache(); await manualFreshStockCheck(); await manualFreshStockFailures(); await readyApi(); await stockUi();
 })().catch((error) => { console.error(error); process.exitCode = 1; });

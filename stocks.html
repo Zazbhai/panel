@@ -351,6 +351,8 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
 .database-stock-table tbody tr:last-child td { border-bottom: 0; }
 .database-stock-table td:first-child { max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
 .database-stock-number { text-align: right; font-variant-numeric: tabular-nums; }
+.database-failure-wrap { max-height: 480px; overflow-y: auto; }
+.database-failure-table td:nth-child(2) { max-width: 480px; white-space: normal; overflow-wrap: anywhere; }
 .database-stock-pagination { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 12px; }
 .database-stock-pagination button { min-height: 34px; padding: 6px 10px; }
 .stock-grid[aria-busy="true"] dd { width: 4.5rem; height: 2rem; border-radius: 4px; color: transparent; background: linear-gradient(90deg, var(--soft) 20%, #fff 50%, var(--soft) 80%); background-size: 220% 100%; animation: stock-shimmer 1.2s ease-in-out infinite; }
@@ -411,6 +413,27 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
       <h3>Priority stock · top 10 services</h3>
       <p class="hint">Ranked by orders in the past 24 hours. Up to five services refill at once; eligible stock is shared across services.</p>
       <p class="status" id="priorityStockStatus" role="status" style="white-space: pre-line">Waiting for service demand.</p>
+      <section class="database-stock-section" aria-labelledby="databaseFailureHeading">
+        <h3 id="databaseFailureHeading">Fresh check failures</h3>
+        <p class="hint">Failed database URLs and reasons from the latest stale-stock check. Run Check stale stock to collect a new report. The report resets when a new check starts or the server restarts.</p>
+        <div class="database-stock-toolbar">
+          <label class="field database-stock-search" for="databaseFailureSearch">Search failures
+            <input id="databaseFailureSearch" type="search" autocomplete="off" placeholder="Filter by database URL or reason">
+          </label>
+          <span id="databaseFailureCount" class="hint" role="status" aria-live="polite">No failures recorded.</span>
+        </div>
+        <div class="database-stock-wrap database-failure-wrap" tabindex="0" role="region" aria-label="Database failure details; scroll to view all columns and rows">
+          <table class="database-stock-table database-failure-table">
+            <thead><tr><th scope="col">Database URL</th><th scope="col">Failure reason</th><th scope="col">Checked at</th></tr></thead>
+            <tbody id="databaseFailureRows"><tr><td colspan="3">Run a fresh check to see database failures.</td></tr></tbody>
+          </table>
+        </div>
+        <div class="database-stock-pagination">
+          <button id="databaseFailurePrevious" class="secondary" type="button" aria-label="Previous failure page" disabled>Previous</button>
+          <span id="databaseFailurePage" class="hint">Page 1</span>
+          <button id="databaseFailureNext" class="secondary" type="button" aria-label="Next failure page" disabled>Next</button>
+        </div>
+      </section>
       <section class="database-stock-section" aria-labelledby="databaseStockHeading">
         <h3 id="databaseStockHeading">Stock by database</h3>
         <p class="hint">Saved phone mappings by configured database. Duplicate phone numbers on different databases appear in each database's count.</p>

@@ -153,7 +153,7 @@ let databaseStockSummaryCache = null;
 let databaseStockSummaryPending = null;
 let numberMappingPrefetchPromise = null;
 let manualInventoryCheckPromise = null;
-let manualInventoryCheckState = { status: "idle", total: 0, completed: 0, failed: 0, checkedAt: null };
+let manualInventoryCheckState = { status: "idle", total: 0, completed: 0, failed: 0, failures: [], checkedAt: null };
 let numberMappingPrefetchAbortController = null;
 let numberMappingPrefetchLastProgressAt = 0;
 let numberMappingPrefetchRunId = 0;
@@ -1261,10 +1261,27 @@ function startNumberMappingPrefetch() {
   return numberMappingPrefetchPromise;
 }
 
+function inventoryCheckFailureReason(error) {
+  if (error?.status) {
+    const labels = {
+      400: "Bad request", 401: "Unauthorized", 403: "Forbidden", 404: "Not found",
+      423: "Locked", 429: "Too many requests", 500: "Internal server error",
+      502: "Bad gateway", 503: "Service unavailable", 504: "Gateway timeout"
+    };
+    return `HTTP ${error.status}: ${labels[error.status] || "Firebase request failed"}.`;
+  }
+  if (error?.code === "UPSTREAM_TIMEOUT" || error?.name === "TimeoutError") {
+    return "Firebase request timed out.";
+  }
+  const code = error?.cause?.code || error?.code;
+  const message = error?.message || "Database check failed.";
+  return code ? `${code}: ${message}` : message;
+}
+
 function startManualInventoryCheck() {
   if (manualInventoryCheckPromise) return manualInventoryCheckPromise;
   manualInventoryCheckState = {
-    status: "running", total: 0, completed: 0, failed: 0, checkedAt: null
+    status: "running", total: 0, completed: 0, failed: 0, failures: [], checkedAt: null
   };
   manualInventoryCheckPromise = (async () => {
     const store = await getRuntimeStore();
@@ -1276,12 +1293,12 @@ function startManualInventoryCheck() {
     const stale = databases.filter((database) => (checkedAt.get(database) || 0) <= cutoff);
     if (!stale.length) {
       manualInventoryCheckState = {
-        status: "complete", total: 0, completed: 0, failed: 0, checkedAt: Date.now()
+        status: "complete", total: 0, completed: 0, failed: 0, failures: [], checkedAt: Date.now()
       };
       return { ...manualInventoryCheckState };
     }
     manualInventoryCheckState = {
-      status: "running", total: stale.length, completed: 0, failed: 0, checkedAt: null
+      status: "running", total: stale.length, completed: 0, failed: 0, failures: [], checkedAt: null
     };
     let next = 0;
     const worker = async () => {
@@ -1303,9 +1320,10 @@ function startManualInventoryCheck() {
             database, onlineDeviceIds: [...onlineIds], now
           });
         } catch (error) {
+          const reason = inventoryCheckFailureReason(error);
+          manualInventoryCheckState.failures.push({ database, reason, checkedAt: Date.now() });
           manualInventoryCheckState.failed += 1;
-          console.warn("Manual inventory status check failed for " + database + ": "
-            + (error?.status ? "HTTP " + error.status : error?.code || error?.name || "request failed"));
+          console.warn("Manual inventory status check failed for " + database + ": " + reason);
         } finally {
           manualInventoryCheckState.completed += 1;
         }

@@ -14,6 +14,12 @@ const databaseStockCount = document.getElementById("databaseStockCount");
 const databaseStockPageLabel = document.getElementById("databaseStockPage");
 const databaseStockPrevious = document.getElementById("databaseStockPrevious");
 const databaseStockNext = document.getElementById("databaseStockNext");
+const databaseFailureSearch = document.getElementById("databaseFailureSearch");
+const databaseFailureRows = document.getElementById("databaseFailureRows");
+const databaseFailureCount = document.getElementById("databaseFailureCount");
+const databaseFailurePage = document.getElementById("databaseFailurePage");
+const databaseFailurePrevious = document.getElementById("databaseFailurePrevious");
+const databaseFailureNext = document.getElementById("databaseFailureNext");
 const stockFields = {
   total: "stockTotal", online: "stockOnline", reserved: "stockReserved",
   offline: "stockOffline", needsCheck: "stockNeedsCheck"
@@ -25,6 +31,47 @@ let stockHasTotals = false;
 let databaseStockItems = [];
 let databaseStockPageNumber = 0;
 let databaseStockHasLoaded = false;
+let databaseFailureItems = [];
+let databaseFailurePageNumber = 0;
+let databaseFailureCheckStatus = "idle";
+
+function renderDatabaseFailures() {
+  if (!databaseFailureRows) return;
+  const query = databaseFailureSearch?.value.trim().toLowerCase() || "";
+  const filtered = databaseFailureItems.filter((item) =>
+    `${item.database} ${item.reason}`.toLowerCase().includes(query));
+  const pages = Math.max(1, Math.ceil(filtered.length / databaseStockPageSize));
+  databaseFailurePageNumber = Math.min(databaseFailurePageNumber, pages - 1);
+  databaseFailureCount.textContent = `${stockNumberFormat.format(filtered.length)} of ${stockNumberFormat.format(databaseFailureItems.length)} failures`;
+  databaseFailurePage.textContent = `Page ${databaseFailurePageNumber + 1} of ${pages}`;
+  databaseFailurePrevious.disabled = databaseFailurePageNumber === 0;
+  databaseFailureNext.disabled = databaseFailurePageNumber + 1 >= pages;
+  const fragment = document.createDocumentFragment();
+  for (const item of filtered.slice(databaseFailurePageNumber * databaseStockPageSize,
+    (databaseFailurePageNumber + 1) * databaseStockPageSize)) {
+    const row = document.createElement("tr");
+    for (const value of [item.database, item.reason, Number.isSafeInteger(item.checkedAt)
+      ? new Date(item.checkedAt).toLocaleString() : "Unknown"]) {
+      const cell = document.createElement("td");
+      cell.textContent = value;
+      cell.title = value;
+      row.append(cell);
+    }
+    fragment.append(row);
+  }
+  if (!filtered.length) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = 3;
+    cell.textContent = query ? "No matching failures."
+      : databaseFailureCheckStatus === "idle" ? "Run a fresh check to see database failures."
+        : databaseFailureCheckStatus === "running" ? "No failures recorded so far; check in progress."
+          : "No database failures recorded in this check.";
+    row.append(cell);
+    fragment.append(row);
+  }
+  databaseFailureRows.replaceChildren(fragment);
+}
 
 function renderDatabaseStock() {
   if (!databaseStockRows) return;
@@ -97,6 +144,10 @@ async function loadManualInventoryCheckStatus() {
     const response = await window.dashboardApiFetch("/api/stocks/check");
     const state = await response.json();
     if (!response.ok || !state || typeof state.status !== "string") return;
+    databaseFailureItems = Array.isArray(state.failures) ? state.failures.filter((item) =>
+      item && typeof item.database === "string" && typeof item.reason === "string") : [];
+    databaseFailureCheckStatus = state.status;
+    renderDatabaseFailures();
     manualInventoryCheckStatus.textContent = state.status === "running"
       ? `Checking stale database numbers: ${stockNumberFormat.format(state.completed || 0)} of ${stockNumberFormat.format(state.total || 0)} databases checked; ${stockNumberFormat.format(state.failed || 0)} failed.`
       : state.status === "partial"
@@ -194,6 +245,18 @@ async function loadStock() {
 }
 
 stockButton.addEventListener("click", loadStock);
+databaseFailureSearch?.addEventListener("input", () => {
+  databaseFailurePageNumber = 0;
+  renderDatabaseFailures();
+});
+databaseFailurePrevious?.addEventListener("click", () => {
+  databaseFailurePageNumber = Math.max(0, databaseFailurePageNumber - 1);
+  renderDatabaseFailures();
+});
+databaseFailureNext?.addEventListener("click", () => {
+  databaseFailurePageNumber += 1;
+  renderDatabaseFailures();
+});
 checkFreshStockButton?.addEventListener("click", checkFreshStock);
 databaseStockSearch?.addEventListener("input", () => {
   databaseStockPageNumber = 0;
