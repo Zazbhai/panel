@@ -19,7 +19,7 @@ import import_firebase_batches as batch_importer
 from telegram_exporter import (
     ChannelRouteWorker, DashboardDatabaseQueue, HistoryExporter,
     DashboardAuthenticationError, IncompleteHistoryError, RoutePreparationBarrier,
-    extract_database_urls, resolve_route_entity,
+    extract_database_urls, resolve_route_entity, take_failure_report_items,
 )
 
 
@@ -165,6 +165,11 @@ class RoutePreparationBarrierTests(unittest.IsolatedAsyncioTestCase):
         await barrier.mark_ready()
         await asyncio.wait_for(barrier.wait(), timeout=0.1)
         self.assertTrue(barrier.event.is_set())
+
+    async def test_failure_report_list_is_drained_without_dict_assumption(self):
+        state = {"items": [("https://bad.firebaseio.com/", "HTTP 423") ]}
+        self.assertEqual(take_failure_report_items(state), [("https://bad.firebaseio.com/", "HTTP 423")])
+        self.assertEqual(state, {})
 
 
 class BatchTests(unittest.TestCase):

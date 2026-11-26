@@ -92,6 +92,10 @@ def target_identity(target):
     return (type(target).__name__, peer_id) if peer_id is not None else (type(target).__name__, repr(target))
 
 
+def take_failure_report_items(reports):
+    return reports.pop("items", [])
+
+
 def is_unforwardable_message(message):
     """Telegram service/empty messages cannot be forwarded to a channel."""
     return type(message).__name__ in {"MessageService", "MessageEmpty"}
@@ -423,6 +427,10 @@ class ChannelRouteWorker:
         if not files:
             return 0
         if hasattr(self.client, "send_file"):
+            self.log(
+                f"Route {self.source_id} -> {self.target_id}: uploading "
+                f"{len(files)} batch file(s) to Telegram...", flush=True,
+            )
             for index in range(0, len(files), 10):
                 await self.client.send_file(self.target, files[index:index + 10])
         else:
@@ -616,9 +624,7 @@ async def run(api_id, api_hash, routes, base_dir):
     async def flush_failure_reports():
         nonlocal bot_last_alert_at, bot_alert_disabled
         async with failure_reports_lock:
-            reports = list(failure_reports.values())
-            failure_reports.clear()
-        bot_items = reports[0].get("items", []) if reports else []
+            bot_items = take_failure_report_items(failure_reports)
         if bot_items:
             print(f"Database check finished with {len(bot_items)} failed URL(s).", flush=True)
         if bot_items and bot_token and bot_chat_id and not bot_alert_disabled:
