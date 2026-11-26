@@ -51,6 +51,15 @@ simultaneous checks; defaults remain 32 when the variable is absent. Existing
 rotation URLs are skipped, failed URLs get individual reasons, and all accepted
 URLs are added in one rotation update per batch. The exporter logs a completion
 summary after each batch.
+
+If a batch reports `401 AUTH_REQUIRED`, the running dashboard has not loaded the
+bulk endpoint/API-key authorization code. Deploy `server.js` and restart the
+dashboard process before restarting `test.py`; the exporter now stops instead
+of incorrectly marking every URL in that batch as failed.
+
+The importer reads database URLs only. It does not extract or apply `key:...`
+credentials from Telegram messages. Only add credentials for databases you
+control through a separately managed, access-controlled configuration.
 `DASHBOARD_API_KEY` is read from the environment or the adjacent `.env` file.
 Duplicate TXT URLs are skipped across messages and restarts.
 If dashboard registration fails, the worker collects the URL and error, then

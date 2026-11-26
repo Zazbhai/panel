@@ -18,8 +18,8 @@ from firebase_batches import FirebaseBatchWriter
 import import_firebase_batches as batch_importer
 from telegram_exporter import (
     ChannelRouteWorker, DashboardDatabaseQueue, HistoryExporter,
-    IncompleteHistoryError, RoutePreparationBarrier, extract_database_urls,
-    resolve_route_entity,
+    DashboardAuthenticationError, IncompleteHistoryError, RoutePreparationBarrier,
+    extract_database_urls, resolve_route_entity,
 )
 
 
@@ -565,6 +565,21 @@ class DashboardQueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(urls[0], queue.seen)
         self.assertNotIn(urls[1], queue.seen)
 
+    async def test_old_dashboard_bulk_auth_error_is_fatal_not_per_url(self):
+        queue = DashboardDatabaseQueue("http://fixture/api/addDatabaseUrl", "key",
+                                       log=lambda *_args, **_kwargs: None)
+        queue.enqueue(["https://firebase.firebaseio.com/"])
+
+        def reject(_request, timeout):
+            error = urllib.error.HTTPError("http://fixture", 401, "unauthorized", {},
+                io.BytesIO(b'{"error":"Admin login is required.","code":"AUTH_REQUIRED"}'))
+            raise error
+
+        with self.assertRaisesRegex(DashboardAuthenticationError, "older server.js"):
+            with patch("urllib.request.urlopen", side_effect=reject):
+                await queue.drain()
+        self.assertTrue(queue.authentication_error)
+
     async def test_dashboard_url_checks_are_deduplicated_and_bounded(self):
         queue = DashboardDatabaseQueue("http://fixture/api/addDatabaseUrl", "key",
                                        log=lambda *_args, **_kwargs: None)
@@ -634,6 +649,16 @@ class DashboardQueueTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BatchImporterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_auth_required_is_not_reported_as_each_database_failure(self):
+        def reject(_request, timeout):
+            raise urllib.error.HTTPError("http://fixture", 401, "unauthorized", {},
+                io.BytesIO(b'{"error":"Admin login is required.","code":"AUTH_REQUIRED"}'))
+
+        with self.assertRaisesRegex(RuntimeError, "updated server.js"):
+            with patch("urllib.request.urlopen", side_effect=reject):
+                batch_importer.submit_batch("http://fixture/api/addDatabaseUrls", "key",
+                                             ["https://firebase.firebaseio.com/"])
+
     async def test_saved_route_folders_and_mixed_bulk_results(self):
         import json
         from argparse import Namespace

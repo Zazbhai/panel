@@ -50,6 +50,10 @@ class IncompleteHistoryError(RuntimeError):
     pass
 
 
+class DashboardAuthenticationError(RuntimeError):
+    pass
+
+
 class RoutePreparationBarrier:
     def __init__(self, expected, log=print, on_complete=None):
         self.expected = max(1, expected)
@@ -57,6 +61,7 @@ class RoutePreparationBarrier:
         self.event = asyncio.Event()
         self.log = log
         self.on_complete = on_complete
+        self.error = None
 
     async def mark_ready(self):
         self.ready += 1
@@ -74,6 +79,12 @@ class RoutePreparationBarrier:
 
     async def wait(self):
         await self.event.wait()
+        if self.error:
+            raise self.error
+
+    def fail(self, error):
+        self.error = error
+        self.event.set()
 
 
 def target_identity(target):
@@ -147,6 +158,7 @@ class DashboardDatabaseQueue:
         self.on_failure = on_failure
         self.queued_urls = []
         self.drain_lock = asyncio.Lock()
+        self.authentication_error = None
 
     def _bulk_endpoint(self):
         parsed = urllib.parse.urlsplit(self.endpoint)
@@ -191,6 +203,8 @@ class DashboardDatabaseQueue:
 
     async def drain(self):
         async with self.drain_lock:
+            if self.authentication_error:
+                raise self.authentication_error
             while self.queued_urls:
                 batch, self.queued_urls = self.queued_urls[:1000], self.queued_urls[1000:]
                 self.log(f"Checking {len(batch)} database URLs in parallel via dashboard...", flush=True)
@@ -200,6 +214,9 @@ class DashboardDatabaseQueue:
                         or any(not isinstance(item, dict) or item.get("status") not in
                                {"added", "duplicate", "error"} for item in results)):
                         raise ValueError("Dashboard returned an incomplete bulk database result.")
+                except DashboardAuthenticationError as error:
+                    self.authentication_error = error
+                    raise
                 except Exception as error:
                     results = [{"url": url, "status": "error", "reason": str(error)} for url in batch]
                 # Results retain input order; returned URLs may be normalized.
@@ -233,6 +250,21 @@ class DashboardDatabaseQueue:
             return payload["results"]
         except urllib.error.HTTPError as error:
             detail = error.read().decode("utf-8", errors="replace").strip()
+            if error.code in {401, 403}:
+                try:
+                    payload = json.loads(detail)
+                except ValueError:
+                    payload = {}
+                if payload.get("code") == "AUTH_REQUIRED":
+                    raise DashboardAuthenticationError(
+                        "The dashboard returned AUTH_REQUIRED for /api/addDatabaseUrls. "
+                        "It is running an older server.js; deploy the bulk endpoint and "
+                        "restart the dashboard before restarting this exporter."
+                    ) from error
+                raise DashboardAuthenticationError(
+                    f"Dashboard bulk endpoint rejected API-key authentication (HTTP {error.code}): {detail}. "
+                    "Deploy the updated server.js and verify DASHBOARD_API_KEY."
+                ) from error
             raise RuntimeError(f"Dashboard bulk check failed (HTTP {error.code}): {detail}") from error
 
 
@@ -525,6 +557,10 @@ class ChannelRouteWorker:
             except flood_error as error:
                 self.log(f"Route {route}: Telegram cooldown {error.seconds + 1}s.", flush=True)
                 await asyncio.sleep(error.seconds + 1)
+            except DashboardAuthenticationError as error:
+                self.preparation_barrier.fail(error)
+                self.log(f"Route {route}: stopping because dashboard authentication failed: {error}", flush=True)
+                return
             except Exception as error:
                 self.log(f"Route {route}: retry in {interval}s after {error}.", flush=True)
                 await asyncio.sleep(interval)
@@ -573,35 +609,18 @@ async def run(api_id, api_hash, routes, base_dir):
     failure_reports_lock = asyncio.Lock()
 
     async def notify_database_failure(url, detail, targets):
-        nonlocal bot_last_alert_at, bot_alert_disabled
+        del targets
         async with failure_reports_lock:
-            for target in targets:
-                key = target_identity(target)
-                report = failure_reports.setdefault(key, {"target": target, "items": []})
-                report["items"].append((url, detail))
-            failure_reports.setdefault(("bot", str(bot_chat_id)), {"target": None, "items": []})["items"].append((url, detail))
+            failure_reports.setdefault("items", []).append((url, detail))
 
     async def flush_failure_reports():
         nonlocal bot_last_alert_at, bot_alert_disabled
         async with failure_reports_lock:
             reports = list(failure_reports.values())
             failure_reports.clear()
-        bot_items = []
-        for report in reports:
-            items = report["items"]
-            target = report["target"]
-            if target is None:
-                bot_items.extend(items)
-                continue
-            lines = [f"Database registration failures: {len(items)} URL(s)."]
-            lines.extend(f"{url} - {detail[:250]}" for url, detail in items[:40])
-            if len(items) > 40:
-                lines.append(f"...and {len(items) - 40} more. Full list is in firebase_batch_import_failures.txt.")
-            try:
-                await client.send_message(target, "\n".join(lines)[:4000])
-            except Exception as error:
-                print(f"Could not send summarized database failures to target "
-                      f"{target_identity(target)}: {type(error).__name__}: {error}", flush=True)
+        bot_items = reports[0].get("items", []) if reports else []
+        if bot_items:
+            print(f"Database check finished with {len(bot_items)} failed URL(s).", flush=True)
         if bot_items and bot_token and bot_chat_id and not bot_alert_disabled:
             message = f"Database registration failures: {len(bot_items)} URL(s).\n"
             message += "\n".join(f"{url} - {detail[:250]}" for url, detail in bot_items[:40])
@@ -624,7 +643,8 @@ async def run(api_id, api_hash, routes, base_dir):
                 print(f"Could not send database failure summary to configured bot: "
                       f"{type(error).__name__}: {error}", flush=True)
         elif bot_items and not (bot_token and bot_chat_id):
-            print(f"Bot failure alerts disabled; {len(bot_items)} database failure(s) summarized in logs.", flush=True)
+            print("Bot summary not sent: DATABASE_FAILURE_BOT_TOKEN and/or "
+                  "DATABASE_FAILURE_BOT_CHAT_ID is not configured.", flush=True)
 
     dashboard_queue = DashboardDatabaseQueue(
         dashboard_endpoint,

@@ -98,6 +98,19 @@ def submit_batch(endpoint, api_key, urls):
             return payload["results"]
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", errors="replace").strip()
+        if error.code in {401, 403}:
+            try:
+                payload = json.loads(detail)
+            except ValueError:
+                payload = {}
+            if payload.get("code") == "AUTH_REQUIRED":
+                raise RuntimeError(
+                    "The dashboard returned AUTH_REQUIRED for /api/addDatabaseUrls. "
+                    "Deploy the updated server.js and restart the dashboard before importing."
+                ) from error
+            raise RuntimeError(
+                f"Dashboard bulk endpoint authentication failed (HTTP {error.code}): {detail}"
+            ) from error
         return [{"url": url, "status": "error", "reason": f"HTTP {error.code}: {detail}"} for url in urls]
     except (OSError, ValueError) as error:
         return [{"url": url, "status": "error", "reason": str(error)} for url in urls]
