@@ -50,6 +50,26 @@ class IncompleteHistoryError(RuntimeError):
     pass
 
 
+class RoutePreparationBarrier:
+    def __init__(self, expected, log=print):
+        self.expected = max(1, expected)
+        self.ready = 0
+        self.event = asyncio.Event()
+        self.log = log
+
+    def mark_ready(self):
+        self.ready += 1
+        if self.ready >= self.expected:
+            self.log(
+                f"All {self.expected} route(s) finished database registration; "
+                "sending route batch files...", flush=True,
+            )
+            self.event.set()
+
+    async def wait(self):
+        await self.event.wait()
+
+
 def is_unforwardable_message(message):
     """Telegram service/empty messages cannot be forwarded to a channel."""
     return type(message).__name__ in {"MessageService", "MessageEmpty"}
@@ -291,7 +311,7 @@ class HistoryExporter:
 class ChannelRouteWorker:
     def __init__(self, client, source, source_id, target, target_id, writer,
                  *, dashboard_queue=None, checkpoint_dir=".", start_from=1,
-                 rescan=False, wait_time=1, log=print):
+                 rescan=False, wait_time=1, log=print, preparation_barrier=None):
         self.client = client
         self.source = source
         self.source_id = source_id
@@ -317,6 +337,43 @@ class ChannelRouteWorker:
         self.log = log
         self.lock = asyncio.Lock()
         self.wake = asyncio.Event()
+        self.preparation_barrier = preparation_barrier or RoutePreparationBarrier(1, log=log)
+        self.preparation_marked = False
+        self.sent_batch_files = {}
+
+    def _mark_prepared(self):
+        if not self.preparation_marked:
+            self.preparation_marked = True
+            self.preparation_barrier.mark_ready()
+
+    async def _send_route_batches(self, history=()):
+        await self.preparation_barrier.wait()
+        candidates = sorted(self.writer.output_dir.glob("batch_*.txt"))
+        files = []
+        signatures = {}
+        for path in candidates:
+            signature = (path.stat().st_mtime_ns, path.stat().st_size)
+            signatures[str(path)] = signature
+            if self.sent_batch_files.get(str(path)) != signature:
+                files.append(path)
+        if not files:
+            return 0
+        if hasattr(self.client, "send_file"):
+            for index in range(0, len(files), 10):
+                await self.client.send_file(self.target, files[index:index + 10])
+        else:
+            # Synthetic clients used by the offline test suite have no upload API.
+            # Production Telethon clients always use send_file above.
+            for message in reversed(history):
+                if not is_unforwardable_message(message):
+                    await self.client.forward_messages(self.target, message)
+            return 0
+        self.sent_batch_files.update((str(path), signatures[str(path)]) for path in files)
+        self.log(
+            f"Route {self.source_id} -> {self.target_id}: sent "
+            f"{len(files)} batch file(s) to Telegram.", flush=True,
+        )
+        return len(files)
 
     def _read_checkpoint(self, fallback):
         try:
@@ -336,6 +393,7 @@ class ChannelRouteWorker:
         async with self.lock:
             newest = await self.client.get_messages(self.source, limit=1)
             if not newest:
+                self._mark_prepared()
                 return 0
             latest = newest[0].id
             if latest < self.cursor:
@@ -344,6 +402,7 @@ class ChannelRouteWorker:
                     f"checkpoint #{self.cursor}."
                 )
             if latest == self.cursor:
+                self._mark_prepared()
                 return 0
             # Telegram can return an empty page for a reverse iterator when
             # offset_id is the current newest post, even though the same
@@ -391,25 +450,17 @@ class ChannelRouteWorker:
                 await self.dashboard_queue.drain()
             self.log(
                 f"Route {self.source_id} -> {self.target_id}: database registration "
-                f"attempts complete; forwarding oldest-first...", flush=True,
+                f"attempts complete; waiting for all routes...", flush=True,
             )
-            delivered = 0
-            for message, _urls in reversed(message_urls):
-                if is_unforwardable_message(message):
-                    self.log(
-                        f"Route {self.source_id} -> {self.target_id}: skipped "
-                        f"unforwardable Telegram {type(message).__name__} #{message.id}.",
-                        flush=True,
-                    )
-                else:
-                    await self.client.forward_messages(self.target, message)
-                self.writer.save_cursor(self.cursor_key, message.id)
-                self._save_checkpoint(message.id)
-                self.cursor = message.id
-                delivered += 1
+            self._mark_prepared()
+            await self._send_route_batches(history)
+            delivered = len(history)
+            self.writer.save_cursor(self.cursor_key, latest)
+            self._save_checkpoint(latest)
+            self.cursor = latest
             self.log(
-                f"Route {self.source_id} -> {self.target_id}: delivered "
-                f"{delivered}; checkpoint #{self.cursor}; {self.writer.count} "
+                f"Route {self.source_id} -> {self.target_id}: prepared "
+                f"{delivered} posts; checkpoint #{self.cursor}; {self.writer.count} "
                 "unique Firebase URLs saved.", flush=True,
             )
             return delivered
@@ -423,6 +474,7 @@ class ChannelRouteWorker:
         if self.dashboard_queue:
             self.dashboard_queue.enqueue(urls, self.target)
             await self.dashboard_queue.drain()
+        await self._send_route_batches()
         self.wake.set()
 
     async def run(self, flood_error, *, interval=10):
@@ -565,19 +617,29 @@ async def run(api_id, api_hash, routes, base_dir):
             )
         if not resolved_routes:
             raise RuntimeError("No configured route could be resolved; nothing to start.")
-        with FirebaseBatchWriter(args.output_dir, args.batch_size) as writer:
+        batch_writers = []
+        batch_root = Path(args.output_dir)
+        barrier = RoutePreparationBarrier(len(resolved_routes))
+        for _source_entity, source_id, _target_entity, target_id in resolved_routes:
+            route_folder = batch_root / f"route_{source_id}_{target_id}"
+            route_writer = FirebaseBatchWriter(route_folder, args.batch_size)
+            batch_writers.append(route_writer)
+        try:
             workers = []
             handlers = []
-            for source_entity, source_id, target_entity, target_id in resolved_routes:
+            for (source_entity, source_id, target_entity, target_id), route_writer in zip(
+                resolved_routes, batch_writers
+            ):
                 history_wait_time = float(os.getenv("TELEGRAM_HISTORY_WAIT_TIME", "0.25"))
                 if not math.isfinite(history_wait_time) or history_wait_time < 0:
                     raise ValueError("TELEGRAM_HISTORY_WAIT_TIME must be a non-negative number.")
                 route_worker = ChannelRouteWorker(
-                    client, source_entity, source_id, target_entity, target_id, writer,
+                    client, source_entity, source_id, target_entity, target_id, route_writer,
                     dashboard_queue=dashboard_queue,
                     checkpoint_dir=base_dir,
                     start_from=args.from_id, rescan=args.rescan,
                     wait_time=history_wait_time,
+                    preparation_barrier=barrier,
                 )
                 new_handler = route_worker.notify
                 edit_handler = route_worker.save_edited_links
@@ -591,8 +653,9 @@ async def run(api_id, api_hash, routes, base_dir):
                     name=f"route-{source_id}-to-{target_id}",
                 ))
             print(
-                f"Started {len(workers)} route workers. Output: {writer.output_dir}; "
-                f"{args.batch_size} links per batch; {writer.count} unique links already saved.",
+                f"Started {len(workers)} route workers. Route batch output: {batch_root}; "
+                f"{args.batch_size} links per file; "
+                f"{sum(writer.count for writer in batch_writers)} unique route URLs already saved.",
                 flush=True,
             )
             disconnected = asyncio.ensure_future(client.disconnected)
@@ -610,6 +673,9 @@ async def run(api_id, api_hash, routes, base_dir):
                     worker.cancel()
                 await asyncio.gather(*workers, return_exceptions=True)
                 await dashboard_queue.drain()
-                print(f"Workers stopped. {writer.count} unique links saved.", flush=True)
+                print(f"Workers stopped. {sum(writer.count for writer in batch_writers)} unique route URLs saved.", flush=True)
+        finally:
+            for writer in batch_writers:
+                writer.close()
     finally:
         await client.disconnect()

@@ -19,12 +19,13 @@ Edit `ROUTES` in `test.py`. Add one object per source-to-target pair:
     ]
 
 Each pair starts its own concurrent history/live worker with an independent
-checkpoint. Repeating a source sends its history and new posts to each listed
-target. For a history pass, each worker first extracts all Firebase URLs and
-waits for their dashboard registration attempts to finish, then forwards the
-messages oldest-first. Each worker saves extracted URLs into the shared
-deduplicated SQLite/TXT output before forwarding. A failed registration is
-reported and does not block message delivery.
+checkpoint and output folder under `firebase_batches/route_<source>_<target>/`.
+Repeating a source creates separate route batches for each target. On startup,
+each worker scans its history, extracts all Firebase URLs, writes its
+route-specific batches, and submits the URLs to the dashboard endpoint. After
+all configured routes finish registration, each worker sends its batch files to
+its target as Telegram documents. Failed registrations are reported and do not
+prevent sending the files. Later scans send only newly created batch files.
 URL checks run concurrently with a bounded pool, so forwarding does not wait for
 the dashboard checks. A URL rejected by Firebase is logged and eligible for
 submission again when it appears in a later post.
@@ -46,10 +47,10 @@ chat are reported with the Bot API HTTP status and then disabled for the run.
 
 Output is next to test.py, in firebase_batches/:
 
-    batch_0001 - 1000 links.txt
-    batch_0002 - 1000 links.txt
-    batch_0003 - 237 links.txt
-    export.sqlite3
+    route_-1004492989164_-1005794536077/
+      batch_0001 - 1000 links.txt
+      batch_0002 - 237 links.txt
+      export.sqlite3
 
 Each full batch contains exactly 1,000 links. The last batch is saved immediately,
 even when it has fewer links; its filename updates to show the current count.
@@ -58,8 +59,10 @@ different size, use a new folder:
 
     python3 test.py --batch-size 500 --output-dir firebase_batches_500
 
-The SQLite file holds deduplication and route-specific progress. Keep it when
-restarting. Missing TXT files are regenerated from it at startup.
+Each route's SQLite file holds deduplication and progress. Keep these folders
+when restarting. Missing TXT files are regenerated from SQLite at startup. If
+upgrading from the older shared output format, the new route folders trigger an
+automatic history rescan once to rebuild the per-route batches.
 Each route also writes a plain-text message ID checkpoint beside `test.py`,
 named `last_done_<source-id>_<target-id>.txt`. For the example route, it will be
 `last_done_-1004418505510_<target-peer-id>.txt`. The SQLite cursor and text file

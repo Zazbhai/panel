@@ -362,6 +362,7 @@ class RouteWorkerTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self):
                 super().__init__(messages)
                 self.deliveries = []
+                self.sent_files = []
                 self.active_forwards = 0
                 self.peak_forwards = 0
 
@@ -371,6 +372,9 @@ class RouteWorkerTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0.001)
                 self.deliveries.append((target, msg.id))
                 self.active_forwards -= 1
+
+            async def send_file(self, target, files):
+                self.sent_files.append((target, [Path(file).name for file in files]))
 
             async def iter_messages(self, entity, **kwargs):
                 assert entity == source
@@ -386,9 +390,9 @@ class RouteWorkerTests(unittest.IsolatedAsyncioTestCase):
                                     dashboard_queue=dashboard, checkpoint_dir=self.folder.name, wait_time=0,
                                     log=lambda *_args, **_kwargs: None)
         await asyncio.gather(first.scan(), second.scan())
-        self.assertCountEqual(client.deliveries, [
-            ("target-a", 1), ("target-a", 2), ("target-b", 1), ("target-b", 2),
-        ])
+        self.assertEqual(client.deliveries, [], "Prepared history should be sent as files, not forwarded message-by-message")
+        self.assertEqual({target for target, _files in client.sent_files}, {"target-a", "target-b"})
+        self.assertTrue(all(files for _target, files in client.sent_files))
         self.assertEqual(self.writer.cursor("route:source-id:target-a-id"), 2)
         self.assertEqual(self.writer.cursor("route:source-id:target-b-id"), 2)
         self.assertEqual((Path(self.folder.name) / "last_done_source-id_target-a-id.txt").read_text(), "2")
@@ -404,7 +408,7 @@ class RouteWorkerTests(unittest.IsolatedAsyncioTestCase):
             ("target-a", expected_urls), ("target-b", expected_urls),
             ("target-a", []), ("target-b", []),
         ], "Every message URL should be submitted for every configured route")
-        self.assertEqual(client.peak_forwards, 2, "Source-target workers must run concurrently")
+        self.assertEqual(len(client.sent_files), 2, "Each route should deliver its own batch files")
 
     async def test_all_links_register_before_first_forward(self):
         source = "source"
@@ -419,8 +423,8 @@ class RouteWorkerTests(unittest.IsolatedAsyncioTestCase):
                 events.append(("drain",))
 
         class OrderedClient(FakeClient):
-            async def forward_messages(self, target, msg):
-                events.append(("forward", msg.id))
+            async def send_file(self, target, files):
+                events.append(("send_files", len(files)))
 
         client = OrderedClient(messages)
         worker = ChannelRouteWorker(client, source, "source-id", "target", "target-id", self.writer,
@@ -428,7 +432,7 @@ class RouteWorkerTests(unittest.IsolatedAsyncioTestCase):
                                     wait_time=0, log=lambda *_args, **_kwargs: None)
         await worker.scan()
         self.assertEqual([item[0] for item in events],
-                         ["enqueue", "enqueue", "drain", "forward", "forward"])
+                         ["enqueue", "enqueue", "drain", "send_files"])
 
     async def test_route_checkpoints_only_messages_successfully_forwarded(self):
         source = "source"
@@ -440,11 +444,11 @@ class RouteWorkerTests(unittest.IsolatedAsyncioTestCase):
                 self.fail_once = True
                 self.deliveries = []
 
-            async def forward_messages(self, target, msg):
-                if msg.id == 2 and self.fail_once:
+            async def send_file(self, target, files):
+                if self.fail_once:
                     self.fail_once = False
                     raise SyntheticFloodWait(0)
-                self.deliveries.append((target, msg.id))
+                self.deliveries.append((target, [Path(file).name for file in files]))
 
         client = FlakyRouteClient()
         worker = ChannelRouteWorker(client, source, "source-id", "target", "target-id", self.writer,
@@ -452,12 +456,12 @@ class RouteWorkerTests(unittest.IsolatedAsyncioTestCase):
                                     log=lambda *_args, **_kwargs: None)
         with self.assertRaises(SyntheticFloodWait):
             await worker.scan()
-        self.assertEqual(worker.cursor, 1)
-        self.assertEqual(self.writer.cursor(worker.cursor_key), 1)
+        self.assertEqual(worker.cursor, 0)
+        self.assertEqual(self.writer.cursor(worker.cursor_key), 0)
         checkpoint = Path(self.folder.name) / "last_done_source-id_target-id.txt"
-        self.assertEqual(checkpoint.read_text(), "1")
+        self.assertFalse(checkpoint.exists(), "A failed batch upload must not create a completed checkpoint")
         await worker.scan()
-        self.assertEqual(client.deliveries, [("target", 1), ("target", 2), ("target", 3)])
+        self.assertEqual(len(client.deliveries), 1)
         self.assertEqual(worker.cursor, 3)
         self.assertEqual(checkpoint.read_text(), "3")
 
