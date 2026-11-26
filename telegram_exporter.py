@@ -54,6 +54,50 @@ class DashboardAuthenticationError(RuntimeError):
     pass
 
 
+class ChannelLinkFile:
+    """Persistent, deduplicated URL list for one source Telegram channel."""
+    def __init__(self, output_dir, source_id):
+        self.path = Path(output_dir) / f"all links of {source_id}.txt"
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.urls = set()
+        if self.path.exists():
+            self.urls.update(line.strip() for line in self.path.read_text(encoding="utf-8").splitlines()
+                             if line.strip())
+
+    def add_urls(self, urls):
+        added = []
+        for url in urls:
+            if url and url not in self.urls:
+                self.urls.add(url)
+                added.append(url)
+        if added:
+            with self.path.open("a", encoding="utf-8", newline="\n") as handle:
+                handle.writelines(url + "\n" for url in added)
+        return len(added)
+
+
+class ChannelLinkReportSender:
+    def __init__(self, client, target, *, log=print):
+        self.client = client
+        self.target = target
+        self.log = log
+        self.sent = {}
+        self.lock = asyncio.Lock()
+
+    async def send_latest(self, channel_file):
+        if self.target is None or not channel_file.path.exists():
+            return False
+        async with self.lock:
+            path = channel_file.path
+            signature = (path.stat().st_mtime_ns, path.stat().st_size)
+            if not signature[1] or self.sent.get(str(path)) == signature:
+                return False
+            await self.client.send_file(self.target, str(path))
+            self.sent[str(path)] = signature
+            self.log(f"Sent {path.name} to the all-links report channel.", flush=True)
+            return True
+
+
 class RoutePreparationBarrier:
     def __init__(self, expected, log=print, on_complete=None):
         self.expected = max(1, expected)
@@ -379,7 +423,8 @@ class HistoryExporter:
 class ChannelRouteWorker:
     def __init__(self, client, source, source_id, target, target_id, writer,
                  *, dashboard_queue=None, checkpoint_dir=".", start_from=1,
-                 rescan=False, wait_time=1, log=print, preparation_barrier=None):
+                 rescan=False, wait_time=1, log=print, preparation_barrier=None,
+                 channel_link_file=None, link_report_sender=None):
         self.client = client
         self.source = source
         self.source_id = source_id
@@ -408,11 +453,17 @@ class ChannelRouteWorker:
         self.preparation_barrier = preparation_barrier or RoutePreparationBarrier(1, log=log)
         self.preparation_marked = False
         self.sent_batch_files = {}
+        self.channel_link_file = channel_link_file
+        self.link_report_sender = link_report_sender
 
     async def _mark_prepared(self):
         if not self.preparation_marked:
             self.preparation_marked = True
             await self.preparation_barrier.mark_ready()
+
+    async def _send_all_links_report(self):
+        if self.channel_link_file and self.link_report_sender:
+            await self.link_report_sender.send_latest(self.channel_link_file)
 
     async def _send_route_batches(self, history=()):
         await self.preparation_barrier.wait()
@@ -466,6 +517,7 @@ class ChannelRouteWorker:
             newest = await self.client.get_messages(self.source, limit=1)
             if not newest:
                 await self._mark_prepared()
+                await self._send_all_links_report()
                 await self._send_route_batches()
                 return 0
             latest = newest[0].id
@@ -476,6 +528,7 @@ class ChannelRouteWorker:
                 )
             if latest == self.cursor:
                 await self._mark_prepared()
+                await self._send_all_links_report()
                 await self._send_route_batches()
                 return 0
             # Telegram can return an empty page for a reverse iterator when
@@ -517,6 +570,8 @@ class ChannelRouteWorker:
             for message in history:
                 urls = extract_database_urls(message)
                 message_urls.append((message, urls))
+                if self.channel_link_file:
+                    self.channel_link_file.add_urls(urls)
                 self.writer.add_urls(urls)
                 if self.dashboard_queue:
                     self.dashboard_queue.enqueue(urls, self.target)
@@ -527,6 +582,7 @@ class ChannelRouteWorker:
                 f"attempts complete; waiting for all routes...", flush=True,
             )
             await self._mark_prepared()
+            await self._send_all_links_report()
             await self._send_route_batches(history)
             delivered = len(history)
             self.writer.save_cursor(self.cursor_key, latest)
@@ -544,10 +600,13 @@ class ChannelRouteWorker:
 
     async def save_edited_links(self, event):
         urls = extract_database_urls(event.message)
+        if self.channel_link_file:
+            self.channel_link_file.add_urls(urls)
         self.writer.add_urls(urls)
         if self.dashboard_queue:
             self.dashboard_queue.enqueue(urls, self.target)
             await self.dashboard_queue.drain()
+        await self._send_all_links_report()
         await self._send_route_batches()
         self.wake.set()
 
@@ -707,6 +766,15 @@ async def run(api_id, api_hash, routes, base_dir):
             raise RuntimeError("No configured route could be resolved; nothing to start.")
         batch_writers = []
         batch_root = Path(args.output_dir)
+        try:
+            all_links_target = await resolve_route_entity(
+                client, -1004492989164, role="all-links report channel", utils=utils
+            )
+            all_links_sender = ChannelLinkReportSender(client, all_links_target)
+        except Exception as error:
+            all_links_sender = None
+            print(f"All-links report upload disabled: {error}", flush=True)
+        channel_link_files = {}
         barrier = RoutePreparationBarrier(
             len(resolved_routes), on_complete=flush_failure_reports
         )
@@ -720,6 +788,9 @@ async def run(api_id, api_hash, routes, base_dir):
             for (source_entity, source_id, target_entity, target_id), route_writer in zip(
                 resolved_routes, batch_writers
             ):
+                channel_link_file = channel_link_files.setdefault(
+                    source_id, ChannelLinkFile(batch_root, source_id)
+                )
                 history_wait_time = float(os.getenv("TELEGRAM_HISTORY_WAIT_TIME", "0.25"))
                 if not math.isfinite(history_wait_time) or history_wait_time < 0:
                     raise ValueError("TELEGRAM_HISTORY_WAIT_TIME must be a non-negative number.")
@@ -730,6 +801,8 @@ async def run(api_id, api_hash, routes, base_dir):
                     start_from=args.from_id, rescan=args.rescan,
                     wait_time=history_wait_time,
                     preparation_barrier=barrier,
+                    channel_link_file=channel_link_file,
+                    link_report_sender=all_links_sender,
                 )
                 new_handler = route_worker.notify
                 edit_handler = route_worker.save_edited_links

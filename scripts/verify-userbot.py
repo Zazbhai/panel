@@ -18,7 +18,7 @@ from firebase_batches import FirebaseBatchWriter
 import import_firebase_batches as batch_importer
 import audit_firebase_batches as batch_audit
 from telegram_exporter import (
-    ChannelRouteWorker, DashboardDatabaseQueue, HistoryExporter,
+    ChannelLinkFile, ChannelLinkReportSender, ChannelRouteWorker, DashboardDatabaseQueue, HistoryExporter,
     DashboardAuthenticationError, IncompleteHistoryError, RoutePreparationBarrier,
     extract_database_urls, resolve_route_entity, take_failure_report_items,
 )
@@ -460,10 +460,12 @@ class RouteWorkerTests(unittest.IsolatedAsyncioTestCase):
         source = "source"
         client = FakeClient([message(1, "https://initial.firebaseio.com/")])
         client.sent_files = []
-        client.send_file = lambda target, files: None
 
         async def send_file(target, files):
-            client.sent_files.append((target, [Path(path).name for path in files]))
+            if isinstance(files, (str, Path)):
+                client.sent_files.append((target, Path(files).name, Path(files).read_text()))
+            else:
+                client.sent_files.append((target, [Path(path).name for path in files], None))
 
         client.send_file = send_file
 
@@ -479,15 +481,20 @@ class RouteWorkerTests(unittest.IsolatedAsyncioTestCase):
                 self.events.append(("drain",))
 
         dashboard = Dashboard()
+        report_file = ChannelLinkFile(self.folder.name, "source-id")
+        report_sender = ChannelLinkReportSender(client, "all-links-target",
+                                                log=lambda *_args, **_kwargs: None)
         first_writer = FirebaseBatchWriter(Path(self.folder.name) / "route-a", 1000)
         second_writer = FirebaseBatchWriter(Path(self.folder.name) / "route-b", 1000)
         try:
             first = ChannelRouteWorker(client, source, "source-id", "target-a", "target-a-id", first_writer,
                                        dashboard_queue=dashboard, checkpoint_dir=self.folder.name,
-                                       wait_time=0, log=lambda *_args, **_kwargs: None)
+                                       wait_time=0, log=lambda *_args, **_kwargs: None,
+                                       channel_link_file=report_file, link_report_sender=report_sender)
             second = ChannelRouteWorker(client, source, "source-id", "target-b", "target-b-id", second_writer,
                                         dashboard_queue=dashboard, checkpoint_dir=self.folder.name,
-                                        wait_time=0, log=lambda *_args, **_kwargs: None)
+                                        wait_time=0, log=lambda *_args, **_kwargs: None,
+                                        channel_link_file=report_file, link_report_sender=report_sender)
             await asyncio.gather(first.scan(), second.scan())
             initial_send_count = len(client.sent_files)
             new_post = message(2, "Fresh database: https://future.firebaseio.com/")
@@ -499,11 +506,18 @@ class RouteWorkerTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(first.scan(), second.scan())
             self.assertEqual(first_writer.count, 2)
             self.assertEqual(second_writer.count, 2)
+            expected_report = ("https://initial.firebaseio.com/\n"
+                               "https://future.firebaseio.com/\n")
+            report_sends = [item for item in client.sent_files if item[0] == "all-links-target"]
+            self.assertEqual(len(report_sends), 2)
+            self.assertTrue(all(item[1] == "all links of source-id.txt" for item in report_sends))
+            self.assertEqual(report_sends[-1][2], expected_report)
             self.assertEqual(first.cursor, 2)
             self.assertEqual(second.cursor, 2)
-            self.assertEqual(len(client.sent_files), initial_send_count + 2)
+            self.assertEqual(len(client.sent_files), initial_send_count + 3)
             for target in ("target-a", "target-b"):
-                route_sends = [entry for entry in client.sent_files if entry[0] == target]
+                route_sends = [entry for entry in client.sent_files
+                               if entry[0] == target and isinstance(entry[1], list)]
                 self.assertEqual(len(route_sends), 2)
                 database_events = [i for i, event in enumerate(dashboard.events)
                                    if event[0] == "enqueue" and event[1] == target]

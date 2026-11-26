@@ -89,6 +89,11 @@ Each route's SQLite file holds deduplication and progress. Keep these folders
 when restarting. Missing TXT files are regenerated from SQLite at startup. If
 upgrading from the older shared output format, the new route folders trigger an
 automatic history rescan once to rebuild the per-route batches.
+Every source channel also gets an append-only deduplicated file named
+`all links of <source-channel-id>.txt` under `firebase_batches/`. It records URLs
+before dashboard validation, so duplicate and failed Firebase checks remain in
+the file. After initial route checks, the latest file is sent to channel
+`-1004492989164`; new URL-bearing messages and edits update and resend it.
 To verify the actual cross-route unique total on the VPS without printing URLs,
 run:
 
