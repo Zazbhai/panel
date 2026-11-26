@@ -15,8 +15,15 @@ Edit `ROUTES` in `test.py`. Add one object per source-to-target pair:
     ROUTES = [
         {"source": -1004418505510, "target": "@target_one"},
         {"source": "@other_source", "target": "@target_two"},
+        {"source": "@firebase_links_bot", "target": -1005794536077},
         {"source": -1004418505510, "target": "@backup_target"},
     ]
+
+A bot can be a source the same way as a channel: use its `@username` as
+`source`. The existing logged-in user session must be able to open that bot
+conversation and see its posts (start the bot in Telegram first, if needed).
+No bot token is used to read history. The exporter extracts links from the bot's
+text, captions, hidden URL entities, and buttons.
 
 Each pair starts its own concurrent history/live worker with an independent
 checkpoint and output folder under `firebase_batches/route_<source>_<target>/`.

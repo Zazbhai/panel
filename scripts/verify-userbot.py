@@ -99,6 +99,31 @@ class ExtractionTests(unittest.TestCase):
 
 
 class EntityResolutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_bot_username_source_resolves_and_bot_message_links_extract(self):
+        bot = SimpleNamespace(id=321, title=None, username="linkbot", bot=True)
+
+        class Client:
+            async def get_entity(self, reference):
+                if reference == "@linkbot":
+                    return bot
+                raise ValueError("not cached")
+
+            async def iter_dialogs(self, limit=None):
+                if False:
+                    yield None
+
+        class Utils:
+            @staticmethod
+            def get_peer_id(entity):
+                return entity.id
+
+        resolved = await resolve_route_entity(Client(), "@linkbot", role="source channel", utils=Utils())
+        self.assertIs(resolved, bot)
+        bot_post = message(17, "Databases: https://one.firebaseio.com and https://two.firebaseio.com")
+        self.assertEqual(extract_database_urls(bot_post), [
+            "https://one.firebaseio.com/", "https://two.firebaseio.com/"
+        ])
+
     async def test_numeric_id_falls_back_to_visible_dialogs(self):
         entity = SimpleNamespace(id=123, title="Source")
 
