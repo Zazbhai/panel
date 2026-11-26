@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 
 from firebase_batches import FirebaseBatchWriter
 import import_firebase_batches as batch_importer
+import audit_firebase_batches as batch_audit
 from telegram_exporter import (
     ChannelRouteWorker, DashboardDatabaseQueue, HistoryExporter,
     DashboardAuthenticationError, IncompleteHistoryError, RoutePreparationBarrier,
@@ -713,6 +714,18 @@ class DashboardQueueTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BatchImporterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_batch_audit_counts_cross_route_duplicates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with FirebaseBatchWriter(root / "route_one", 1000) as writer:
+                writer.add_urls(["https://shared.firebaseio.com/", "https://one.firebaseio.com/"])
+            with FirebaseBatchWriter(root / "route_two", 1000) as writer:
+                writer.add_urls(["https://shared.firebaseio.com/", "https://two.firebaseio.com/"])
+            result = batch_audit.audit(root)
+            self.assertEqual(result["route_entries"], 4)
+            self.assertEqual(result["global_unique"], 3)
+            self.assertEqual(result["cross_route_duplicates"], 1)
+
     async def test_auth_required_is_not_reported_as_each_database_failure(self):
         def reject(_request, timeout):
             raise urllib.error.HTTPError("http://fixture", 401, "unauthorized", {},

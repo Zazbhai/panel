@@ -89,6 +89,13 @@ Each route's SQLite file holds deduplication and progress. Keep these folders
 when restarting. Missing TXT files are regenerated from SQLite at startup. If
 upgrading from the older shared output format, the new route folders trigger an
 automatic history rescan once to rebuild the per-route batches.
+To verify the actual cross-route unique total on the VPS without printing URLs,
+run:
+
+    python3 audit_firebase_batches.py --batch-dir firebase_batches
+
+This reports each route's count, the sum of per-route entries, the global unique
+count, and the number of URLs shared by multiple routes.
 Each route also writes a plain-text message ID checkpoint beside `test.py`,
 named `last_done_<source-id>_<target-id>.txt`. The SQLite cursor and text file
 are updated only after all database registration attempts finish and the route's

@@ -745,7 +745,8 @@ async def run(api_id, api_hash, routes, base_dir):
             print(
                 f"Started {len(workers)} route workers. Route batch output: {batch_root}; "
                 f"{args.batch_size} links per file; "
-                f"{sum(writer.count for writer in batch_writers)} unique route URLs already saved.",
+                f"{sum(writer.count for writer in batch_writers)} route URL entries already saved "
+                "(summed per route; cross-route duplicates count more than once).",
                 flush=True,
             )
             disconnected = asyncio.ensure_future(client.disconnected)
@@ -763,7 +764,8 @@ async def run(api_id, api_hash, routes, base_dir):
                     worker.cancel()
                 await asyncio.gather(*workers, return_exceptions=True)
                 await dashboard_queue.drain()
-                print(f"Workers stopped. {sum(writer.count for writer in batch_writers)} unique route URLs saved.", flush=True)
+                print(f"Workers stopped. {sum(writer.count for writer in batch_writers)} route URL entries saved "
+                      "(summed per route; cross-route duplicates count more than once).", flush=True)
         finally:
             for writer in batch_writers:
                 writer.close()
