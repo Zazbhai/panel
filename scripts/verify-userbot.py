@@ -455,6 +455,65 @@ class RouteWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item[0] for item in events],
                          ["enqueue", "enqueue", "drain", "send_files"])
 
+    async def test_new_message_updates_each_route_batch_after_registration(self):
+        source = "source"
+        client = FakeClient([message(1, "https://initial.firebaseio.com/")])
+        client.sent_files = []
+        client.send_file = lambda target, files: None
+
+        async def send_file(target, files):
+            client.sent_files.append((target, [Path(path).name for path in files]))
+
+        client.send_file = send_file
+
+        class Dashboard:
+            def __init__(self):
+                self.registered = []
+                self.events = []
+
+            def enqueue(self, urls, target):
+                self.events.extend(("enqueue", target, url) for url in urls)
+
+            async def drain(self):
+                self.events.append(("drain",))
+
+        dashboard = Dashboard()
+        first_writer = FirebaseBatchWriter(Path(self.folder.name) / "route-a", 1000)
+        second_writer = FirebaseBatchWriter(Path(self.folder.name) / "route-b", 1000)
+        try:
+            first = ChannelRouteWorker(client, source, "source-id", "target-a", "target-a-id", first_writer,
+                                       dashboard_queue=dashboard, checkpoint_dir=self.folder.name,
+                                       wait_time=0, log=lambda *_args, **_kwargs: None)
+            second = ChannelRouteWorker(client, source, "source-id", "target-b", "target-b-id", second_writer,
+                                        dashboard_queue=dashboard, checkpoint_dir=self.folder.name,
+                                        wait_time=0, log=lambda *_args, **_kwargs: None)
+            await asyncio.gather(first.scan(), second.scan())
+            initial_send_count = len(client.sent_files)
+            new_post = message(2, "Fresh database: https://future.firebaseio.com/")
+            client.messages.append(new_post)
+            first.notify(new_post)
+            second.notify(new_post)
+            self.assertTrue(first.wake.is_set() and second.wake.is_set())
+            dashboard.events.clear()
+            await asyncio.gather(first.scan(), second.scan())
+            self.assertEqual(first_writer.count, 2)
+            self.assertEqual(second_writer.count, 2)
+            self.assertEqual(first.cursor, 2)
+            self.assertEqual(second.cursor, 2)
+            self.assertEqual(len(client.sent_files), initial_send_count + 2)
+            for target in ("target-a", "target-b"):
+                route_sends = [entry for entry in client.sent_files if entry[0] == target]
+                self.assertEqual(len(route_sends), 2)
+                database_events = [i for i, event in enumerate(dashboard.events)
+                                   if event[0] == "enqueue" and event[1] == target]
+                file_events = [i for i, event in enumerate(dashboard.events) if event[0] == "drain"]
+                self.assertTrue(database_events and file_events)
+                self.assertGreater(file_events[-1], max(database_events),
+                                   "Database registration must complete before updated route files send")
+        finally:
+            first_writer.close()
+            second_writer.close()
+
     async def test_route_checkpoints_only_messages_successfully_forwarded(self):
         source = "source"
         messages = [message(1), message(2), message(3)]
