@@ -1,6 +1,7 @@
 """Export every Firebase database URL in Telegram history to local TXT batches."""
 import argparse
 import asyncio
+import hashlib
 import json
 import math
 import os
@@ -41,8 +42,7 @@ def extract_database_urls(message):
                 parts.scheme.lower(), parts.netloc.lower(),
                 parts.path or "/", parts.query, parts.fragment,
             ))
-            if url not in urls:
-                urls.append(url)
+            urls.append(url)
     return urls
 
 
@@ -55,25 +55,37 @@ class DashboardAuthenticationError(RuntimeError):
 
 
 class ChannelLinkFile:
-    """Persistent, deduplicated URL list for one source Telegram channel."""
+    """Persistent URL occurrence log for one source Telegram channel."""
     def __init__(self, output_dir, source_id):
         self.path = Path(output_dir) / f"all links of {source_id}.txt"
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.urls = set()
-        if self.path.exists():
-            self.urls.update(line.strip() for line in self.path.read_text(encoding="utf-8").splitlines()
-                             if line.strip())
+        self.message_ids_path = self.path.with_suffix(".message_ids")
+        self.message_ids = set()
+        if self.message_ids_path.exists():
+            self.message_ids.update(line.strip() for line in
+                                    self.message_ids_path.read_text(encoding="utf-8").splitlines()
+                                    if line.strip())
 
-    def add_urls(self, urls):
-        added = []
-        for url in urls:
-            if url and url not in self.urls:
-                self.urls.add(url)
-                added.append(url)
-        if added:
-            with self.path.open("a", encoding="utf-8", newline="\n") as handle:
-                handle.writelines(url + "\n" for url in added)
-        return len(added)
+    def _append_message_urls(self, message_id, urls, *, edit_key=None):
+        urls = [url for url in urls if url]
+        if not urls:
+            return 0
+        key = f"{message_id}:{edit_key}" if edit_key else str(message_id)
+        if key in self.message_ids:
+            return 0
+        with self.path.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.writelines(url + "\n" for url in urls)
+        with self.message_ids_path.open("a", encoding="utf-8", newline="\n") as ledger:
+            ledger.write(key + "\n")
+        self.message_ids.add(key)
+        return len(urls)
+
+    def add_message(self, message_id, urls):
+        return self._append_message_urls(message_id, urls)
+
+    def add_edit(self, message_id, urls):
+        signature = hashlib.sha256("\n".join(urls).encode("utf-8")).hexdigest()
+        return self._append_message_urls(message_id, urls, edit_key=signature)
 
 
 class ChannelLinkReportSender:
@@ -571,7 +583,7 @@ class ChannelRouteWorker:
                 urls = extract_database_urls(message)
                 message_urls.append((message, urls))
                 if self.channel_link_file:
-                    self.channel_link_file.add_urls(urls)
+                    self.channel_link_file.add_message(message.id, urls)
                 self.writer.add_urls(urls)
                 if self.dashboard_queue:
                     self.dashboard_queue.enqueue(urls, self.target)
@@ -601,7 +613,7 @@ class ChannelRouteWorker:
     async def save_edited_links(self, event):
         urls = extract_database_urls(event.message)
         if self.channel_link_file:
-            self.channel_link_file.add_urls(urls)
+            self.channel_link_file.add_edit(event.message.id, urls)
         self.writer.add_urls(urls)
         if self.dashboard_queue:
             self.dashboard_queue.enqueue(urls, self.target)

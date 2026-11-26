@@ -88,7 +88,7 @@ class ExtractionTests(unittest.TestCase):
     def test_duplicate_plain_root_and_trailing_slash(self):
         self.assertEqual(extract_database_urls(message(
             1, "https://one.firebaseio.com https://one.firebaseio.com/"
-        )), ["https://one.firebaseio.com/"])
+        )), ["https://one.firebaseio.com/", "https://one.firebaseio.com/"])
 
     def test_punctuation_no_urls_and_non_firebase_domains(self):
         self.assertEqual(extract_database_urls(message(
@@ -497,7 +497,7 @@ class RouteWorkerTests(unittest.IsolatedAsyncioTestCase):
                                         channel_link_file=report_file, link_report_sender=report_sender)
             await asyncio.gather(first.scan(), second.scan())
             initial_send_count = len(client.sent_files)
-            new_post = message(2, "Fresh database: https://future.firebaseio.com/")
+            new_post = message(2, "Repeat https://initial.firebaseio.com/ and add https://future.firebaseio.com/")
             client.messages.append(new_post)
             first.notify(new_post)
             second.notify(new_post)
@@ -507,6 +507,7 @@ class RouteWorkerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(first_writer.count, 2)
             self.assertEqual(second_writer.count, 2)
             expected_report = ("https://initial.firebaseio.com/\n"
+                               "https://initial.firebaseio.com/\n"
                                "https://future.firebaseio.com/\n")
             report_sends = [item for item in client.sent_files if item[0] == "all-links-target"]
             self.assertEqual(len(report_sends), 2)
