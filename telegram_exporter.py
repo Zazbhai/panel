@@ -607,7 +607,7 @@ class ChannelRouteWorker:
             )
             return delivered
 
-    def notify(self, _event=None):
+    async def notify(self, _event=None):
         self.wake.set()
 
     async def save_edited_links(self, event):
