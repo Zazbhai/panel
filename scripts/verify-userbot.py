@@ -17,7 +17,8 @@ sys.path.insert(0, str(ROOT))
 from firebase_batches import FirebaseBatchWriter
 from telegram_exporter import (
     ChannelRouteWorker, DashboardDatabaseQueue, HistoryExporter,
-    IncompleteHistoryError, extract_database_urls, resolve_route_entity,
+    IncompleteHistoryError, RoutePreparationBarrier, extract_database_urls,
+    resolve_route_entity,
 )
 
 
@@ -149,6 +150,20 @@ class EntityResolutionTests(unittest.IsolatedAsyncioTestCase):
                 skipped.append((source, target, str(error)))
         self.assertEqual(resolved, [("source", "target")])
         self.assertEqual(len(skipped), 1)
+
+
+class RoutePreparationBarrierTests(unittest.IsolatedAsyncioTestCase):
+    async def test_notification_failure_does_not_hold_batch_delivery_barrier(self):
+        async def fail_summary():
+            raise RuntimeError("Telegram FloodWait")
+
+        barrier = RoutePreparationBarrier(2, log=lambda *_args, **_kwargs: None,
+                                          on_complete=fail_summary)
+        await barrier.mark_ready()
+        self.assertFalse(barrier.event.is_set())
+        await barrier.mark_ready()
+        await asyncio.wait_for(barrier.wait(), timeout=0.1)
+        self.assertTrue(barrier.event.is_set())
 
 
 class BatchTests(unittest.TestCase):

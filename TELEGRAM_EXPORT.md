@@ -30,15 +30,16 @@ URL checks run concurrently with a bounded pool, so forwarding does not wait for
 the dashboard checks. A URL rejected by Firebase is logged and eligible for
 submission again when it appears in a later post.
 
-Messages are forwarded to their configured targets. All Firebase URLs in each
-message, caption, hidden text link or URL button are exported to local TXT files,
-one URL per line, and submitted to the dashboard's `/api/addDatabaseUrl` endpoint.
+Firebase URLs in each message, caption, hidden text link or URL button are
+exported to local TXT files, one URL per line, and submitted to the dashboard's
+`/api/addDatabaseUrl` endpoint. Source messages are not forwarded individually.
 The endpoint defaults to `http://127.0.0.1:3000/api/addDatabaseUrl`; set
 `DASHBOARD_ADD_DATABASE_URL_ENDPOINT` if the dashboard uses another address.
 `DASHBOARD_API_KEY` is read from the environment or the adjacent `.env` file.
 Duplicate TXT URLs are skipped across messages and restarts.
-If dashboard registration fails, the worker sends the URL and error to the target
-channel(s) for that route. To also send failures through a Telegram bot, set
+If dashboard registration fails, the worker collects the URL and error, then
+sends one summary per target after every route finishes registration. To also
+send the summary through a Telegram bot, set
 `DATABASE_FAILURE_BOT_TOKEN` and `DATABASE_FAILURE_BOT_CHAT_ID` in the environment
 or adjacent `.env`. The bot must be started and allowed to message that chat.
 Failure alerts are spaced at 1.1 seconds by default; change this with
@@ -64,15 +65,16 @@ when restarting. Missing TXT files are regenerated from SQLite at startup. If
 upgrading from the older shared output format, the new route folders trigger an
 automatic history rescan once to rebuild the per-route batches.
 Each route also writes a plain-text message ID checkpoint beside `test.py`,
-named `last_done_<source-id>_<target-id>.txt`. For the example route, it will be
-`last_done_-1004418505510_<target-peer-id>.txt`. The SQLite cursor and text file
-are both updated only after Telegram confirms that message was forwarded.
+named `last_done_<source-id>_<target-id>.txt`. The SQLite cursor and text file
+are updated only after all database registration attempts finish and the route's
+batch files are sent successfully to Telegram.
 
 The first run scans available history for each configured source-target route,
 oldest first, then keeps watching for new posts. Events wake workers and polling
 every 10 seconds catches missed notifications. Each route advances its own
-checkpoint only after a message was forwarded; a failed or interrupted message
-is retried without skipping it. Firebase URL output is globally deduplicated.
+checkpoint only after registration and batch-file delivery; a failed upload is
+retried without skipping that route's batch. Firebase URL output is deduplicated
+within each route.
 
 To explicitly recheck older available messages:
 

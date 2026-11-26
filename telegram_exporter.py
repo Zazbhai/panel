@@ -51,23 +51,34 @@ class IncompleteHistoryError(RuntimeError):
 
 
 class RoutePreparationBarrier:
-    def __init__(self, expected, log=print):
+    def __init__(self, expected, log=print, on_complete=None):
         self.expected = max(1, expected)
         self.ready = 0
         self.event = asyncio.Event()
         self.log = log
+        self.on_complete = on_complete
 
-    def mark_ready(self):
+    async def mark_ready(self):
         self.ready += 1
         if self.ready >= self.expected:
             self.log(
                 f"All {self.expected} route(s) finished database registration; "
-                "sending route batch files...", flush=True,
+                "sending failure summaries before route batch files...", flush=True,
             )
+            if self.on_complete:
+                try:
+                    await self.on_complete()
+                except Exception as error:
+                    self.log(f"Could not send failure summaries: {error}", flush=True)
             self.event.set()
 
     async def wait(self):
         await self.event.wait()
+
+
+def target_identity(target):
+    peer_id = getattr(target, "id", None)
+    return (type(target).__name__, peer_id) if peer_id is not None else (type(target).__name__, repr(target))
 
 
 def is_unforwardable_message(message):
@@ -341,10 +352,10 @@ class ChannelRouteWorker:
         self.preparation_marked = False
         self.sent_batch_files = {}
 
-    def _mark_prepared(self):
+    async def _mark_prepared(self):
         if not self.preparation_marked:
             self.preparation_marked = True
-            self.preparation_barrier.mark_ready()
+            await self.preparation_barrier.mark_ready()
 
     async def _send_route_batches(self, history=()):
         await self.preparation_barrier.wait()
@@ -393,7 +404,8 @@ class ChannelRouteWorker:
         async with self.lock:
             newest = await self.client.get_messages(self.source, limit=1)
             if not newest:
-                self._mark_prepared()
+                await self._mark_prepared()
+                await self._send_route_batches()
                 return 0
             latest = newest[0].id
             if latest < self.cursor:
@@ -402,7 +414,8 @@ class ChannelRouteWorker:
                     f"checkpoint #{self.cursor}."
                 )
             if latest == self.cursor:
-                self._mark_prepared()
+                await self._mark_prepared()
+                await self._send_route_batches()
                 return 0
             # Telegram can return an empty page for a reverse iterator when
             # offset_id is the current newest post, even though the same
@@ -452,7 +465,7 @@ class ChannelRouteWorker:
                 f"Route {self.source_id} -> {self.target_id}: database registration "
                 f"attempts complete; waiting for all routes...", flush=True,
             )
-            self._mark_prepared()
+            await self._mark_prepared()
             await self._send_route_batches(history)
             delivered = len(history)
             self.writer.save_cursor(self.cursor_key, latest)
@@ -535,34 +548,62 @@ async def run(api_id, api_hash, routes, base_dir):
     bot_last_alert_at = 0.0
     bot_alert_disabled = False
 
+    failure_reports = {}
+    failure_reports_lock = asyncio.Lock()
+
     async def notify_database_failure(url, detail, targets):
         nonlocal bot_last_alert_at, bot_alert_disabled
-        message = f"Database registration failed.\n{url}\n{detail[:2000]}"
-        for target in targets:
+        async with failure_reports_lock:
+            for target in targets:
+                key = target_identity(target)
+                report = failure_reports.setdefault(key, {"target": target, "items": []})
+                report["items"].append((url, detail))
+            failure_reports.setdefault(("bot", str(bot_chat_id)), {"target": None, "items": []})["items"].append((url, detail))
+
+    async def flush_failure_reports():
+        nonlocal bot_last_alert_at, bot_alert_disabled
+        async with failure_reports_lock:
+            reports = list(failure_reports.values())
+            failure_reports.clear()
+        bot_items = []
+        for report in reports:
+            items = report["items"]
+            target = report["target"]
+            if target is None:
+                bot_items.extend(items)
+                continue
+            lines = [f"Database registration failures: {len(items)} URL(s)."]
+            lines.extend(f"{url} - {detail[:250]}" for url, detail in items[:40])
+            if len(items) > 40:
+                lines.append(f"...and {len(items) - 40} more. Full list is in firebase_batch_import_failures.txt.")
             try:
-                await client.send_message(target, message)
+                await client.send_message(target, "\n".join(lines)[:4000])
             except Exception as error:
-                print(f"Could not notify target {target} about {url}: {error}", flush=True)
-        if bot_token and bot_chat_id and not bot_alert_disabled:
+                print(f"Could not send summarized database failures to target "
+                      f"{target_identity(target)}: {type(error).__name__}: {error}", flush=True)
+        if bot_items and bot_token and bot_chat_id and not bot_alert_disabled:
+            message = f"Database registration failures: {len(bot_items)} URL(s).\n"
+            message += "\n".join(f"{url} - {detail[:250]}" for url, detail in bot_items[:40])
+            if len(bot_items) > 40:
+                message += f"\n...and {len(bot_items) - 40} more."
             try:
                 async with bot_alert_lock:
                     if bot_last_alert_at:
                         delay = bot_alert_interval - (asyncio.get_running_loop().time() - bot_last_alert_at)
                         if delay > 0:
                             await asyncio.sleep(delay)
-                    await asyncio.to_thread(send_bot_message, bot_token, bot_chat_id, message)
+                    await asyncio.to_thread(send_bot_message, bot_token, bot_chat_id, message[:4000])
                     bot_last_alert_at = asyncio.get_running_loop().time()
             except RuntimeError as error:
                 error_text = str(error)
-                print(f"Could not send database failure to configured bot: {error_text}", flush=True)
+                print(f"Could not send database failure summary to configured bot: {error_text}", flush=True)
                 if " HTTP 400:" in error_text or " HTTP 401:" in error_text or " HTTP 403:" in error_text:
                     bot_alert_disabled = True
             except Exception as error:
-                print("Could not send database failure to configured bot: "
+                print(f"Could not send database failure summary to configured bot: "
                       f"{type(error).__name__}: {error}", flush=True)
-        else:
-            print("Bot failure alerts disabled; set DATABASE_FAILURE_BOT_TOKEN and "
-                  "DATABASE_FAILURE_BOT_CHAT_ID in .env.", flush=True)
+        elif bot_items and not (bot_token and bot_chat_id):
+            print(f"Bot failure alerts disabled; {len(bot_items)} database failure(s) summarized in logs.", flush=True)
 
     dashboard_queue = DashboardDatabaseQueue(
         dashboard_endpoint,
@@ -619,7 +660,9 @@ async def run(api_id, api_hash, routes, base_dir):
             raise RuntimeError("No configured route could be resolved; nothing to start.")
         batch_writers = []
         batch_root = Path(args.output_dir)
-        barrier = RoutePreparationBarrier(len(resolved_routes))
+        barrier = RoutePreparationBarrier(
+            len(resolved_routes), on_complete=flush_failure_reports
+        )
         for _source_entity, source_id, _target_entity, target_id in resolved_routes:
             route_folder = batch_root / f"route_{source_id}_{target_id}"
             route_writer = FirebaseBatchWriter(route_folder, args.batch_size)
