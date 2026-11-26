@@ -296,10 +296,15 @@ class DashboardDatabaseQueue:
         query = dict(urllib.parse.parse_qsl(parts.query))
         query["api_key"] = self.api_key
         endpoint = urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(query)))
+        dashboard_origin = f"{parts.scheme}://{parts.netloc}"
         request = urllib.request.Request(
             endpoint,
             data=json.dumps({"databaseUrls": urls}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Origin": dashboard_origin,
+                "Referer": dashboard_origin + "/",
+            },
             method="POST",
         )
         try:

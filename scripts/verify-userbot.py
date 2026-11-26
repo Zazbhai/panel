@@ -653,6 +653,8 @@ class DashboardQueueTests(unittest.IsolatedAsyncioTestCase):
             requests.append(request)
             self.assertEqual(json.loads(request.data), {"databaseUrls": urls})
             self.assertIn("/api/addDatabaseUrls?api_key=synthetic-key", request.full_url)
+            self.assertEqual(request.get_header("Origin"), "http://fixture")
+            self.assertEqual(request.get_header("Referer"), "http://fixture/")
             return io.BytesIO(json.dumps({"results": results}).encode())
 
         failures = []
