@@ -32,6 +32,7 @@ class Fixture:
         self.blocked = []
         self.failure = None
         self.empty = False
+        self.bulk_requests = []
 
     def handle(self, route):
         request = route.request
@@ -62,6 +63,20 @@ class Fixture:
                 self.writes.append({'path': path, 'body': body})
                 if path == '/api/services': self.services = body['services']
                 if path == '/api/rotation': self.rotation = body['databaseUrls']
+                if path == '/api/addDatabaseUrls':
+                    self.bulk_requests.append(body['databaseUrls'])
+                    results = []
+                    for database in body['databaseUrls']:
+                        if 'unreachable' in database:
+                            results.append({'url': database, 'status': 'error', 'reason': 'Firebase returned HTTP 423.'})
+                        elif database in self.rotation:
+                            results.append({'url': database, 'status': 'duplicate', 'reason': 'Already in rotation.'})
+                        else:
+                            self.rotation.append(database)
+                            results.append({'url': database, 'status': 'added'})
+                    route.fulfill(json={'added': sum(item['status'] == 'added' for item in results),
+                                        'counts': {}, 'results': results})
+                    return
             section = parse_qs(url.query).get('section', [''])[0]
             if path == '/api/config': data = {'databaseUrl': DATABASE}
             elif path == '/api/health': data = {'status': 'ok'}
@@ -249,6 +264,20 @@ def main():
         page.locator('#saveRotationButton').click()
         expect(page.locator('#rotationStatus')).to_contain_text('Saved 2')
         assert fixture.rotation==[DATABASE,'https://second-preview.firebaseio.com']
+        page.locator('#rotationImportFile').set_input_files({
+            'name': 'firebase-urls.txt', 'mimeType': 'text/plain',
+            'buffer': (DATABASE+'\nhttps://new-preview.firebaseio.com/\n'
+                       'https://unreachable-preview.firebaseio.com/\n'
+                       'https://new-preview.firebaseio.com/\n').encode()
+        })
+        expect(page.locator('#rotationImportButton')).to_be_enabled()
+        page.locator('#rotationImportButton').click()
+        expect(page.locator('#rotationImportStatus')).to_contain_text('Added 1; 1 already in rotation; 1 invalid or unreachable')
+        expect(page.locator('#rotationImportErrorRows')).to_contain_text('Firebase returned HTTP 423')
+        assert fixture.rotation == [DATABASE, 'https://second-preview.firebaseio.com',
+                                    'https://new-preview.firebaseio.com/']
+        assert fixture.bulk_requests == [[DATABASE, 'https://new-preview.firebaseio.com/',
+                                          'https://unreachable-preview.firebaseio.com/']]
 
         ready(page, '/api-docs')
         page.locator('#applyDashboardApiKey').click()

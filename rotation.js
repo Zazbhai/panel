@@ -8,6 +8,11 @@ const deviceStatsStatus = document.getElementById("deviceStatsStatus");
 const totalDevices = document.getElementById("totalDevices");
 const activeDevices = document.getElementById("activeDevices");
 const offlineDevices = document.getElementById("offlineDevices");
+const rotationImportFile = document.getElementById("rotationImportFile");
+const rotationImportButton = document.getElementById("rotationImportButton");
+const rotationImportStatus = document.getElementById("rotationImportStatus");
+const rotationImportErrors = document.getElementById("rotationImportErrors");
+const rotationImportErrorRows = document.getElementById("rotationImportErrorRows");
 let rotationReady = false;
 let rotationSaving = false;
 let rotationLoading = false;
@@ -15,12 +20,16 @@ let deviceStatsLoading = false;
 let deviceStatsPollTimer = null;
 let rotationDirty = false;
 let lastSavedDatabaseUrls = "";
+let rotationImporting = false;
 
 function updateRotationControls() {
-  const busy = rotationLoading || rotationSaving || deviceStatsLoading;
-  databaseUrlsInput.disabled = rotationSaving || deviceStatsLoading;
+  const busy = rotationLoading || rotationSaving || deviceStatsLoading || rotationImporting;
+  databaseUrlsInput.disabled = rotationSaving || deviceStatsLoading || rotationImporting;
   saveRotationButton.disabled = !rotationReady || busy;
   checkDeviceStatsButton.disabled = !rotationReady || busy || rotationDirty;
+  rotationImportFile.disabled = rotationImporting || rotationSaving || deviceStatsLoading;
+  rotationImportButton.disabled = !rotationReady || rotationImporting || rotationSaving
+    || deviceStatsLoading || !rotationImportFile.files?.length;
   deviceStatsStatus.toggleAttribute("data-loading", deviceStatsLoading);
 }
 
@@ -235,6 +244,85 @@ rotationForm.addEventListener("submit", async (event) => {
     setRotationStatus(`Could not save database rotation settings: ${error.message}`, true);
   } finally {
     rotationSaving = false;
+    updateRotationControls();
+  }
+});
+
+rotationImportFile.addEventListener("change", () => {
+  rotationImportStatus.textContent = rotationImportFile.files?.[0]?.name || "";
+  rotationImportStatus.classList.remove("error");
+  updateRotationControls();
+});
+
+rotationImportButton.addEventListener("click", async () => {
+  const file = rotationImportFile.files?.[0];
+  if (!file || rotationImporting || !rotationReady) return;
+  if (!file.name.toLowerCase().endsWith(".txt") || file.size > 5 * 1024 * 1024) {
+    rotationImportStatus.textContent = "Choose a .txt file smaller than 5 MB.";
+    rotationImportStatus.classList.add("error");
+    return;
+  }
+  const lines = (await file.text()).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const databaseUrls = [...new Set(lines)];
+  const malformed = databaseUrls.filter((line) => !/^https:\/\//i.test(line));
+  const candidates = databaseUrls.filter((line) => /^https:\/\//i.test(line));
+  if (!candidates.length) {
+    rotationImportStatus.textContent = "No HTTPS database URLs were found in the file.";
+    rotationImportStatus.classList.add("error");
+    return;
+  }
+
+  rotationImporting = true;
+  rotationImportErrors.hidden = true;
+  rotationImportErrorRows.replaceChildren();
+  updateRotationControls();
+  rotationImportStatus.classList.remove("error");
+  const failures = malformed.map((url) => ({ url, reason: "Expected one HTTPS URL per line." }));
+  let added = 0;
+  let duplicates = 0;
+  const batchSize = 1000;
+  try {
+    for (let offset = 0; offset < candidates.length; offset += batchSize) {
+      const batch = candidates.slice(offset, offset + batchSize);
+      rotationImportStatus.textContent = `Checking ${Math.min(offset + batch.length, candidates.length)} of ${candidates.length} URLs...`;
+      const response = await window.dashboardApiFetch("/api/addDatabaseUrls", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ databaseUrls: batch })
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result?.error || `Bulk database check failed (HTTP ${response.status}).`);
+      if (!Array.isArray(result.results) || result.results.length !== batch.length) {
+        throw new Error("The server returned an incomplete URL check result.");
+      }
+      for (const item of result.results) {
+        if (item.status === "added") added += 1;
+        else if (item.status === "duplicate") duplicates += 1;
+        else failures.push({ url: item.url, reason: item.reason || "Database check failed." });
+      }
+    }
+    await loadRotationSettings();
+    rotationImportStatus.textContent = `Added ${added}; ${duplicates} already in rotation; ${failures.length} invalid or unreachable.`;
+    rotationImportStatus.classList.toggle("error", failures.length > 0);
+    if (failures.length) {
+      const fragment = document.createDocumentFragment();
+      for (const failure of failures) {
+        const row = document.createElement("tr");
+        const url = document.createElement("td");
+        url.textContent = failure.url;
+        const reason = document.createElement("td");
+        reason.textContent = failure.reason;
+        row.append(url, reason);
+        fragment.append(row);
+      }
+      rotationImportErrorRows.replaceChildren(fragment);
+      rotationImportErrors.hidden = false;
+    }
+  } catch (error) {
+    rotationImportStatus.textContent = `Could not import URL file: ${error.message}`;
+    rotationImportStatus.classList.add("error");
+  } finally {
+    rotationImporting = false;
     updateRotationControls();
   }
 });

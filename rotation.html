@@ -334,6 +334,11 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
 .rotation-panel .panel-heading { flex-wrap: wrap; }
 .database-count { display: inline-flex; align-items: baseline; gap: 8px; margin: 0; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft); color: var(--muted); font-size: .75rem; white-space: nowrap; }
 .database-count strong { color: var(--ink); font-size: 1.1rem; font-variant-numeric: tabular-nums; }
+.rotation-import-toolbar { display: flex; align-items: end; gap: 12px; flex-wrap: wrap; margin-top: 18px; }
+.rotation-import-toolbar .field { flex: 1 1 280px; max-width: 520px; }
+.rotation-import-errors { max-height: 300px; overflow: auto; margin-top: 12px; }
+.rotation-import-errors table { min-width: 620px; }
+.rotation-import-errors td { overflow-wrap: anywhere; }
 .device-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 20px 0 0; }
 .device-stat { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft); }
 .device-stat dt { color: var(--muted); font-size: .75rem; }
@@ -377,6 +382,23 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
         <button id="saveRotationButton" type="submit" disabled>Save rotation</button>
         <p id="rotationStatus" class="status" role="status" aria-live="polite">Loading saved settings…</p>
       </form>
+      <section aria-labelledby="rotationImportHeading">
+        <h3 id="rotationImportHeading">Add databases from a text file</h3>
+        <p class="hint">Select a .txt file with one Firebase URL per line. Valid URLs are added to the end of rotation; existing URLs are skipped.</p>
+        <div class="rotation-import-toolbar">
+          <label class="field" for="rotationImportFile">Firebase URL file
+            <input id="rotationImportFile" type="file" accept=".txt,text/plain">
+          </label>
+          <button id="rotationImportButton" type="button" disabled>Check and add</button>
+        </div>
+        <p id="rotationImportStatus" class="status" role="status" aria-live="polite"></p>
+        <div id="rotationImportErrors" class="rotation-import-errors" hidden>
+          <table class="database-stock-table">
+            <thead><tr><th scope="col">Database URL</th><th scope="col">Result</th></tr></thead>
+            <tbody id="rotationImportErrorRows"></tbody>
+          </table>
+        </div>
+      </section>
     </section>
     <section class="panel rotation-panel" aria-labelledby="deviceStatsHeading">
       <div class="panel-heading">

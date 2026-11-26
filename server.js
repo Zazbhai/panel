@@ -3590,11 +3590,13 @@ async function handleRequest(request, response) {
   const requiresExplicitApiKey = isLocalOtpApi
     || requestUrl.pathname === "/api/otp-provider"
     || requestUrl.pathname === "/api/addDatabaseUrl"
-    || requestUrl.pathname === "/api/addDatabaseUrls"
     || requestUrl.pathname === "/api/health"
     || requestUrl.pathname === "/api/balance";
+  const isBulkDatabaseUrlApi = requestUrl.pathname === "/api/addDatabaseUrls";
   if (isApiRequest) {
-    const authorized = requiresExplicitApiKey
+    const authorized = isBulkDatabaseUrlApi
+      ? hasValidApiKey(requestUrl) || (hasValidAdminSession(request) && isSameOriginRequest(request))
+      : requiresExplicitApiKey
       ? hasValidApiKey(requestUrl)
       : hasValidAdminSession(request);
     if (!authorized) {

@@ -248,6 +248,11 @@ async function bulkDatabaseRegistration() {
   assert.equal((await f.request("/api/addDatabaseUrls", {
     method: "POST", body: { databaseUrls: urls }
   })).status, 401);
+  const adminSession = await f.request("/api/addDatabaseUrls", {
+    method: "POST", body: { databaseUrls: urls.slice(0, 1) }, admin: true
+  });
+  assert.equal(adminSession.status, 200,
+    "Same-origin authenticated rotation pages may use the admin session instead of an API key");
   assert.equal((await f.request("/api/addDatabaseUrls?api_key=" + f.apiKey, {
     method: "POST", body: { databaseUrls: Array(1001).fill(urls[0]) }
   })).status, 400);
