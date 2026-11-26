@@ -209,6 +209,71 @@ async function manualFreshStockFailures() {
   console.log("PASS: fresh-check API reports every database error, restricts admin access and resets on retry.");
 }
 
+async function bulkDatabaseRegistration() {
+  const f = fixture();
+  await f.context.getRuntimeStore();
+  const urls = [
+    "https://bulk-one.firebaseio.com",
+    "https://bulk-two.firebaseio.com",
+    "https://bulk-one.firebaseio.com/",
+    "https://bulk-locked.firebaseio.com"
+  ];
+  const active = new Set();
+  let peak = 0;
+  f.fetch = async (url) => {
+    active.add(url);
+    peak = Math.max(peak, active.size);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    active.delete(url);
+    if (url.includes("bulk-locked")) return { ok: false, status: 423 };
+    return { ok: true, status: 200, text: async () => "{}" };
+  };
+  const response = await f.request("/api/addDatabaseUrls?api_key=" + f.apiKey,
+    { method: "POST", body: { databaseUrls: urls } });
+  assert.equal(response.status, 200);
+  const result = JSON.parse(response.body);
+  assert.equal(result.added, 2);
+  assert.deepEqual(result.counts, { added: 2, duplicate: 1, error: 1 });
+  assert(result.results.find((item) => item.url.includes("bulk-locked")).reason.includes("423"));
+  assert(peak > 1, "Bulk endpoint should ping Firebase URLs concurrently");
+  const rotation = await f.context.readRotationMetadata();
+  assert.deepEqual(Array.from(rotation.databaseUrls), [
+    "https://fixture.firebaseio.com", "https://bulk-one.firebaseio.com", "https://bulk-two.firebaseio.com"
+  ]);
+  const reads = f.requests.length;
+  const duplicate = await f.request("/api/addDatabaseUrls?api_key=" + f.apiKey,
+    { method: "POST", body: { databaseUrls: urls.slice(0, 2) } });
+  assert.equal(JSON.parse(duplicate.body).counts.duplicate, 2);
+  assert.equal(f.requests.length, reads, "Known URLs must not be checked again");
+  assert.equal((await f.request("/api/addDatabaseUrls", {
+    method: "POST", body: { databaseUrls: urls }
+  })).status, 401);
+  assert.equal((await f.request("/api/addDatabaseUrls?api_key=" + f.apiKey, {
+    method: "POST", body: { databaseUrls: Array(1001).fill(urls[0]) }
+  })).status, 400);
+  console.log("PASS: bulk database registration validates concurrently and preserves per-URL results.");
+
+  for (const capacity of [3, 1000]) {
+    const bulk = fixture({ env: { MAX_CONCURRENT_DATABASE_READS: String(capacity) } });
+    let running = 0, highest = 0;
+    bulk.fetch = async () => {
+      running++;
+      highest = Math.max(highest, running);
+      await new Promise(setImmediate);
+      running--;
+      return { status: 200, text: async () => "{}" };
+    };
+    const response = await bulk.request("/api/addDatabaseUrls?api_key=" + bulk.apiKey, {
+      method: "POST", body: { databaseUrls: Array.from({ length: 1000 },
+        (_, index) => `https://bulk-${index}.firebaseio.com`) }
+    });
+    assert.equal(response.status, 200);
+    assert.equal(JSON.parse(response.body).added, 1000);
+    assert.equal(highest, capacity, "Actual upstream concurrency must match the configured capacity");
+  }
+  console.log("PASS: 1,000-URL batches respect a cap of 3 and reach 1,000 simultaneous checks when configured.");
+}
+
 function readyEligibility() {
   const store = new RuntimeStore(":memory:");
   try {
@@ -366,5 +431,5 @@ async function briefWriteLock() {
 }
 
 (async () => {
-  readyEligibility(); databaseStockBreakdown(); emptySnapshotSafety(); await briefWriteLock(); await diskBurst(); await stockCache(); await manualFreshStockCheck(); await manualFreshStockFailures(); await readyApi(); await stockUi();
+  readyEligibility(); databaseStockBreakdown(); emptySnapshotSafety(); await briefWriteLock(); await diskBurst(); await stockCache(); await manualFreshStockCheck(); await manualFreshStockFailures(); await bulkDatabaseRegistration(); await readyApi(); await stockUi();
 })().catch((error) => { console.error(error); process.exitCode = 1; });

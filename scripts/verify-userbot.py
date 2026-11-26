@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from firebase_batches import FirebaseBatchWriter
+import import_firebase_batches as batch_importer
 from telegram_exporter import (
     ChannelRouteWorker, DashboardDatabaseQueue, HistoryExporter,
     IncompleteHistoryError, RoutePreparationBarrier, extract_database_urls,
@@ -535,32 +536,53 @@ class RouteWorkerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class DashboardQueueTests(unittest.IsolatedAsyncioTestCase):
-    async def test_dashboard_url_checks_are_deduplicated_and_bounded(self):
-        queue = DashboardDatabaseQueue("http://fixture/api/addDatabaseUrl", "key", concurrency=2,
+    async def test_bulk_http_payload_and_per_url_errors(self):
+        requests = []
+        queue = DashboardDatabaseQueue("http://fixture/api/addDatabaseUrl", "synthetic-key",
                                        log=lambda *_args, **_kwargs: None)
-        lock = threading.Lock()
-        active = 0
-        peak = 0
-        added = []
+        urls = ["https://good.firebaseio.com/", "https://locked.firebaseio.com/"]
+        results = [{"url": urls[0].rstrip("/"), "status": "added"},
+                   {"url": urls[1].rstrip("/"), "status": "error", "reason": "Firebase HTTP 423"}]
 
-        def request(url):
-            nonlocal active, peak
-            with lock:
-                active += 1
-                peak = max(peak, active)
-            time.sleep(0.01)
-            added.append(url)
-            with lock:
-                active -= 1
+        def respond(request, timeout):
+            import json
+            requests.append(request)
+            self.assertEqual(json.loads(request.data), {"databaseUrls": urls})
+            self.assertIn("/api/addDatabaseUrls?api_key=synthetic-key", request.full_url)
+            return io.BytesIO(json.dumps({"results": results}).encode())
 
-        queue._request = request
-        urls = [f"https://db-{index}.firebaseio.com/" for index in range(5)]
+        failures = []
+
+        async def notify(url, reason, targets):
+            failures.append((url, reason, targets))
+
+        queue.on_failure = notify
+        queue.enqueue(urls, "target")
+        with patch("urllib.request.urlopen", side_effect=respond):
+            await queue.drain()
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(failures, [(urls[1], "Firebase HTTP 423", ("target",))])
+        self.assertIn(urls[0], queue.seen)
+        self.assertNotIn(urls[1], queue.seen)
+
+    async def test_dashboard_url_checks_are_deduplicated_and_bounded(self):
+        queue = DashboardDatabaseQueue("http://fixture/api/addDatabaseUrl", "key",
+                                       log=lambda *_args, **_kwargs: None)
+        batches = []
+
+        def request(urls):
+            batches.append(list(urls))
+            return [{"url": url.rstrip("/"), "status": "added"} for url in urls]
+
+        queue._request_batch = request
+        urls = [f"https://db-{index}.firebaseio.com/" for index in range(2501)]
         queue.enqueue(urls[:3])
         queue.enqueue(urls[1:])
-        await queue.drain()
-        self.assertCountEqual(added, urls)
-        self.assertGreater(peak, 1, "Dashboard checks should run in parallel")
-        self.assertLessEqual(peak, 2, "Dashboard checks must honor configured concurrency")
+        await asyncio.gather(queue.drain(), queue.drain())
+        self.assertEqual([len(batch) for batch in batches], [1000, 1000, 501])
+        self.assertEqual([url for batch in batches for url in batch], urls)
+        self.assertEqual(len(queue.seen), len(urls), "Normalized response URLs must match their inputs")
+        self.assertEqual(queue._bulk_endpoint(), "http://fixture/api/addDatabaseUrls")
 
     async def test_failed_database_notifies_all_route_targets(self):
         notifications = []
@@ -579,7 +601,7 @@ class DashboardQueueTests(unittest.IsolatedAsyncioTestCase):
                 io.BytesIO(b'{"error":"Firebase returned HTTP 423"}'),
             )
 
-        queue._request = reject
+        queue._request_batch = reject
         url = "https://failed.firebaseio.com/"
         queue.enqueue([url], "target-a")
         queue.enqueue([url], "target-b")
@@ -587,7 +609,7 @@ class DashboardQueueTests(unittest.IsolatedAsyncioTestCase):
         await queue.drain()
         self.assertEqual(len(notifications), 1)
         self.assertEqual(notifications[0][0], url)
-        self.assertIn("HTTP 502", notifications[0][1])
+        self.assertIn("502", notifications[0][1])
         self.assertCountEqual(notifications[0][2], ["target-a", "target-b"])
 
     async def test_failed_database_accepts_unhashable_telethon_targets(self):
@@ -603,12 +625,47 @@ class DashboardQueueTests(unittest.IsolatedAsyncioTestCase):
         def reject(_url):
             raise urllib.error.HTTPError("http://fixture", 423, "locked", {}, io.BytesIO(b"locked"))
 
-        queue._request = reject
+        queue._request_batch = reject
         url = "https://fixture.firebaseio.com/"
         queue.enqueue([url], target)
         queue.enqueue([url], target)
         await queue.drain()
         self.assertEqual(notifications, [(target,)])
+
+
+class BatchImporterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_saved_route_folders_and_mixed_bulk_results(self):
+        import json
+        from argparse import Namespace
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with FirebaseBatchWriter(root, 1000) as writer:
+                writer.add_urls(["https://shared.firebaseio.com/"])
+            with FirebaseBatchWriter(root / "route_a_b", 1000) as writer:
+                writer.add_urls(["https://shared.firebaseio.com/", "https://new.firebaseio.com/"])
+            route = root / "route_c_d"
+            route.mkdir()
+            (route / "batch_0001 - 1 links.txt").write_text("https://locked.firebaseio.com/\n")
+            self.assertEqual(len(batch_importer.read_urls(root)[0]), 3)
+            args = Namespace(batch_dir=root, endpoint="http://fixture/api/addDatabaseUrl",
+                             concurrency=1, failure_report=root / "failures.txt", dry_run=False)
+            requests = []
+
+            def respond(request, timeout):
+                requests.append(request)
+                self.assertIn("/api/addDatabaseUrls?", request.full_url)
+                urls = json.loads(request.data)["databaseUrls"]
+                statuses = ["duplicate", "added", "error"]
+                return io.BytesIO(json.dumps({"results": [
+                    {"url": url, "status": status, "reason": "HTTP 423"}
+                    for url, status in zip(urls, statuses)
+                ]}).encode())
+
+            with patch.object(batch_importer, "load_setting", return_value="synthetic-key"), \
+                 patch("urllib.request.urlopen", side_effect=respond):
+                self.assertEqual(await batch_importer.run(args), 1)
+            self.assertEqual(len(requests), 1)
+            self.assertIn("locked.firebaseio.com/\tHTTP 423", args.failure_report.read_text())
 
 
 if __name__ == "__main__":

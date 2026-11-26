@@ -32,9 +32,25 @@ submission again when it appears in a later post.
 
 Firebase URLs in each message, caption, hidden text link or URL button are
 exported to local TXT files, one URL per line, and submitted to the dashboard's
-`/api/addDatabaseUrl` endpoint. Source messages are not forwarded individually.
-The endpoint defaults to `http://127.0.0.1:3000/api/addDatabaseUrl`; set
+`/api/addDatabaseUrls` bulk endpoint, up to 1,000 URLs per request. Source
+messages are not forwarded individually. The endpoint defaults to
+`http://127.0.0.1:3000/api/addDatabaseUrls`; set
 `DASHBOARD_ADD_DATABASE_URL_ENDPOINT` if the dashboard uses another address.
+An existing endpoint ending in `/api/addDatabaseUrl` is upgraded automatically
+to `/api/addDatabaseUrls`. Deploy the updated `server.js` and restart the
+dashboard before running either Python importer.
+
+The server validates the batch concurrently using the shared Firebase read
+capacity. To allow up to 1,000 simultaneous checks, set this in the dashboard's
+`.env`, then restart Node/PM2:
+
+    MAX_CONCURRENT_DATABASE_READS=1000
+
+This capacity is shared with stock and customer requests. Lower values reduce
+simultaneous checks; defaults remain 32 when the variable is absent. Existing
+rotation URLs are skipped, failed URLs get individual reasons, and all accepted
+URLs are added in one rotation update per batch. The exporter logs a completion
+summary after each batch.
 `DASHBOARD_API_KEY` is read from the environment or the adjacent `.env` file.
 Duplicate TXT URLs are skipped across messages and restarts.
 If dashboard registration fails, the worker collects the URL and error, then
@@ -99,12 +115,15 @@ Stop with Ctrl+C.
 To import every URL already saved in `firebase_batches/` into rotation without
 replacing the current list, run:
 
-    python3 import_firebase_batches.py --concurrency 16
+    python3 import_firebase_batches.py --concurrency 1
 
 The importer deduplicates locally, lets the dashboard validate each Firebase
 database, reports existing URLs separately, and writes rejected URLs with their
 error to `firebase_batch_import_failures.txt`. Use `--dry-run` to inspect the
 batch count without making dashboard requests.
+Here `--concurrency` counts simultaneous 1,000-URL batch requests; the server's
+read capacity determines how many individual databases run at once. One batch
+request is enough for 1,000 parallel checks when that capacity is configured.
 
 Large history scans log progress while Telegram history is being fetched. The
 route worker uses a 0.25 second pause between history pages by default. Set

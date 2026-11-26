@@ -138,15 +138,24 @@ def load_setting(name, base_dir):
 
 class DashboardDatabaseQueue:
     """Add discovered URLs to the dashboard with bounded concurrent checks."""
-    def __init__(self, endpoint, api_key, *, concurrency=4, on_failure=None, log=print):
+    def __init__(self, endpoint, api_key, *, on_failure=None, log=print):
         self.endpoint = endpoint
         self.api_key = api_key
-        self.slots = asyncio.Semaphore(concurrency)
         self.log = log
         self.seen = set()
-        self.pending = set()
         self.targets = {}
         self.on_failure = on_failure
+        self.queued_urls = []
+        self.drain_lock = asyncio.Lock()
+
+    def _bulk_endpoint(self):
+        parsed = urllib.parse.urlsplit(self.endpoint)
+        path = parsed.path
+        if path.endswith("/api/addDatabaseUrl"):
+            path = path[:-len("addDatabaseUrl")] + "addDatabaseUrls"
+        elif path.endswith("addDatabaseUrl"):
+            path = path[:-len("addDatabaseUrl")] + "addDatabaseUrls"
+        return urllib.parse.urlunsplit(parsed._replace(path=path))
 
     @staticmethod
     def _target_key(target):
@@ -171,37 +180,7 @@ class DashboardDatabaseQueue:
             if url in self.seen:
                 continue
             self.seen.add(url)
-            task = asyncio.create_task(self._submit(url))
-            self.pending.add(task)
-            task.add_done_callback(self.pending.discard)
-
-    def _request(self, url):
-        parts = urllib.parse.urlsplit(self.endpoint)
-        query = dict(urllib.parse.parse_qsl(parts.query))
-        query["api_key"] = self.api_key
-        endpoint = urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(query)))
-        request = urllib.request.Request(
-            endpoint,
-            data=json.dumps({"databaseUrl": url}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=15) as response:
-            response.read()
-
-    async def _submit(self, url):
-        try:
-            async with self.slots:
-                await asyncio.to_thread(self._request, url)
-        except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", errors="replace").strip()
-            self.log(f"Dashboard rejected {url} (HTTP {error.code}): {detail}", flush=True)
-            self.seen.discard(url)
-            await self._notify_failure(url, f"HTTP {error.code}: {detail}")
-        except (OSError, ValueError) as error:
-            self.log(f"Could not add database URL {url}: {error}", flush=True)
-            self.seen.discard(url)
-            await self._notify_failure(url, str(error))
+            self.queued_urls.append(url)
 
     async def _notify_failure(self, url, detail):
         if self.on_failure:
@@ -211,8 +190,50 @@ class DashboardDatabaseQueue:
                 self.log(f"Could not send failure notification for {url}: {error}", flush=True)
 
     async def drain(self):
-        if self.pending:
-            await asyncio.gather(*tuple(self.pending), return_exceptions=True)
+        async with self.drain_lock:
+            while self.queued_urls:
+                batch, self.queued_urls = self.queued_urls[:1000], self.queued_urls[1000:]
+                self.log(f"Checking {len(batch)} database URLs in parallel via dashboard...", flush=True)
+                try:
+                    results = await asyncio.to_thread(self._request_batch, batch)
+                    if (not isinstance(results, list) or len(results) != len(batch)
+                        or any(not isinstance(item, dict) or item.get("status") not in
+                               {"added", "duplicate", "error"} for item in results)):
+                        raise ValueError("Dashboard returned an incomplete bulk database result.")
+                except Exception as error:
+                    results = [{"url": url, "status": "error", "reason": str(error)} for url in batch]
+                # Results retain input order; returned URLs may be normalized.
+                for url, result in zip(batch, results):
+                    if result.get("status") == "error":
+                        detail = result.get("reason", "Database check failed.")
+                        self.log(f"Dashboard rejected {url}: {detail}", flush=True)
+                        self.seen.discard(url)
+                        await self._notify_failure(url, detail)
+                counts = {status: sum(item["status"] == status for item in results)
+                          for status in ("added", "duplicate", "error")}
+                self.log(f"Database batch complete: {counts['added']} added; "
+                         f"{counts['duplicate']} duplicates; {counts['error']} failed.", flush=True)
+
+    def _request_batch(self, urls):
+        parts = urllib.parse.urlsplit(self._bulk_endpoint())
+        query = dict(urllib.parse.parse_qsl(parts.query))
+        query["api_key"] = self.api_key
+        endpoint = urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(query)))
+        request = urllib.request.Request(
+            endpoint,
+            data=json.dumps({"databaseUrls": urls}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=60 + 6 * len(urls)) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
+                raise ValueError("Dashboard returned an invalid bulk database result.")
+            return payload["results"]
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode("utf-8", errors="replace").strip()
+            raise RuntimeError(f"Dashboard bulk check failed (HTTP {error.code}): {detail}") from error
 
 
 def send_bot_message(token, chat_id, text):

@@ -45,6 +45,7 @@ const inventoryWorkerLockPath = path.join(__dirname, ".inventory-worker.lock");
 let runtimeStorePromise = null;
 const maximumServicesRequestBytes = 16 * 1024 * 1024;
 const maximumRotationRequestBytes = 1024 * 1024;
+const maximumDatabaseBatchRequestBytes = 3 * 1024 * 1024;
 const databasePingConcurrency = readPositiveIntegerEnv("NUMBER_DATABASE_CONCURRENCY", 16, 1, 64);
 const apiDocsPath = path.join(__dirname, "api-docs.html");
 const apiClientScriptPath = path.join(__dirname, "api-client.js");
@@ -70,7 +71,7 @@ const maximumProviderResponseBytes = 1024 * 1024;
 const maximumSharedDatabaseJsonEntryBytes = 1024 * 1024;
 const maximumSharedDatabaseJsonCacheBytes = 8 * 1024 * 1024;
 const sharedDatabaseJsonCacheLimit = 256;
-const maximumConcurrentDatabaseReads = readPositiveIntegerEnv("MAX_CONCURRENT_DATABASE_READS", 32, 1, 64);
+const maximumConcurrentDatabaseReads = readPositiveIntegerEnv("MAX_CONCURRENT_DATABASE_READS", 32, 1, 1000);
 const backgroundDatabaseReadLimit = Math.max(1, maximumConcurrentDatabaseReads - Math.min(2, maximumConcurrentDatabaseReads - 1));
 const numberStatusCheckConcurrency = Math.max(1, Math.min(3, maximumConcurrentDatabaseReads));
 const numberStatusCheckDeviceConcurrency = readPositiveIntegerEnv(
@@ -3589,6 +3590,7 @@ async function handleRequest(request, response) {
   const requiresExplicitApiKey = isLocalOtpApi
     || requestUrl.pathname === "/api/otp-provider"
     || requestUrl.pathname === "/api/addDatabaseUrl"
+    || requestUrl.pathname === "/api/addDatabaseUrls"
     || requestUrl.pathname === "/api/health"
     || requestUrl.pathname === "/api/balance";
   if (isApiRequest) {
@@ -3815,6 +3817,97 @@ async function handleRequest(request, response) {
     } catch (error) {
       sendJson(response, 400, { error: error.message });
     }
+    return;
+  }
+  if (requestUrl.pathname === "/api/addDatabaseUrls") {
+    if (request.method !== "POST") {
+      response.writeHead(405, { Allow: "POST" });
+      response.end("Method Not Allowed");
+      return;
+    }
+    let input;
+    try {
+      input = await readJsonBody(request, maximumDatabaseBatchRequestBytes);
+    } catch (error) {
+      sendJson(response, error.statusCode || 400, { error: error.message });
+      return;
+    }
+    if (!input || !Array.isArray(input.databaseUrls) || input.databaseUrls.length > 1000) {
+      sendJson(response, 400, { error: "Provide up to 1,000 Firebase databaseUrls." });
+      return;
+    }
+    const results = new Array(input.databaseUrls.length);
+    const unique = new Map();
+    for (let index = 0; index < input.databaseUrls.length; index += 1) {
+      const value = input.databaseUrls[index];
+      if (typeof value !== "string" || !value.trim() || value.trim().length > 2048) {
+        results[index] = { url: typeof value === "string" ? value : "", status: "error", reason: "Invalid database URL." };
+        continue;
+      }
+      try {
+        const url = normalizeDatabaseUrl(value.trim());
+        if (unique.has(url)) {
+          results[index] = { url, status: "duplicate", reason: "Duplicate in request." };
+        } else {
+          unique.set(url, index);
+        }
+      } catch (error) {
+        results[index] = { url: value.trim(), status: "error", reason: error.message };
+      }
+    }
+    let existing;
+    try {
+      existing = await withRotationLock(async () => new Set((await readRotationMetadata()).databaseUrls));
+    } catch (error) {
+      sendJson(response, 500, { error: "Could not read database rotation settings." });
+      return;
+    }
+    const candidates = [...unique.keys()].filter((url) => {
+      const index = unique.get(url);
+      if (existing.has(url)) {
+        results[index] = { url, status: "duplicate", reason: "Already in rotation." };
+        return false;
+      }
+      return true;
+    });
+    const checks = await Promise.all(candidates.map(async (url) => ({ url, ...(await pingDatabaseUrl(url)) })));
+    const accepted = new Set();
+    for (const check of checks) {
+      const index = unique.get(check.url);
+      if (check.ok) {
+        accepted.add(check.url);
+        results[index] = { url: check.url, status: "checked" };
+      } else {
+        results[index] = { url: check.url, status: "error", reason: check.reason };
+      }
+    }
+    let added = 0;
+    try {
+      await withRotationLock(async () => {
+        const state = await readRotationMetadata();
+        const current = new Set(state.databaseUrls);
+        for (const url of accepted) {
+          const index = unique.get(url);
+          if (current.has(url)) {
+            results[index] = { url, status: "duplicate", reason: "Already in rotation." };
+          } else {
+            state.databaseUrls.push(url);
+            current.add(url);
+            results[index] = { url, status: "added" };
+            added += 1;
+          }
+        }
+        if (added) await saveRotationMetadata(state);
+      });
+    } catch (error) {
+      sendJson(response, 500, { error: "Could not update database rotation settings." });
+      return;
+    }
+    const counts = results.reduce((summary, result) => {
+      summary[result?.status || "error"] = (summary[result?.status || "error"] || 0) + 1;
+      return summary;
+    }, {});
+    sendJson(response, 200, { added, counts, results });
     return;
   }
   if (requestUrl.pathname === "/api/rotation") {
