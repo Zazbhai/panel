@@ -102,10 +102,12 @@ async function rankingAndLanes() {
   const normalRequest = f.context.refillNumberPool("service0");
   await turn();
   assert.equal(started.length, 2, "Ordinary refills must share an existing priority job for the same service");
-  while (started.length < 5 || active) {
+  for (let ticks = 0; ticks < 200 && (started.length < ranked.length || active); ticks++) {
     releases.splice(0).forEach((release) => release());
     await turn();
   }
+  assert.equal(started.length, ranked.length, "Every ranked service must get a completed lane");
+  assert.equal(active, 0);
   await first;
   await normalRequest;
   assert.equal(peak, 2);
@@ -123,7 +125,8 @@ async function rankingAndLanes() {
   f.context.fillNumberPool = async () => 8;
   await f.context.startPriorityStockWorkers();
   assert.equal(state(f).services[0].service, "service5", "Ranking must adapt to demand after the cache expires");
-  assert(!state(f).services.some((item) => item.service === "service4"));
+  assert.deepEqual(Array.from(state(f).services, (item) => item.service),
+    ["service5", "service0", "service1", "service2", "service3", "service4", "service6", "service7", "service8", "service9"]);
 }
 
 async function prepareMappings() {
@@ -201,7 +204,7 @@ async function addedDatabaseFeedsPriorityStock() {
     if (url.startsWith(addedDatabase) && url.endsWith("?shallow=true")) {
       return rejectAdded
         ? { ok: false, status: 423, json: async () => ({}) }
-        : { ok: true, status: 200, json: async () => ({}) };
+        : { ok: true, status: 200, text: async () => "{}" };
     }
     if (url === addedDatabase + "/clients.json") {
       return { ok: true, status: 200, json: async () => ({ device42: { status: true } }) };
@@ -289,7 +292,12 @@ async function partialDiscoverySurvivesAbort() {
       message: "Jio number " + (9666666000 + index), timestamp: Date.now()
     } }) };
   };
-  const work = f.context.refillNumberPool("busy", controller.signal, { priority: true, target: 8 });
+  const work = f.context.readActiveNumbers(database, () => true, controller.signal, 8,
+    null, true, async (entries, checkedAt) => {
+      f.runtime.rememberBatch(entries.map((entry) => ({
+        database, deviceId: entry.deviceId, number: entry.number, now: checkedAt
+      })));
+    });
   try {
     for (let i = 0; i < 100 && f.runtime.sql("SELECT COUNT(*) AS n FROM numbers").get().n < 9; i++) await turn();
     assert.equal(f.runtime.sql("SELECT COUNT(*) AS n FROM numbers").get().n, 9,

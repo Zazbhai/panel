@@ -1101,8 +1101,10 @@ async function prefetchAllNumberMappings() {
     const leftRank = orderRank.get(left);
     const rightRank = orderRank.get(right);
     if (leftRank === undefined && rightRank === undefined) return 0;
-    if (leftRank === undefined) return 1;
-    if (rightRank === undefined) return -1;
+    // A successful status check is not number discovery. Scan databases with
+    // no saved mappings before repeating discovery of populated databases.
+    if (leftRank === undefined) return -1;
+    if (rightRank === undefined) return 1;
     return leftRank - rightRank;
   });
   numberMappingPrefetchState = {
@@ -1937,6 +1939,7 @@ async function readActiveNumbers(database, isAvailable = () => true, parentSigna
     uncachedClients.push([deviceId]);
   }
   if (!scanAll && requiredCandidates > 1
+    && !(messageReadBudget?.remaining > 0 && uncachedClients.length > 0)
     && [...numbers.values()].filter((candidate) => isAvailable(candidate) && !excludedNumbers?.has(candidate.number)).length >= requiredCandidates) {
     if (parentSignal) parentSignal.removeEventListener("abort", abortForParent);
     return { numbers: [...numbers.values()], messageReadFailures };
@@ -2367,13 +2370,12 @@ async function fillNumberPool(service, parentSignal = null, preparation = {}) {
   const state = await call("allocationState", service);
   let scanState = state;
   if (preparation.priority && databaseUrls.length > priorityStockDatabaseLimit) {
-    const [inventoryOrder, checkTimes] = await Promise.all([
-      call("databaseInventoryOrder", { databases: databaseUrls }),
-      call("databaseCheckTimes", { databases: databaseUrls })
-    ]);
+    const inventoryOrder = await call("databaseInventoryOrder", { databases: databaseUrls });
     const ranked = inventoryOrder.map((item) => item.database);
-    const checked = new Set(checkTimes.map((item) => item.database));
-    const fresh = databaseUrls.filter((database) => !checked.has(database));
+    const mapped = new Set(ranked);
+    // Status-only sweeps can already have checked a newly imported database.
+    // Keep it in the discovery lane until it has actual number mappings.
+    const fresh = databaseUrls.filter((database) => !mapped.has(database));
     const selected = selectPriorityStockDatabases(
       databaseUrls, ranked, priorityStockDatabaseLimit, fresh
     );
