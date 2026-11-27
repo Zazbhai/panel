@@ -383,11 +383,11 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
         <p id="rotationStatus" class="status" role="status" aria-live="polite">Loading saved settings…</p>
       </form>
       <section aria-labelledby="rotationImportHeading">
-        <h3 id="rotationImportHeading">Add databases from a text file</h3>
-        <p class="hint">Select a .txt file with one Firebase URL per line. Valid URLs are added to the end of rotation; existing URLs are skipped.</p>
+        <h3 id="rotationImportHeading">Add databases from TXT or CSV</h3>
+        <p class="hint">Select a .txt or .csv file. URLs are extracted from every cell, including numbered lists and multiple links. Valid databases are appended to rotation; duplicates are counted separately.</p>
         <div class="rotation-import-toolbar">
           <label class="field" for="rotationImportFile">Firebase URL file
-            <input id="rotationImportFile" type="file" accept=".txt,text/plain">
+            <input id="rotationImportFile" type="file" accept=".txt,.csv,text/plain,text/csv">
           </label>
           <button id="rotationImportButton" type="button" disabled>Check and add</button>
         </div>

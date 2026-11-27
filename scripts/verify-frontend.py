@@ -275,9 +275,9 @@ def main():
         expect(page.locator('#rotationImportStatus')).to_contain_text('Added 1; 1 already in rotation; 1 invalid or unreachable')
         expect(page.locator('#rotationImportErrorRows')).to_contain_text('Firebase returned HTTP 423')
         assert fixture.rotation == [DATABASE, 'https://second-preview.firebaseio.com',
-                                    'https://new-preview.firebaseio.com/']
-        assert fixture.bulk_requests == [[DATABASE, 'https://new-preview.firebaseio.com/',
-                                          'https://unreachable-preview.firebaseio.com/']]
+                                    'https://new-preview.firebaseio.com']
+        assert fixture.bulk_requests == [[DATABASE, 'https://new-preview.firebaseio.com',
+                                          'https://unreachable-preview.firebaseio.com']]
 
         ready(page, '/api-docs')
         page.locator('#applyDashboardApiKey').click()

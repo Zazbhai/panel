@@ -28,7 +28,7 @@ function updateRotationControls() {
   saveRotationButton.disabled = !rotationReady || busy;
   checkDeviceStatsButton.disabled = !rotationReady || busy || rotationDirty;
   rotationImportFile.disabled = rotationImporting || rotationSaving || deviceStatsLoading;
-  rotationImportButton.disabled = !rotationReady || rotationImporting || rotationSaving
+  rotationImportButton.disabled = !rotationReady || rotationLoading || rotationImporting || rotationSaving
     || deviceStatsLoading || !rotationImportFile.files?.length;
   deviceStatsStatus.toggleAttribute("data-loading", deviceStatsLoading);
 }
@@ -162,7 +162,7 @@ async function loadDeviceStatsJob() {
 async function loadRotationSettings(isBackgroundRefresh = false) {
   if (rotationLoading) return;
   if (isBackgroundRefresh
-    && (rotationSaving || deviceStatsLoading || rotationDirty || document.visibilityState !== "visible")) return;
+    && (rotationSaving || rotationImporting || deviceStatsLoading || rotationDirty || document.visibilityState !== "visible")) return;
   rotationLoading = true;
   if (!isBackgroundRefresh) {
     rotationReady = false;
@@ -254,37 +254,87 @@ rotationImportFile.addEventListener("change", () => {
   updateRotationControls();
 });
 
+function parseRotationImport(text, csv) {
+  // Decode quoted CSV cells, including escaped quotes and embedded newlines.
+  const cells = [];
+  let cell = "", quoted = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (csv && char === '"') {
+      if (quoted && text[index + 1] === '"') { cell += '"'; index += 1; }
+      else quoted = !quoted;
+    } else if (!quoted && (char === "\n" || char === "\r" || (csv && [",", ";", "\t"].includes(char)))) {
+      if (cell.trim()) cells.push(cell.trim());
+      cell = "";
+    } else cell += char;
+  }
+  if (quoted) throw new Error("The CSV contains an unclosed quoted field.");
+  if (cell.trim()) cells.push(cell.trim());
+  const urls = [], failures = [], seen = new Set();
+  let occurrences = 0, repeated = 0, ignored = 0;
+  for (const value of cells) {
+    const cleaned = value.replace(/\\:/g, ":").replace(/\\\//g, "/");
+    // Stop at the Firebase host, even when another URL immediately follows it.
+    const matches = [...cleaned.matchAll(/https?:\/\/[a-z0-9.-]+\.(?:firebaseio\.com|firebasedatabase\.app)(?=https?:\/\/|[^a-z0-9.-]|$)(?:\/(?:(?!https?:\/\/)[^\s<>"',;|])*)?/gi)];
+    if (!matches.length) {
+      if (/https?:\/\//i.test(cleaned) || !csv) failures.push({ url: value, reason: "No supported Firebase database URL found." });
+      else ignored += 1; // CSV headings and other columns.
+    }
+    for (const match of matches) {
+      occurrences += 1;
+      const candidate = match[0].replace(/[)\]}.!?:]+$/, "");
+      const parsed = new URL(candidate);
+      parsed.pathname = parsed.pathname.replace(/\/+$/, "");
+      const normalized = parsed.toString().replace(/\/$/, "");
+      if (seen.has(normalized)) repeated += 1;
+      else { seen.add(normalized); urls.push(normalized); }
+    }
+  }
+  return { urls, failures, occurrences, repeated, ignored };
+}
+
+function renderRotationImportFailures(failures) {
+  const fragment = document.createDocumentFragment();
+  for (const failure of failures) {
+    const row = document.createElement("tr");
+    for (const value of [failure.url, failure.reason]) {
+      const cell = document.createElement("td");
+      cell.textContent = value;
+      row.append(cell);
+    }
+    fragment.append(row);
+  }
+  rotationImportErrorRows.replaceChildren(fragment);
+  rotationImportErrors.hidden = failures.length === 0;
+}
+
 rotationImportButton.addEventListener("click", async () => {
   const file = rotationImportFile.files?.[0];
-  if (!file || rotationImporting || !rotationReady) return;
-  if (!file.name.toLowerCase().endsWith(".txt") || file.size > 5 * 1024 * 1024) {
-    rotationImportStatus.textContent = "Choose a .txt file smaller than 5 MB.";
+  if (!file || rotationImporting || rotationSaving || deviceStatsLoading || !rotationReady) return;
+  if (!/\.(txt|csv)$/i.test(file.name) || file.size > 5 * 1024 * 1024) {
+    rotationImportStatus.textContent = "Choose a .txt or .csv file smaller than 5 MB.";
     rotationImportStatus.classList.add("error");
     return;
   }
-  const lines = (await file.text()).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  const databaseUrls = [...new Set(lines)];
-  const malformed = databaseUrls.filter((line) => !/^https:\/\//i.test(line));
-  const candidates = databaseUrls.filter((line) => /^https:\/\//i.test(line));
-  if (!candidates.length) {
-    rotationImportStatus.textContent = "No HTTPS database URLs were found in the file.";
-    rotationImportStatus.classList.add("error");
-    return;
-  }
-
   rotationImporting = true;
   rotationImportErrors.hidden = true;
   rotationImportErrorRows.replaceChildren();
   updateRotationControls();
   rotationImportStatus.classList.remove("error");
-  const failures = malformed.map((url) => ({ url, reason: "Expected one HTTPS URL per line." }));
+  let parsed;
+  const failures = [];
   let added = 0;
   let duplicates = 0;
+  let checked = 0;
   const batchSize = 1000;
   try {
+    parsed = parseRotationImport(await file.text(), /\.csv$/i.test(file.name));
+    const candidates = parsed.urls;
+    failures.push(...parsed.failures);
+    if (!candidates.length) throw new Error("No Firebase database URLs were found in the file.");
     for (let offset = 0; offset < candidates.length; offset += batchSize) {
       const batch = candidates.slice(offset, offset + batchSize);
-      rotationImportStatus.textContent = `Checking ${Math.min(offset + batch.length, candidates.length)} of ${candidates.length} URLs...`;
+      rotationImportStatus.textContent = `Found ${parsed.occurrences} links; ${parsed.repeated} repeated in file. Checked ${checked} of ${candidates.length} unique URLs; checking next ${batch.length}... Added ${added}; ${duplicates} already in rotation.`;
       const response = await window.dashboardApiFetch("/api/addDatabaseUrls", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -292,7 +342,8 @@ rotationImportButton.addEventListener("click", async () => {
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result?.error || `Bulk database check failed (HTTP ${response.status}).`);
-      if (!Array.isArray(result.results) || result.results.length !== batch.length) {
+      if (!Array.isArray(result.results) || result.results.length !== batch.length
+        || result.results.some((item) => !item || !["added", "duplicate", "error"].includes(item.status))) {
         throw new Error("The server returned an incomplete URL check result.");
       }
       for (const item of result.results) {
@@ -300,28 +351,17 @@ rotationImportButton.addEventListener("click", async () => {
         else if (item.status === "duplicate") duplicates += 1;
         else failures.push({ url: item.url, reason: item.reason || "Database check failed." });
       }
+      checked += batch.length;
+      renderRotationImportFailures(failures);
     }
-    await loadRotationSettings();
-    rotationImportStatus.textContent = `Added ${added}; ${duplicates} already in rotation; ${failures.length} invalid or unreachable.`;
+    rotationImportStatus.textContent = `Added ${added}; ${duplicates} already in rotation; ${failures.length} invalid or unreachable. Found ${parsed.occurrences} links; ${parsed.repeated} repeated in file; checked all ${checked} unique URLs.${parsed.ignored ? ` Ignored ${parsed.ignored} CSV headings or non-URL cells.` : ""}`;
     rotationImportStatus.classList.toggle("error", failures.length > 0);
-    if (failures.length) {
-      const fragment = document.createDocumentFragment();
-      for (const failure of failures) {
-        const row = document.createElement("tr");
-        const url = document.createElement("td");
-        url.textContent = failure.url;
-        const reason = document.createElement("td");
-        reason.textContent = failure.reason;
-        row.append(url, reason);
-        fragment.append(row);
-      }
-      rotationImportErrorRows.replaceChildren(fragment);
-      rotationImportErrors.hidden = false;
-    }
   } catch (error) {
-    rotationImportStatus.textContent = `Could not import URL file: ${error.message}`;
+    rotationImportStatus.textContent = `Import stopped after ${checked} URLs: ${error.message} Added ${added}; ${duplicates} already in rotation; ${failures.length} rejected. You can retry the same file; saved databases will be skipped.`;
     rotationImportStatus.classList.add("error");
   } finally {
+    renderRotationImportFailures(failures);
+    if (checked > 0) await loadRotationSettings();
     rotationImporting = false;
     updateRotationControls();
   }
