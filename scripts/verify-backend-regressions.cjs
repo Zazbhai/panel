@@ -376,6 +376,18 @@ function completedOrder() {
     assert.equal(rebuy.service, oldOrder.service);
     assert.equal(f.runtime.getOrder(rebuy.orderId).status, "active");
     assert.equal(f.requests.length, 0, "A recent complete status snapshot should avoid another Firebase request");
+    const protocolOrder = { ...oldOrder, orderId: "8".repeat(24), number: "9000000005" };
+    f.runtime.importOrder(protocolOrder);
+    f.runtime.remember({ database: databaseUrl, deviceId: protocolOrder.deviceId,
+      number: protocolOrder.number, now, verifiedAt: now });
+    const protocolRebuy = await f.request(
+      `/stubs/handler_api.php?api_key=${f.apiKey}&action=rebuy&id=${protocolOrder.orderId}`
+    );
+    assert.equal(protocolRebuy.status, 200);
+    assert(protocolRebuy.body.startsWith("ACCESS_NUMBER:"));
+    assert.equal(protocolRebuy.body.split(":")[2], protocolOrder.number,
+      "The rebuy provider action must return the same phone number");
+    assert.notEqual(protocolRebuy.body.split(":")[1], protocolOrder.orderId);
     const activeOldOrder = { ...oldOrder, orderId: "f".repeat(24), number: "9000000003",
       status: "active", createdAt: Date.now(), expiresAt: Date.now() + 60000 };
     f.runtime.importOrder(activeOldOrder);
@@ -405,12 +417,15 @@ function completedOrder() {
       number: offlineOrder.number, now, verifiedAt: now });
     vm.runInContext(`activeClientOnlineIds.delete(${JSON.stringify(databaseUrl)})`, f.context);
     online = false;
-    const offline = await f.request("/api/rebuy?api_key=" + f.apiKey,
-      { method: "POST", body: { id: offlineOrder.orderId } });
+    const readsBeforeOffline = f.requests.length;
+    const offline = await f.request(
+      `/stubs/handler_api.php?api_key=${f.apiKey}&action=rebuy&id=${offlineOrder.orderId}`
+    );
     assert.equal(offline.status, 200);
-    assert.equal(JSON.parse(offline.body).error, "rebuy Unsuccessful source offline");
-    assert.equal(f.requests.length, 1, "Without a recent snapshot, rebuy should shallow-check only the source device");
-    assert.equal(f.runtime.sql("SELECT COUNT(*) AS n FROM orders").get().n, 5,
+    assert.equal(offline.body, "rebuy Unsuccessful source offline");
+    assert.equal(f.requests.length - readsBeforeOffline, 1,
+      "Without a recent snapshot, rebuy should shallow-check only the source device");
+    assert.equal(f.runtime.sql("SELECT COUNT(*) AS n FROM orders").get().n, 7,
       "Offline rebuy must not create an order");
   }
   {

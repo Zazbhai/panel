@@ -2928,6 +2928,70 @@ async function getStatusOkText(order) {
   return `STATUS_OK:${value || order.receivedOtp}`;
 }
 
+async function performRebuy(oldOrderId) {
+  const failure = (reason = "source offline") => ({
+    success: false, error: `rebuy Unsuccessful ${reason}`
+  });
+  let store;
+  let oldOrder;
+  try {
+    store = await getRuntimeStore();
+    oldOrder = await store.call("getOrder", oldOrderId);
+  } catch (error) {
+    console.error("Could not read rebuy order:", error.message);
+    return failure();
+  }
+  if (!oldOrder) return failure("order unavailable");
+  if (oldOrder.status === "active") return failure("order still active");
+  if (oldOrder.receivedOtp !== null) return failure("number unavailable");
+  let metadata;
+  try { metadata = await store.call("metadata"); }
+  catch { return failure(); }
+  if (!metadata?.databaseUrls.includes(oldOrder.databaseUrl)) return failure();
+
+  const now = Date.now();
+  const snapshot = activeClientOnlineIds.get(oldOrder.databaseUrl);
+  let sourceOnline;
+  if (snapshot?.complete === true && snapshot.expiresAt > now) {
+    sourceOnline = snapshot.onlineIds.has(oldOrder.deviceId);
+  } else {
+    try {
+      const endpoint = `${oldOrder.databaseUrl}/clients/${encodeURIComponent(oldOrder.deviceId)}.json?shallow=true`;
+      const client = await fetchDatabaseJson(endpoint, numberStatusCheckTimeoutMs);
+      sourceOnline = Boolean(client && typeof client === "object" && !Array.isArray(client)
+        && client.status === true);
+    } catch {
+      sourceOnline = false;
+    }
+  }
+  if (!sourceOnline) return failure();
+  try {
+    await store.call("markOnline", {
+      database: oldOrder.databaseUrl, deviceId: oldOrder.deviceId, online: true, now
+    });
+    await store.call("recordDatabaseCheck", { database: oldOrder.databaseUrl, now });
+    const result = await store.call("rebuyOrder", {
+      oldOrderId: oldOrder.orderId, now, onlineTtl: activeClientsCacheTtlMs
+    });
+    if (!result?.ok) {
+      return failure(result?.code === "REBUY_NUMBER_LOCKED" ? "number unavailable" : "source offline");
+    }
+    recentOrdersCache = null;
+    return {
+      success: true,
+      orderId: result.order.orderId,
+      number: result.order.number,
+      service: result.order.service,
+      databaseUrl: result.order.databaseUrl,
+      deviceId: result.order.deviceId,
+      message: "rebuy Successful"
+    };
+  } catch (error) {
+    console.error("Could not create rebuy order:", error.message);
+    return failure();
+  }
+}
+
 async function handleLocalOtpRequest(requestUrl, response) {
   const actions = requestUrl.searchParams.getAll("action");
   if (actions.length !== 1) {
@@ -2942,6 +3006,21 @@ async function handleLocalOtpRequest(requestUrl, response) {
   }
   if (action === "getBalance") {
     sendText(response, 200, "ACCESS_BALANCE:1");
+    return;
+  }
+
+  if (action === "rebuy") {
+    const ids = requestUrl.searchParams.getAll("id");
+    if (ids.length !== 1 || !/^[a-f0-9]{24}$/.test(ids[0].trim())) {
+      sendText(response, 400, "BAD_ID");
+      return;
+    }
+    const result = await performRebuy(ids[0].trim());
+    if (!result.success) {
+      sendText(response, 200, result.error);
+      return;
+    }
+    sendText(response, 200, `ACCESS_NUMBER:${result.orderId}:${result.number}`);
     return;
   }
 
@@ -3851,66 +3930,8 @@ async function handleRequest(request, response) {
       sendJson(response, 400, { success: false, error: "Provide one valid id (the old order ID)." });
       return;
     }
-    const oldOrderId = suppliedIds[0].trim();
-    const failure = (reason = "source offline") => sendJson(response, 200, {
-      success: false, error: `rebuy Unsuccessful ${reason}`
-    });
-    const store = await getRuntimeStore();
-    let oldOrder;
-    try {
-      oldOrder = await store.call("getOrder", oldOrderId);
-    } catch (error) {
-      console.error("Could not read rebuy order:", error.message);
-      return failure("source offline");
-    }
-    if (!oldOrder) return failure("order unavailable");
-    if (oldOrder.status === "active") return failure("order still active");
-    if (oldOrder.receivedOtp !== null) return failure("number unavailable");
-    const metadata = await store.call("metadata");
-    if (!metadata?.databaseUrls.includes(oldOrder.databaseUrl)) return failure("source offline");
-    const now = Date.now();
-    const snapshot = activeClientOnlineIds.get(oldOrder.databaseUrl);
-    let sourceOnline;
-    if (snapshot?.complete === true && snapshot.expiresAt > now) {
-      sourceOnline = snapshot.onlineIds.has(oldOrder.deviceId);
-    } else {
-      // Rebuy only needs this device's current status. Avoid downloading a
-      // potentially huge clients.json for every retry/rebuy request.
-      try {
-        const endpoint = `${oldOrder.databaseUrl}/clients/${encodeURIComponent(oldOrder.deviceId)}.json?shallow=true`;
-        const client = await fetchDatabaseJson(endpoint, numberStatusCheckTimeoutMs);
-        sourceOnline = Boolean(client && typeof client === "object" && !Array.isArray(client)
-          && client.status === true);
-      } catch {
-        sourceOnline = false;
-      }
-    }
-    if (!sourceOnline) return failure("source offline");
-    try {
-      await store.call("markOnline", {
-        database: oldOrder.databaseUrl, deviceId: oldOrder.deviceId, online: true, now
-      });
-      await store.call("recordDatabaseCheck", { database: oldOrder.databaseUrl, now });
-      const result = await store.call("rebuyOrder", {
-        oldOrderId: oldOrder.orderId, now, onlineTtl: activeClientsCacheTtlMs
-      });
-      if (!result?.ok) {
-        return failure(result?.code === "REBUY_NUMBER_LOCKED" ? "number unavailable" : "source offline");
-      }
-      recentOrdersCache = null;
-      sendJson(response, 200, {
-        success: true,
-        orderId: result.order.orderId,
-        number: result.order.number,
-        service: result.order.service,
-        databaseUrl: result.order.databaseUrl,
-        deviceId: result.order.deviceId,
-        message: "rebuy Successful"
-      });
-    } catch (error) {
-      console.error("Could not create rebuy order:", error.message);
-      return failure("source offline");
-    }
+    const result = await performRebuy(suppliedIds[0].trim());
+    sendJson(response, 200, result);
     return;
   }
   if (requestUrl.pathname === "/api/addDatabaseUrls") {

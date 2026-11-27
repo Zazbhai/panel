@@ -451,12 +451,15 @@ ACCESS_CANCEL     Cancellation successful.</pre>
     <section class="panel" aria-labelledby="rebuyHeading">
       <h2 id="rebuyHeading">Rebuy the same number</h2>
       <p>Exchange a completed or cancelled order ID for a new order using the same number. Rebuy succeeds only when the original Firebase database and device are online and the number is not permanently locked by an OTP.</p>
-      <p class="endpoint">GET or POST <span data-rebuy-endpoint></span></p>
-      <pre>GET: /api/rebuy?api_key=YOUR_DASHBOARD_API_KEY&amp;id=&lt;previous-order-id&gt;
-POST /api/rebuy?api_key=YOUR_DASHBOARD_API_KEY
-JSON body: {"id":"&lt;previous-order-id&gt;"}</pre>
-      <p>Authenticate with <code>api_key</code> using the dashboard API key. Source/database/device failures return <code>rebuy Unsuccessful source offline</code>.</p>
-      <pre>{"success":true,"orderId":"&lt;new-order-id&gt;","number":"&lt;same-number&gt;","service":"&lt;service&gt;","message":"rebuy Successful"}</pre>
+      <p class="endpoint">GET <span data-local-action="rebuy"></span></p>
+      <dl class="params">
+        <dt>api_key</dt><dd>Required. Dashboard key from the API access panel.</dd>
+        <dt>action</dt><dd>Required. <code>rebuy</code>.</dd>
+        <dt>id</dt><dd>Required. Previous order ID to rebuy.</dd>
+      </dl>
+      <p>Authenticate with <code>api_key</code> using the dashboard API key. Success returns the new activation and same phone in the provider-compatible format. Source/database/device failures return <code>rebuy Unsuccessful source offline</code>.</p>
+      <pre>ACCESS_NUMBER:&lt;new-order-id&gt;:&lt;same-phone&gt;
+rebuy Unsuccessful source offline</pre>
     </section>
 
     <section class="panel" aria-labelledby="countriesHeading">
@@ -704,7 +707,8 @@ JSON body: {"id":"&lt;previous-order-id&gt;"}</pre>
     const localActions = {
       getNumber: "getNumber&service=$service",
       getStatus: "getStatus&id=$id",
-      setStatus: "setStatus&status=$status&id=$id"
+      setStatus: "setStatus&status=$status&id=$id",
+      rebuy: "rebuy&id=$id"
     };
     const providerEndpoint = "https://otpsell.com/stubs/handler_api.php";
     const providerActions = {
@@ -717,7 +721,6 @@ JSON body: {"id":"&lt;previous-order-id&gt;"}</pre>
       endpoint.textContent = `${localEndpoint}?api_key=YOUR_DASHBOARD_API_KEY&action=${localActions[endpoint.dataset.localAction]}`;
     });
     const rebuyEndpoint = document.querySelector("[data-rebuy-endpoint]");
-    if (rebuyEndpoint) rebuyEndpoint.textContent = `${window.location.origin}/api/rebuy`;
     document.querySelectorAll("[data-provider-action]").forEach((endpoint) => {
       endpoint.textContent = `${providerEndpoint}?api_key=YOUR_API_KEY&action=${providerActions[endpoint.dataset.providerAction]}`;
     });
