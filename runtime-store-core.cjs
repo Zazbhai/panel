@@ -154,6 +154,16 @@ class RuntimeStore {
     return order;
   }
   getOrder(id) { return this.decode(this.sql("SELECT * FROM orders WHERE id=?").get(id)); }
+  rebuySource({ oldOrderId }) {
+    const row = this.sql("SELECT id,service,number,database_url,device_id,created_at,expires_at,status,received_otp,received_at,number_active "
+      + "FROM orders WHERE id=?").get(oldOrderId);
+    const metadata = this.metadata();
+    if (!row) return { order: null, sourceConfigured: false };
+    return {
+      order: this.decode(row, false),
+      sourceConfigured: Boolean(metadata?.databaseUrls.includes(row.database_url))
+    };
+  }
   rebuyOrder({ oldOrderId, now = Date.now(), duration = 600000, onlineTtl = 300000, mappingTtl = 86400000 }) {
     return this.transaction(() => {
       this.expire(now);
@@ -165,6 +175,13 @@ class RuntimeStore {
       if (!metadata?.databaseUrls.includes(old.database_url)) {
         return { ok: false, code: "REBUY_SOURCE_NOT_CONFIGURED" };
       }
+      // The caller has just confirmed this original device online. Persist the
+      // probe and claim the reused number in this one SQLite transaction.
+      const refreshed = this.sql("UPDATE numbers SET online=1,checked_at=? WHERE database_url=? AND device_id=? AND number=?")
+        .run(now, old.database_url, old.device_id, old.number);
+      if (!refreshed.changes) return { ok: false, code: "REBUY_SOURCE_OFFLINE" };
+      this.sql("INSERT INTO database_checks VALUES(?,?) ON CONFLICT(database_url) DO UPDATE SET checked_at=excluded.checked_at")
+        .run(old.database_url, now);
       const stored = this.sql("SELECT * FROM numbers WHERE database_url=? AND device_id=?")
         .get(old.database_url, old.device_id);
       if (!stored || stored.number !== old.number || stored.online !== 1

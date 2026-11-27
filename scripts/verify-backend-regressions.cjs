@@ -388,6 +388,15 @@ function completedOrder() {
     assert.equal(protocolRebuy.body.split(":")[2], protocolOrder.number,
       "The rebuy provider action must return the same phone number");
     assert.notEqual(protocolRebuy.body.split(":")[1], protocolOrder.orderId);
+    const raceOrder = { ...oldOrder, orderId: "7".repeat(24), number: "9000000006" };
+    f.runtime.importOrder(raceOrder);
+    f.runtime.remember({ database: databaseUrl, deviceId: raceOrder.deviceId,
+      number: raceOrder.number, now, verifiedAt: now });
+    const race = await Promise.all([1, 2].map(() => f.request(
+      `/stubs/handler_api.php?api_key=${f.apiKey}&action=rebuy&id=${raceOrder.orderId}`
+    )));
+    assert.equal(race.filter((result) => result.body.startsWith("ACCESS_NUMBER:")).length, 1,
+      "Concurrent rebuy attempts must create at most one new lease/order");
     const activeOldOrder = { ...oldOrder, orderId: "f".repeat(24), number: "9000000003",
       status: "active", createdAt: Date.now(), expiresAt: Date.now() + 60000 };
     f.runtime.importOrder(activeOldOrder);
@@ -425,7 +434,7 @@ function completedOrder() {
     assert.equal(offline.body, "rebuy Unsuccessful source offline");
     assert.equal(f.requests.length - readsBeforeOffline, 1,
       "Without a recent snapshot, rebuy should shallow-check only the source device");
-    assert.equal(f.runtime.sql("SELECT COUNT(*) AS n FROM orders").get().n, 7,
+    assert.equal(f.runtime.sql("SELECT COUNT(*) AS n FROM orders").get().n, 9,
       "Offline rebuy must not create an order");
   }
   {

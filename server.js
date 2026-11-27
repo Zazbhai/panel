@@ -2934,9 +2934,12 @@ async function performRebuy(oldOrderId) {
   });
   let store;
   let oldOrder;
+  let sourceConfigured;
   try {
     store = await getRuntimeStore();
-    oldOrder = await store.call("getOrder", oldOrderId);
+    const source = await store.call("rebuySource", { oldOrderId });
+    oldOrder = source?.order || null;
+    sourceConfigured = source?.sourceConfigured === true;
   } catch (error) {
     console.error("Could not read rebuy order:", error.message);
     return failure();
@@ -2944,10 +2947,7 @@ async function performRebuy(oldOrderId) {
   if (!oldOrder) return failure("order unavailable");
   if (oldOrder.status === "active") return failure("order still active");
   if (oldOrder.receivedOtp !== null) return failure("number unavailable");
-  let metadata;
-  try { metadata = await store.call("metadata"); }
-  catch { return failure(); }
-  if (!metadata?.databaseUrls.includes(oldOrder.databaseUrl)) return failure();
+  if (!sourceConfigured) return failure();
 
   const now = Date.now();
   const snapshot = activeClientOnlineIds.get(oldOrder.databaseUrl);
@@ -2966,10 +2966,6 @@ async function performRebuy(oldOrderId) {
   }
   if (!sourceOnline) return failure();
   try {
-    await store.call("markOnline", {
-      database: oldOrder.databaseUrl, deviceId: oldOrder.deviceId, online: true, now
-    });
-    await store.call("recordDatabaseCheck", { database: oldOrder.databaseUrl, now });
     const result = await store.call("rebuyOrder", {
       oldOrderId: oldOrder.orderId, now, onlineTtl: activeClientsCacheTtlMs
     });
