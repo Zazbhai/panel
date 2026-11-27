@@ -241,6 +241,7 @@ class RuntimeStore {
     const { where, args } = this.orderFilter(options);
     const now = Date.now();
     const stats = this.sql("SELECT COUNT(*) AS total,COALESCE(SUM(status='active' AND expires_at>?),0) AS waiting,COALESCE(SUM(status='completed'),0) AS completed,"
+      + "COUNT(DISTINCT number) AS uniqueNumbers,"
       + "COUNT(DISTINCT CASE WHEN number_active=1 AND status IN ('active','completed') AND expires_at>? THEN number END) AS active FROM orders WHERE " + where)
       .get(now, now, ...args);
     return { ...result, stats };

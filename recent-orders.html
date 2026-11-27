@@ -345,7 +345,7 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
 .custom-order-dates button { min-height: 40px; }
 .date-error { grid-column: 1 / -1; margin: 0; color: var(--danger); font-size: .75rem; }
 .order-filter-fields { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(180px, .6fr); align-items: end; gap: 18px; }
-.order-overview { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin: 0 0 28px; }
+.order-overview { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 16px; margin: 0 0 28px; }
 .order-overview > div { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 16px 20px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
 .order-overview dt { color: var(--muted); font-size: .8125rem; }
 .order-overview dd { margin: 0; color: var(--ink); font-size: 1.4rem; font-weight: 650; font-variant-numeric: tabular-nums; }
@@ -406,6 +406,11 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
 .order-detail-panel .data-field { min-width: 0; }
 .order-detail-panel dt { color: var(--muted); font-size: .6875rem; }
 .order-detail-panel dd { margin: 3px 0 0; color: var(--ink); font-size: .75rem; overflow-wrap: anywhere; }
+.order-otp-list { display: grid; gap: 6px; margin: 0 0 18px; padding: 0; list-style: none; }
+.order-otp-list li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; }
+.order-otp-list code { color: var(--ink); font-size: .8125rem; font-weight: 650; }
+.order-otp-list time, .order-otp-empty { color: var(--muted); font-size: .6875rem; }
+.order-otp-empty { justify-content: flex-start; }
 .order-detail-panel .message-list { display: grid; }
 .order-detail-panel .message { padding: 12px 0; border-bottom: 1px solid var(--line); }
 .order-detail-panel .message:last-child { border-bottom: 0; }
@@ -427,6 +432,7 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
 @media (hover: hover) and (prefers-reduced-motion: no-preference) { .order-card:hover { border-color: #a9a99a; box-shadow: 0 7px 18px #2929230a; transform: translateY(-2px); } }
 @media (max-width: 1100px) { .order-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 700px) {
+  .order-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .order-overview { gap: 10px; }
   .order-overview > div { flex-direction: column; align-items: flex-start; gap: 8px; padding: 13px; }
   .order-overview dt { font-size: .75rem; }
@@ -499,7 +505,8 @@ pre { max-height: 420px; overflow: auto; padding: 16px; background: var(--soft);
     <dl class="order-overview" aria-label="Filtered order counts">
       <div><dt>Orders</dt><dd id="totalOrderCount">—</dd></div>
       <div><dt>Waiting</dt><dd id="waitingOrderCount">—</dd></div>
-      <div><dt>OTP received</dt><dd id="completedOrderCount">—</dd></div>
+      <div><dt>Orders with OTP</dt><dd id="completedOrderCount">—</dd></div>
+      <div><dt>Unique numbers</dt><dd id="uniqueNumberCount">—</dd></div>
       <div><dt>Active numbers</dt><dd id="activeNumberCount">—</dd></div>
     </dl>
     <section aria-labelledby="ordersHeading">

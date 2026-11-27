@@ -12,6 +12,7 @@ const orderCount = document.getElementById("orderCount");
 const showMoreOrders = document.getElementById("showMoreOrders");
 const ordersRefreshStatus = document.getElementById("ordersRefreshStatus");
 const activeNumberCount = document.getElementById("activeNumberCount");
+const uniqueNumberCount = document.getElementById("uniqueNumberCount");
 const deviceMessagesDialog = document.getElementById("deviceMessagesDialog");
 const deviceMessagesContext = document.getElementById("deviceMessagesContext");
 const deviceMessagesStatus = document.getElementById("deviceMessagesStatus");
@@ -108,6 +109,37 @@ function getOrderOtpHistory(order) {
   return typeof order.receivedOtp === "string" && order.receivedOtp ? [order.receivedOtp] : [];
 }
 
+function makeOrderOtpList(order) {
+  const list = document.createElement("ol");
+  list.className = "order-otp-list";
+  const entries = Array.isArray(order.receivedOtps) && order.receivedOtps.length
+    ? order.receivedOtps.filter((entry) => entry && typeof entry.code === "string")
+    : (typeof order.receivedOtp === "string" && order.receivedOtp
+      ? [{ code: order.receivedOtp, receivedAt: order.receivedAt }]
+      : []);
+  if (!entries.length) {
+    const empty = document.createElement("li");
+    empty.className = "order-otp-empty";
+    empty.textContent = "No OTP received";
+    list.append(empty);
+    return list;
+  }
+  for (const entry of entries) {
+    const item = document.createElement("li");
+    const code = document.createElement("code");
+    code.textContent = entry.code;
+    const time = document.createElement("time");
+    time.textContent = formatOrderTime(entry.receivedAt);
+    if (entry.receivedAt !== null && entry.receivedAt !== undefined) {
+      const date = new Date(entry.receivedAt);
+      if (!Number.isNaN(date.getTime())) time.dateTime = date.toISOString();
+    }
+    item.append(code, time);
+    list.append(item);
+  }
+  return list;
+}
+
 function getSavedOrderMessages(order) {
   if (!Array.isArray(order.messageHistory)) return [];
   return order.messageHistory
@@ -190,8 +222,7 @@ function makeOrderDetails(order, container) {
     ["Status", order.status],
     ["OTP locked", order.locked ? "Yes" : "No"],
     ["Number active", order.numberActive ? "Yes" : "No"],
-    ["Latest OTP", order.receivedOtp],
-    ["OTP history", getOrderOtpHistory(order).join(", ")]
+    ["Latest OTP", order.receivedOtp]
   ];
   for (const [label, value] of fields) {
     const field = document.createElement("div");
@@ -203,6 +234,10 @@ function makeOrderDetails(order, container) {
     field.append(term, description);
     details.append(field);
   }
+  const otpHeading = document.createElement("h3");
+  const otpHistory = getOrderOtpHistory(order);
+  otpHeading.textContent = `Received OTPs (${otpHistory.length})`;
+  const otpList = makeOrderOtpList(order);
   const messagesHeading = document.createElement("h3");
   messagesHeading.textContent = "Messages for this order";
   const allMessagesButton = document.createElement("button");
@@ -215,7 +250,7 @@ function makeOrderDetails(order, container) {
   messageStatus.className = "status order-message-status";
   const messageList = document.createElement("div");
   messageList.className = "message-list";
-  panel.append(heading, details, allMessagesButton, messagesHeading, messageStatus, messageList);
+  panel.append(heading, details, otpHeading, otpList, allMessagesButton, messagesHeading, messageStatus, messageList);
   container.append(panel);
   orderMessagePanels.set(order.orderId, { messageStatus, messageList });
   renderOrderMessages(order);
@@ -450,6 +485,7 @@ function renderOrders(orders, refreshExpandedMessages = false) {
   document.getElementById("totalOrderCount").textContent = orderSummary?.total ?? matches.length;
   document.getElementById("waitingOrderCount").textContent = orderSummary?.waiting ?? matches.filter((order) => order.status === "active").length;
   document.getElementById("completedOrderCount").textContent = orderSummary?.completed ?? matches.filter((order) => order.status === "completed").length;
+  uniqueNumberCount.textContent = orderSummary?.uniqueNumbers ?? new Set(matches.map((order) => order.number).filter(Boolean)).size;
   activeNumberCount.textContent = orderSummary?.active ?? new Set(matches.filter((order) => order.numberActive === true).map((order) => order.number)).size;
   const visible = matches.slice(0, visibleLimit);
   const ids = new Set(visible.map((order) => order.orderId));

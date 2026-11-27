@@ -111,6 +111,30 @@ const state = { initialized: true, databaseUrls: [database], orders: [], service
     const filtered = await a.call("getRecentOrders", { search: "9000000002" });
     assert.equal(filtered.stats.total, 1);
     assert.equal(filtered.orders[0].number, "9000000002");
+    const otpStatsStore = new RuntimeStore(":memory:");
+    otpStatsStore.initialize(state);
+    const otpNumberA = { ...candidate, deviceId: "otp-stats-a", number: "9666666661" };
+    const otpNumberB = { ...candidate, deviceId: "otp-stats-b", number: "9666666662" };
+    otpStatsStore.rememberBatch([otpNumberA, otpNumberB]);
+    const multiOtpOrder = otpStatsStore.claim({ service: "otp-stats", candidate: otpNumberA });
+    assert(multiOtpOrder);
+    const firstOtpTime = multiOtpOrder.createdAt + 1;
+    otpStatsStore.receive({ id: multiOtpOrder.orderId, matches: [
+      { key: "otp-a", code: "111111", timestamp: firstOtpTime, message: { text: "Code 111111" } },
+      { key: "otp-b", code: "222222", timestamp: firstOtpTime + 1, message: { text: "Code 222222" } }
+    ], now: firstOtpTime + 2 });
+    const singleOtpOrder = otpStatsStore.claim({ service: "otp-stats", candidate: otpNumberB });
+    assert(singleOtpOrder);
+    const secondOtpTime = singleOtpOrder.createdAt + 1;
+    otpStatsStore.receive({ id: singleOtpOrder.orderId, matches: [
+      { key: "otp-c", code: "333333", timestamp: secondOtpTime, message: { text: "Code 333333" } }
+    ], now: secondOtpTime + 1 });
+    const otpStats = otpStatsStore.getRecentOrders({ status: "completed" }).stats;
+    assert.equal(otpStats.completed, 2, "An order with several OTP messages counts once in the OTP order total");
+    assert.equal(otpStats.uniqueNumbers, 2, "Unique number totals count distinct allocated numbers");
+    assert.equal(otpStatsStore.getOrder(multiOtpOrder.orderId).receivedOtps.length, 2,
+      "Each order retains its individual OTP history");
+    otpStatsStore.close();
     const originalSend = a.send.bind(a);
     let orderReads = 0;
     a.send = (method, args) => {
