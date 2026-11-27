@@ -326,7 +326,8 @@ rotationImportButton.addEventListener("click", async () => {
   let added = 0;
   let duplicates = 0;
   let checked = 0;
-  const batchSize = 1000;
+  // Keep each Firebase validation request well below reverse-proxy timeouts.
+  const batchSize = 32;
   try {
     parsed = parseRotationImport(await file.text(), /\.csv$/i.test(file.name));
     const candidates = parsed.urls;
@@ -334,7 +335,9 @@ rotationImportButton.addEventListener("click", async () => {
     if (!candidates.length) throw new Error("No Firebase database URLs were found in the file.");
     for (let offset = 0; offset < candidates.length; offset += batchSize) {
       const batch = candidates.slice(offset, offset + batchSize);
-      rotationImportStatus.textContent = `Found ${parsed.occurrences} links; ${parsed.repeated} repeated in file. Checked ${checked} of ${candidates.length} unique URLs; checking next ${batch.length}... Added ${added}; ${duplicates} already in rotation.`;
+      const batchNumber = Math.floor(offset / batchSize) + 1;
+      const batchTotal = Math.ceil(candidates.length / batchSize);
+      rotationImportStatus.textContent = `Found ${parsed.occurrences} links; ${parsed.repeated} repeated in file. Checking batch ${batchNumber} of ${batchTotal}; ${checked} of ${candidates.length} unique URLs checked. Added ${added}; ${duplicates} already in rotation.`;
       const response = await window.dashboardApiFetch("/api/addDatabaseUrls", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

@@ -334,6 +334,87 @@ function completedOrder() {
   }
   {
     const f = serverFixture();
+    await f.context.getRuntimeStore();
+    const databaseUrl = "https://fixture.firebaseio.com";
+    f.setRotation({ databaseUrls: [databaseUrl], serviceUsage: {}, orders: [] });
+    const servicesPath = [...f.files.keys()].find((name) => name.endsWith("services.json"));
+    f.files.set(servicesPath, JSON.stringify([{ name: "fixture", enabled: true, templates: [{ text: "Code {{OTP}}", enabled: true }] }]));
+    const now = Date.now();
+    const oldOrder = { ...completedOrder(), orderId: "d".repeat(24), receivedOtp: null,
+      receivedAt: null, receivedOtps: [], status: "cancelled", createdAt: now - 60000,
+      expiresAt: now - 1000, deviceId: "rebuy-device", number: "9000000001" };
+    f.runtime.importOrder(oldOrder);
+    f.runtime.remember({ database: databaseUrl, deviceId: oldOrder.deviceId,
+      number: oldOrder.number, now, verifiedAt: now });
+    f.runtime.recordDatabaseCheck({ database: databaseUrl, now });
+    let online = true;
+    f.fetch = async (url) => {
+      assert.equal(url, databaseUrl + "/clients/" + encodeURIComponent(oldOrder.deviceId) + ".json?shallow=true");
+      return online
+        ? { ok: true, status: 200, json: async () => ({ status: true }) }
+        : { ok: true, status: 200, json: async () => ({ status: false }) };
+    };
+    vm.runInContext(`activeClientOnlineIds.set(${JSON.stringify(databaseUrl)}, {
+      onlineIds: new Set([${JSON.stringify(oldOrder.deviceId)}]), checkedIds: null,
+      complete: true, expiresAt: Date.now() + 30000
+    })`, f.context);
+    const missingKey = await f.request("/api/rebuy", { method: "POST", body: { id: oldOrder.orderId } });
+    assert.equal(missingKey.status, 401, "Rebuy is protected by the dashboard API key");
+    const oldParameter = await f.request("/api/rebuy?api_key=" + f.apiKey,
+      { method: "POST", body: { oldOrderId: oldOrder.orderId } });
+    assert.equal(oldParameter.status, 400, "Rebuy accepts id, not oldOrderId");
+    const duplicateIds = await f.request(`/api/rebuy?api_key=${f.apiKey}&id=${oldOrder.orderId}&id=${oldOrder.orderId}`);
+    assert.equal(duplicateIds.status, 400, "Rebuy requires exactly one id parameter");
+    const success = await f.request("/api/rebuy?api_key=" + f.apiKey,
+      { method: "POST", body: { id: oldOrder.orderId } });
+    assert.equal(success.status, 200);
+    const rebuy = JSON.parse(success.body);
+    assert.equal(rebuy.success, true);
+    assert.notEqual(rebuy.orderId, oldOrder.orderId);
+    assert.equal(rebuy.number, oldOrder.number);
+    assert.equal(rebuy.deviceId, oldOrder.deviceId);
+    assert.equal(rebuy.service, oldOrder.service);
+    assert.equal(f.runtime.getOrder(rebuy.orderId).status, "active");
+    assert.equal(f.requests.length, 0, "A recent complete status snapshot should avoid another Firebase request");
+    const activeOldOrder = { ...oldOrder, orderId: "f".repeat(24), number: "9000000003",
+      status: "active", createdAt: Date.now(), expiresAt: Date.now() + 60000 };
+    f.runtime.importOrder(activeOldOrder);
+    f.runtime.remember({ database: databaseUrl, deviceId: activeOldOrder.deviceId,
+      number: activeOldOrder.number, now, verifiedAt: now });
+    const activeRebuy = await f.request(`/api/rebuy?api_key=${f.apiKey}&id=${activeOldOrder.orderId}`);
+    assert.equal(JSON.parse(activeRebuy.body).error, "rebuy Unsuccessful order still active");
+
+    const lockedOldOrder = { ...oldOrder, orderId: "9".repeat(24), number: "9000000004",
+      receivedOtp: "123456", receivedAt: now - 5000, receivedOtps: [{
+        code: "123456", receivedAt: now - 5000, messageKey: "otp"
+      }], status: "completed" };
+    f.runtime.importOrder(lockedOldOrder);
+    f.runtime.remember({ database: databaseUrl, deviceId: lockedOldOrder.deviceId,
+      number: lockedOldOrder.number, now, verifiedAt: now });
+    const lockedRebuy = await f.request("/api/rebuy?api_key=" + f.apiKey,
+      { method: "POST", body: { id: lockedOldOrder.orderId } });
+    assert.equal(JSON.parse(lockedRebuy.body).error, "rebuy Unsuccessful number unavailable");
+
+    const competing = await f.request("/api/rebuy?api_key=" + f.apiKey,
+      { method: "POST", body: { id: oldOrder.orderId } });
+    assert.equal(JSON.parse(competing.body).error, "rebuy Unsuccessful source offline");
+
+    const offlineOrder = { ...oldOrder, orderId: "e".repeat(24), number: "9000000002" };
+    f.runtime.importOrder(offlineOrder);
+    f.runtime.remember({ database: databaseUrl, deviceId: offlineOrder.deviceId,
+      number: offlineOrder.number, now, verifiedAt: now });
+    vm.runInContext(`activeClientOnlineIds.delete(${JSON.stringify(databaseUrl)})`, f.context);
+    online = false;
+    const offline = await f.request("/api/rebuy?api_key=" + f.apiKey,
+      { method: "POST", body: { id: offlineOrder.orderId } });
+    assert.equal(offline.status, 200);
+    assert.equal(JSON.parse(offline.body).error, "rebuy Unsuccessful source offline");
+    assert.equal(f.requests.length, 1, "Without a recent snapshot, rebuy should shallow-check only the source device");
+    assert.equal(f.runtime.sql("SELECT COUNT(*) AS n FROM orders").get().n, 5,
+      "Offline rebuy must not create an order");
+  }
+  {
+    const f = serverFixture();
     const largeBody = Buffer.from(JSON.stringify({ value: "x".repeat(1024 * 1024) }));
     let largeReads = 0;
     f.fetch = async () => {
@@ -536,6 +617,40 @@ function completedOrder() {
     assert.equal(result.status, 200);
     assert.deepEqual(checked, [`${added}/clients.json?shallow=true`],
       "Adding one rotation URL must ping only the new database, not every existing URL");
+  }
+  {
+    const f = serverFixture();
+    const existing = "https://fixture.firebaseio.com";
+    f.setRotation({ databaseUrls: [existing], serviceUsage: {}, orders: [] });
+    let checks = 0;
+    f.fetch = async () => { checks += 1; return { ok: true, status: 200, text: async () => "{}" }; };
+    const result = await f.request("/api/rotation", {
+      method: "PUT", admin: true, body: { databaseUrls: [existing] }
+    });
+    assert.equal(result.status, 200);
+    assert.equal(checks, 0, "Saving unchanged rotation URLs must not ping Firebase again");
+  }
+  {
+    const f = serverFixture({ env: {
+      NUMBER_DATABASE_CONCURRENCY: "2", MAX_CONCURRENT_DATABASE_READS: "1000",
+      ROTATION_DATABASE_CHECK_CONCURRENCY: "64"
+    } });
+    f.setRotation({ databaseUrls: [], serviceUsage: {}, orders: [] });
+    let active = 0, peak = 0;
+    f.fetch = async () => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise(setImmediate);
+      active -= 1;
+      return { ok: true, status: 200, text: async () => "{}" };
+    };
+    const urls = Array.from({ length: 100 }, (_, index) => `https://new-${index}.firebaseio.com`);
+    const result = await f.request("/api/rotation", {
+      method: "PUT", admin: true, body: { databaseUrls: urls }
+    });
+    assert.equal(result.status, 200);
+    assert.equal(peak, 64, "New URLs should validate concurrently beyond the ordinary scan batch size");
+    assert.equal(JSON.parse(result.body).databaseUrls.length, 100);
   }
   {
     const f = serverFixture();

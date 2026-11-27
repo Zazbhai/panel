@@ -47,6 +47,9 @@ const maximumServicesRequestBytes = 16 * 1024 * 1024;
 const maximumRotationRequestBytes = 1024 * 1024;
 const maximumDatabaseBatchRequestBytes = 3 * 1024 * 1024;
 const databasePingConcurrency = readPositiveIntegerEnv("NUMBER_DATABASE_CONCURRENCY", 16, 1, 64);
+const rotationDatabaseCheckConcurrency = readPositiveIntegerEnv(
+  "ROTATION_DATABASE_CHECK_CONCURRENCY", 64, 1, 256
+);
 const apiDocsPath = path.join(__dirname, "api-docs.html");
 const apiClientScriptPath = path.join(__dirname, "api-client.js");
 const dashboardApiKey = process.env.DASHBOARD_API_KEY;
@@ -600,14 +603,16 @@ async function validateAndPingRotatingDatabases(values, knownValues = []) {
     databaseUrls.push(normalized);
   }
 
-  const knownUrls = new Set(Array.isArray(knownValues) ? knownValues : []);
-  const hasNewUrl = databaseUrls.some((url) => !knownUrls.has(url));
-  const urlsToCheck = hasNewUrl && knownUrls.size
-    ? databaseUrls.filter((url) => !knownUrls.has(url))
-    : databaseUrls;
+  const knownUrls = new Set();
+  for (const value of Array.isArray(knownValues) ? knownValues : []) {
+    try { knownUrls.add(normalizeDatabaseUrl(value)); } catch { /* legacy invalid entry */ }
+  }
+  // Existing rotation entries are already accepted. Re-ping only URLs newly
+  // submitted by the user, including when the submitted list is unchanged.
+  const urlsToCheck = databaseUrls.filter((url) => !knownUrls.has(url));
   const checks = [];
-  for (let index = 0; index < urlsToCheck.length; index += databasePingConcurrency) {
-    const batch = urlsToCheck.slice(index, index + databasePingConcurrency);
+  for (let index = 0; index < urlsToCheck.length; index += rotationDatabaseCheckConcurrency) {
+    const batch = urlsToCheck.slice(index, index + rotationDatabaseCheckConcurrency);
     const batchChecks = await Promise.all(batch.map(async (url) => {
       try {
         return await withDatabaseReadSlot(async () => {
@@ -644,7 +649,7 @@ async function validateAndPingRotatingDatabases(values, knownValues = []) {
   // Adding one database to a large existing rotation should not require a
   // network ping for every already accepted URL. Existing URLs are retained
   // in the submitted order; only the newly added URLs need validation.
-  if (hasNewUrl && knownUrls.size) {
+  if (knownUrls.size) {
     workingUrls.push(...databaseUrls.filter((url) => knownUrls.has(url)));
   }
   const deferredSet = new Set(deferred.map((item) => item.url));
@@ -3592,6 +3597,7 @@ async function handleRequest(request, response) {
   const requiresExplicitApiKey = isLocalOtpApi
     || requestUrl.pathname === "/api/otp-provider"
     || requestUrl.pathname === "/api/addDatabaseUrl"
+    || requestUrl.pathname === "/api/rebuy"
     || requestUrl.pathname === "/api/health"
     || requestUrl.pathname === "/api/balance";
   const isBulkDatabaseUrlApi = requestUrl.pathname === "/api/addDatabaseUrls";
@@ -3820,6 +3826,90 @@ async function handleRequest(request, response) {
       sendJson(response, 200, result);
     } catch (error) {
       sendJson(response, 400, { error: error.message });
+    }
+    return;
+  }
+  if (requestUrl.pathname === "/api/rebuy") {
+    if (request.method !== "GET" && request.method !== "POST") {
+      response.writeHead(405, { Allow: "GET, POST" });
+      response.end("Method Not Allowed");
+      return;
+    }
+    let input;
+    if (request.method === "POST") {
+      try {
+        input = await readJsonBody(request, 8192);
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { error: error.message });
+        return;
+      }
+    }
+    const suppliedIds = request.method === "GET"
+      ? requestUrl.searchParams.getAll("id")
+      : typeof input?.id === "string" ? [input.id] : [];
+    if (suppliedIds.length !== 1 || !/^[a-f0-9]{24}$/.test(suppliedIds[0].trim())) {
+      sendJson(response, 400, { success: false, error: "Provide one valid id (the old order ID)." });
+      return;
+    }
+    const oldOrderId = suppliedIds[0].trim();
+    const failure = (reason = "source offline") => sendJson(response, 200, {
+      success: false, error: `rebuy Unsuccessful ${reason}`
+    });
+    const store = await getRuntimeStore();
+    let oldOrder;
+    try {
+      oldOrder = await store.call("getOrder", oldOrderId);
+    } catch (error) {
+      console.error("Could not read rebuy order:", error.message);
+      return failure("source offline");
+    }
+    if (!oldOrder) return failure("order unavailable");
+    if (oldOrder.status === "active") return failure("order still active");
+    if (oldOrder.receivedOtp !== null) return failure("number unavailable");
+    const metadata = await store.call("metadata");
+    if (!metadata?.databaseUrls.includes(oldOrder.databaseUrl)) return failure("source offline");
+    const now = Date.now();
+    const snapshot = activeClientOnlineIds.get(oldOrder.databaseUrl);
+    let sourceOnline;
+    if (snapshot?.complete === true && snapshot.expiresAt > now) {
+      sourceOnline = snapshot.onlineIds.has(oldOrder.deviceId);
+    } else {
+      // Rebuy only needs this device's current status. Avoid downloading a
+      // potentially huge clients.json for every retry/rebuy request.
+      try {
+        const endpoint = `${oldOrder.databaseUrl}/clients/${encodeURIComponent(oldOrder.deviceId)}.json?shallow=true`;
+        const client = await fetchDatabaseJson(endpoint, numberStatusCheckTimeoutMs);
+        sourceOnline = Boolean(client && typeof client === "object" && !Array.isArray(client)
+          && client.status === true);
+      } catch {
+        sourceOnline = false;
+      }
+    }
+    if (!sourceOnline) return failure("source offline");
+    try {
+      await store.call("markOnline", {
+        database: oldOrder.databaseUrl, deviceId: oldOrder.deviceId, online: true, now
+      });
+      await store.call("recordDatabaseCheck", { database: oldOrder.databaseUrl, now });
+      const result = await store.call("rebuyOrder", {
+        oldOrderId: oldOrder.orderId, now, onlineTtl: activeClientsCacheTtlMs
+      });
+      if (!result?.ok) {
+        return failure(result?.code === "REBUY_NUMBER_LOCKED" ? "number unavailable" : "source offline");
+      }
+      recentOrdersCache = null;
+      sendJson(response, 200, {
+        success: true,
+        orderId: result.order.orderId,
+        number: result.order.number,
+        service: result.order.service,
+        databaseUrl: result.order.databaseUrl,
+        deviceId: result.order.deviceId,
+        message: "rebuy Successful"
+      });
+    } catch (error) {
+      console.error("Could not create rebuy order:", error.message);
+      return failure("source offline");
     }
     return;
   }

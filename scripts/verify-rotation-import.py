@@ -55,19 +55,19 @@ def main():
         upload('many.csv', 'url\n' + '\n'.join(f'https://large-{i}.firebaseio.com/' for i in range(2101)))
         expect(page.locator('#rotationImportStatus')).to_contain_text('Added 2101;')
         expect(page.locator('#rotationImportStatus')).to_contain_text('checked all 2101 unique URLs')
-        assert [len(batch) for batch in fixture.bulk_requests] == [1000, 1000, 101]
+        assert [len(batch) for batch in fixture.bulk_requests] == [32] * 65 + [21]
 
         # Saved additions must remain visible if a later batch request fails.
         fixture.bulk_requests.clear()
         fail_second_batch = True
         upload('partial.txt', '\n'.join(f'https://partial-{i}.firebaseio.com' for i in range(1100)))
-        expect(page.locator('#rotationImportStatus')).to_contain_text('Import stopped after 1000 URLs: Temporary batch failure')
-        expect(page.locator('#rotationImportStatus')).to_contain_text('Added 1000;')
+        expect(page.locator('#rotationImportStatus')).to_contain_text('Import stopped after 32 URLs: Temporary batch failure')
+        expect(page.locator('#rotationImportStatus')).to_contain_text('Added 32;')
         expect(page.locator('#rotationImportButton')).to_be_enabled()
         fail_second_batch = False
         fixture.bulk_requests.clear()
         upload('partial.txt', '\n'.join(f'https://partial-{i}.firebaseio.com' for i in range(1100)))
-        expect(page.locator('#rotationImportStatus')).to_contain_text('Added 100; 1000 already in rotation;')
+        expect(page.locator('#rotationImportStatus')).to_contain_text('Added 1068; 32 already in rotation;')
         expect(page.locator('#rotationImportStatus')).to_contain_text('checked all 1100 unique URLs')
 
         upload('broken.csv', 'url\n"unclosed field')

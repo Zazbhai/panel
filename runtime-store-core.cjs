@@ -154,6 +154,44 @@ class RuntimeStore {
     return order;
   }
   getOrder(id) { return this.decode(this.sql("SELECT * FROM orders WHERE id=?").get(id)); }
+  rebuyOrder({ oldOrderId, now = Date.now(), duration = 600000, onlineTtl = 300000, mappingTtl = 86400000 }) {
+    return this.transaction(() => {
+      this.expire(now);
+      const old = this.sql("SELECT * FROM orders WHERE id=?").get(oldOrderId);
+      if (!old) return { ok: false, code: "REBUY_ORDER_NOT_FOUND" };
+      if (old.status === "active") return { ok: false, code: "REBUY_ORDER_ACTIVE" };
+      if (old.received_otp !== null) return { ok: false, code: "REBUY_NUMBER_LOCKED" };
+      const metadata = this.metadata();
+      if (!metadata?.databaseUrls.includes(old.database_url)) {
+        return { ok: false, code: "REBUY_SOURCE_NOT_CONFIGURED" };
+      }
+      const stored = this.sql("SELECT * FROM numbers WHERE database_url=? AND device_id=?")
+        .get(old.database_url, old.device_id);
+      if (!stored || stored.number !== old.number || stored.online !== 1
+        || stored.checked_at <= now - onlineTtl || stored.verified_at <= now - mappingTtl) {
+        return { ok: false, code: "REBUY_SOURCE_OFFLINE" };
+      }
+      if (this.sql("SELECT 1 FROM service_locks WHERE service=? AND number=?")
+        .get(old.service, old.number)) {
+        return { ok: false, code: "REBUY_NUMBER_LOCKED" };
+      }
+      if (this.sql("SELECT 1 FROM leases WHERE number=? AND expires_at>?")
+        .get(old.number, now)) {
+        return { ok: false, code: "REBUY_NUMBER_BUSY" };
+      }
+      const cycle = this.sql("SELECT cycle,cursor_url FROM service_cycles WHERE service=?")
+        .get(old.service);
+      const orderId = randomBytes(12).toString("hex");
+      this.sql("INSERT INTO orders VALUES(?,?,?,?,?,?,?,'active',NULL,NULL,1)")
+        .run(orderId, old.service, old.number, old.database_url, old.device_id, now, now + duration);
+      this.sql("INSERT INTO leases VALUES(?,?,?)").run(old.number, orderId, now + duration);
+      this.sql("INSERT INTO service_cycles VALUES(?,?,?) ON CONFLICT(service) DO UPDATE SET cursor_url=excluded.cursor_url")
+        .run(old.service, cycle?.cycle || 0, old.database_url);
+      this.sql("INSERT INTO service_usage VALUES(?,?,?) ON CONFLICT(service,number) DO UPDATE SET cycle=excluded.cycle")
+        .run(old.service, old.number, cycle?.cycle || 0);
+      return { ok: true, order: this.getOrder(orderId) };
+    });
+  }
   orderFilter({ search = "", status = "", from = null, to = null } = {}) {
     const parts = ["1=1"], args = [];
     if (search) {

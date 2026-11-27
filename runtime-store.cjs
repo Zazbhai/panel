@@ -29,7 +29,9 @@ class AsyncRuntimeStore {
     if (!this.pending.size) this.worker.unref();
   }
   call(method, ...args) {
-    if (method === "claimReady" || method === "refreshDatabaseInventory") return this.retryTransaction(method, args);
+    if (method === "claimReady" || method === "refreshDatabaseInventory" || method === "rebuyOrder") {
+      return this.retryTransaction(method, args);
+    }
     // Status polling can produce many identical reads for the same order.
     // Share one worker request among concurrent callers instead of filling the
     // IPC queue with duplicate SQLite work.
