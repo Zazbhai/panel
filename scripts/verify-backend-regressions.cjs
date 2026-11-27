@@ -591,6 +591,17 @@ function completedOrder() {
   }
   {
     const f = serverFixture();
+    const order = completedOrder();
+    order.expiresAt = Date.now() + 600000;
+    f.setRotation({ databaseUrls: ["https://fixture.firebaseio.com"], serviceUsage: {}, orders: [order] });
+    const result = await f.request(`/stubs/handler_api.php?action=getStatus&id=${order.orderId}&api_key=${f.apiKey}`);
+    assert.equal(result.status, 200);
+    assert.equal(result.body, "STATUS_OK:123456");
+    assert.equal(f.requests.length, 0,
+      "Completed orders must return saved OTPs without requiring Firebase or service-config reads");
+  }
+  {
+    const f = serverFixture();
     f.fetch = async () => ({ ok: true, status: 200, json: async () => null });
     const result = await f.context.readRotatingDeviceStats();
     assert.equal(f.rotation().databaseUrls.length, 1, "Missing clients must remain in rotation");

@@ -3166,6 +3166,10 @@ async function handleLocalOtpRequest(requestUrl, response) {
     sendText(response, 200, "STATUS_CANCEL");
     return;
   }
+  if (action === "getStatus" && reservation.receivedOtp !== null) {
+    sendText(response, 200, await getStatusOkText(reservation));
+    return;
+  }
   if (reservation.expiresAt <= Date.now()) {
     sendText(response, 200, reservation.receivedOtp !== null
       ? await getStatusOkText(reservation)
