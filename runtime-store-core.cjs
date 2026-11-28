@@ -3,10 +3,13 @@ const { DatabaseSync } = require("node:sqlite");
 const { randomBytes } = require("node:crypto");
 
 class RuntimeStore {
-  constructor(filename) {
+  constructor(filename, options = {}) {
     this.db = new DatabaseSync(filename);
     // A claim never waits long enough for a request to outlive its allocation SLA.
-    this.db.exec("PRAGMA busy_timeout=250; PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL;");
+    const busyTimeoutMs = Number.isInteger(options.busyTimeoutMs)
+      ? Math.min(60000, Math.max(0, options.busyTimeoutMs))
+      : 250;
+    this.db.exec(`PRAGMA busy_timeout=${busyTimeoutMs}; PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL;`);
     this.db.exec("PRAGMA journal_mode=WAL;");
     this.db.exec("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);"
       + "CREATE TABLE IF NOT EXISTS orders(id TEXT PRIMARY KEY,service TEXT NOT NULL,number TEXT NOT NULL,database_url TEXT NOT NULL,device_id TEXT NOT NULL,created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,status TEXT NOT NULL,received_otp TEXT,received_at INTEGER,number_active INTEGER NOT NULL DEFAULT 0);"

@@ -3,6 +3,7 @@
 
 // Verify every local order against the partner. Dry-run by default.
 const path = require("node:path");
+const { DatabaseSync } = require("node:sqlite");
 const dotenv = require("dotenv");
 const { RuntimeStore } = require("../runtime-store-core.cjs");
 
@@ -15,15 +16,6 @@ const configuredConcurrency = Number(process.env.PARTNER_ORDER_CHECK_CONCURRENCY
 const concurrency = Math.min(2000, Math.max(1,
   Number.isInteger(configuredConcurrency) && configuredConcurrency > 0 ? configuredConcurrency : 2000));
 const apply = process.argv.includes("--apply");
-
-if (!key) {
-  console.error("Set CANDYSMS_API_KEY (or PARTNER_ORDER_HISTORY_KEY) before running.");
-  process.exit(2);
-}
-if (process.argv.some((arg) => /^\d{4}-\d{2}-\d{2}$/.test(arg))) {
-  console.error("This version checks every local order; date arguments are not accepted.");
-  process.exit(2);
-}
 
 function walk(value, output = []) {
   if (Array.isArray(value)) for (const item of value) walk(item, output);
@@ -92,10 +84,27 @@ async function mapConcurrent(items, concurrencyLimit, callback) {
   return results;
 }
 
-async function main() {
-  const store = new RuntimeStore(sqlitePath);
+function readLocalOrders(filename, busyTimeoutMs = 30000) {
+  const db = new DatabaseSync(filename, { readOnly: true });
   try {
-    const orders = store.sql("SELECT id,service,number,status FROM orders ORDER BY created_at,id").all();
+    db.exec(`PRAGMA busy_timeout=${Math.min(60000, Math.max(0, Math.trunc(busyTimeoutMs)))};`);
+    return db.prepare("SELECT id,service,number,status FROM orders ORDER BY created_at,id").all();
+  } finally {
+    db.close();
+  }
+}
+
+async function main() {
+  if (!key) throw new Error("Set CANDYSMS_API_KEY (or PARTNER_ORDER_HISTORY_KEY) before running.");
+  if (process.argv.some((arg) => /^\d{4}-\d{2}-\d{2}$/.test(arg))) {
+    throw new Error("This version checks every local order; date arguments are not accepted.");
+  }
+
+  let store = null;
+  try {
+    // Dry runs use a read-only connection, so they never try to upgrade
+    // journal mode, run migrations, or clean expired rows while the server is live.
+    const orders = readLocalOrders(sqlitePath);
     const results = await mapConcurrent(orders, concurrency, (order) => checkOrder(order.id));
 
     const cancelled = results.filter((result) => result.result === "cancelled");
@@ -104,6 +113,7 @@ async function main() {
     console.log(`Local orders: ${orders.length}; partner cancelled: ${cancelled.length}; partner not found: ${notFound.length}; request/parse errors: ${errors.length}; mode: ${apply ? "APPLY CANCELLED ONLY" : "DRY RUN"}`);
     const localById = new Map(orders.map((order) => [order.id, order]));
     let unlocked = 0;
+    if (apply && cancelled.length) store = new RuntimeStore(sqlitePath, { busyTimeoutMs: 30000 });
     for (const result of cancelled) {
       const order = localById.get(result.orderId);
       if (!apply) {
@@ -122,8 +132,8 @@ async function main() {
     }
     for (const result of errors) console.log(`ERROR ${result.orderId}: ${result.detail}`);
     console.log(`${apply ? "Unlocked" : "Would unlock"} cancelled orders: ${apply ? unlocked : cancelled.length}; not-found orders left for review: ${notFound.length}`);
-  } finally { store.close(); }
+  } finally { store?.close(); }
 }
 
 if (require.main === module) main().catch((error) => { console.error(error.message); process.exitCode = 1; });
-module.exports = { statusOf, explicitNotFound, checkOrder, mapConcurrent };
+module.exports = { statusOf, explicitNotFound, checkOrder, mapConcurrent, readLocalOrders };
