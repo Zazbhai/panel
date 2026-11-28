@@ -627,7 +627,7 @@ function completedOrder() {
     assert.equal(f.runtime.getOrder(order.orderId).receivedOtp, "123456",
       "Background polling must save OTPs without a partner getStatus call");
     assert.equal(callbacks.length, 0, "Unlinked orders must not send the local ID as a provider ID");
-    const linked = await f.request("/api/order-link", { method: "POST", admin: true,
+    const linked = await f.request(`/api/order-link?api_key=${f.apiKey}`, { method: "POST",
       body: { local_order_id: order.orderId, external_order_id: "partner-order-482" } });
     assert.equal(linked.status, 200);
     await f.context.deliverPendingOtpWebhooks();
@@ -637,7 +637,7 @@ function completedOrder() {
     assert.equal(callbacks[0].headers["x-provider-webhook-secret"], "fixture-webhook-secret");
     await f.context.pollOrdersForWebhook();
     assert.equal(callbacks.length, 1, "Successful callbacks must not be sent again on the next scan");
-    const resentLink = await f.request("/api/order-link", { method: "POST", admin: true,
+    const resentLink = await f.request(`/api/order-link?api_key=${f.apiKey}`, { method: "POST",
       body: { local_order_id: order.orderId, retry: true } });
     assert.equal(resentLink.status, 200);
     await f.context.deliverPendingOtpWebhooks();
@@ -645,7 +645,7 @@ function completedOrder() {
   }
   {
     const f = serverFixture();
-    const linked = await f.request("/api/order-link", { method: "POST", admin: true,
+    const linked = await f.request(`/api/order-link?api_key=${f.apiKey}`, { method: "POST",
       body: { local_order_id: "a".repeat(24), external_order_id: "partner-order-api" } });
     assert.equal(linked.status, 404, "An unknown local order cannot be linked");
   }

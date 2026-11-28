@@ -1055,6 +1055,7 @@ function getLatestCarrierNumber(messages) {
 async function initializeOrderExpirationTimers() {
   await (await getRuntimeStore()).call("expire");
   if (otpWebhookUrl && otpWebhookSecret && await acquireOtpWebhookWorkerLock() && !otpWebhookTimer) {
+    console.log(`OTP webhook worker started; polling active orders every ${otpWebhookIntervalMs}ms.`);
     setTimeout(pollOrdersForWebhook, 1500).unref();
     otpWebhookTimer = setInterval(pollOrdersForWebhook, otpWebhookIntervalMs);
     otpWebhookTimer.unref();
@@ -3800,7 +3801,9 @@ async function handleRequest(request, response) {
     || requestUrl.pathname === "/api/addDatabaseUrl"
     || requestUrl.pathname === "/api/rebuy"
     || requestUrl.pathname === "/api/health"
-    || requestUrl.pathname === "/api/balance";
+    || requestUrl.pathname === "/api/balance"
+    || requestUrl.pathname === "/api/order-link"
+    || requestUrl.pathname === "/api/webhook/status";
   const isOrderLinkApi = requestUrl.pathname === "/api/order-link";
   const isBulkDatabaseUrlApi = requestUrl.pathname === "/api/addDatabaseUrls";
   if (isApiRequest) {
@@ -3865,6 +3868,14 @@ async function handleRequest(request, response) {
       console.error("Could not link provider order ID:", error.message);
       sendJson(response, 500, { error: "Could not link provider order ID." });
     }
+    return;
+  }
+  if (requestUrl.pathname === "/api/webhook/status") {
+    if (request.method !== "GET") { response.writeHead(405, { Allow: "GET" }); response.end("Method Not Allowed"); return; }
+    try {
+      const status = await (await getRuntimeStore()).call("otpWebhookStatus");
+      sendJson(response, 200, { configured: Boolean(otpWebhookUrl && otpWebhookSecret), worker: Boolean(otpWebhookTimer), ...status });
+    } catch (error) { sendJson(response, 500, { error: "Could not read webhook status." }); }
     return;
   }
 

@@ -223,6 +223,18 @@ class RuntimeStore {
       return deliverable;
     });
   }
+  otpWebhookStatus({ now = Date.now() } = {}) {
+    const counts = this.sql("SELECT COUNT(*) AS total,"
+      + "COUNT(CASE WHEN p.sent_at IS NULL THEN 1 END) AS pending,"
+      + "COUNT(CASE WHEN p.sent_at IS NULL AND p.claimed_until>? THEN 1 END) AS claimed,"
+      + "COUNT(CASE WHEN p.sent_at IS NOT NULL THEN 1 END) AS sent,"
+      + "COUNT(CASE WHEN p.sent_at IS NULL AND COALESCE(o.webhook_order_id,o.external_order_id) IS NULL THEN 1 END) AS unlinked,"
+      + "MAX(p.attempts) AS maxAttempts FROM otp_webhook_outbox p JOIN orders o ON o.id=p.order_id")
+      .get(now);
+    const lastAttempt = this.sql("SELECT order_id AS localOrderId,otp_key AS otpKey,attempts,next_attempt_at AS nextAttemptAt,sent_at AS sentAt "
+      + "FROM otp_webhook_outbox ORDER BY COALESCE(sent_at,next_attempt_at) DESC LIMIT 1").get() || null;
+    return { ...counts, lastAttempt };
+  }
   markOtpWebhookAttempt({ orderId, otpKey, sent = false, now = Date.now() }) {
     return this.transaction(() => {
     const entry = this.sql("SELECT attempts FROM otp_webhook_outbox WHERE order_id=? AND otp_key=?").get(orderId, otpKey);
