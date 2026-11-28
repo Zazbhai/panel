@@ -679,6 +679,26 @@ function completedOrder() {
   }
   {
     const f = serverFixture();
+    await f.context.getRuntimeStore();
+    const timestamp = Date.now();
+    for (let index = 0; index < 100; index += 1) {
+      const orderId = `unlinked-${index}`;
+      f.runtime.sql("INSERT INTO orders(id,service,number,database_url,device_id,created_at,expires_at,status,received_otp,received_at) VALUES(?,?,?,?,?,?,?,?,?,?)")
+        .run(orderId, "fixture", String(index), "https://fixture.firebaseio.com", "device", timestamp + index, timestamp + 10000, "completed", "111111", timestamp + index);
+      f.runtime.sql("INSERT INTO otp_webhook_outbox(order_id,otp_key,otp,received_at) VALUES(?,?,?,?)")
+        .run(orderId, "sms", "111111", timestamp + index);
+    }
+    f.runtime.sql("INSERT INTO orders(id,service,number,database_url,device_id,created_at,expires_at,status,received_otp,received_at,external_order_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+      .run("linked-order", "fixture", "linked-number", "https://fixture.firebaseio.com", "device", timestamp + 200, timestamp + 10000, "completed", "222222", timestamp + 200, "provider-order");
+    f.runtime.sql("INSERT INTO otp_webhook_outbox(order_id,otp_key,otp,received_at) VALUES(?,?,?,?)")
+      .run("linked-order", "sms", "222222", timestamp + 200);
+    const pending = f.runtime.pendingOtpWebhooks({ now: timestamp + 500, limit: 1 });
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0].local_order_id, "linked-order",
+      "Unlinked outbox entries must not consume delivery batch capacity or starve linked OTPs");
+  }
+  {
+    const f = serverFixture();
     f.fetch = async () => ({ ok: true, status: 200, json: async () => null });
     const result = await f.context.readRotatingDeviceStats();
     assert.equal(f.rotation().databaseUrls.length, 1, "Missing clients must remain in rotation");

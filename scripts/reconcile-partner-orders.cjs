@@ -11,7 +11,9 @@ dotenv.config({ path: path.join(root, ".env"), quiet: true });
 const key = process.env.CANDYSMS_API_KEY || process.env.PARTNER_ORDER_HISTORY_KEY;
 const endpoint = process.env.CANDYSMS_ORDER_HISTORY_URL || "https://candysms.website/api/private/order-history";
 const sqlitePath = process.env.RUNTIME_SQLITE_PATH || path.join(root, "runtime.sqlite");
-const concurrency = Math.min(8, Math.max(1, Number(process.env.PARTNER_ORDER_CHECK_CONCURRENCY) || 4));
+const configuredConcurrency = Number(process.env.PARTNER_ORDER_CHECK_CONCURRENCY);
+const concurrency = Math.min(2000, Math.max(1,
+  Number.isInteger(configuredConcurrency) && configuredConcurrency > 0 ? configuredConcurrency : 2000));
 const apply = process.argv.includes("--apply");
 
 if (!key) {
@@ -77,19 +79,24 @@ async function checkOrder(orderId) {
   return { orderId, result: "error", detail: `unrecognized status: ${status}` };
 }
 
+async function mapConcurrent(items, concurrencyLimit, callback) {
+  const results = new Array(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(concurrencyLimit, items.length) }, async () => {
+    while (true) {
+      const index = next++;
+      if (index >= items.length) return;
+      results[index] = await callback(items[index], index);
+    }
+  }));
+  return results;
+}
+
 async function main() {
   const store = new RuntimeStore(sqlitePath);
   try {
     const orders = store.sql("SELECT id,service,number,status FROM orders ORDER BY created_at,id").all();
-    const results = new Array(orders.length);
-    let next = 0;
-    await Promise.all(Array.from({ length: Math.min(concurrency, orders.length) }, async () => {
-      while (true) {
-        const index = next++;
-        if (index >= orders.length) return;
-        results[index] = await checkOrder(orders[index].id);
-      }
-    }));
+    const results = await mapConcurrent(orders, concurrency, (order) => checkOrder(order.id));
 
     const cancelled = results.filter((result) => result.result === "cancelled");
     const notFound = results.filter((result) => result.result === "not_found");
@@ -119,4 +126,4 @@ async function main() {
 }
 
 if (require.main === module) main().catch((error) => { console.error(error.message); process.exitCode = 1; });
-module.exports = { statusOf, explicitNotFound, checkOrder };
+module.exports = { statusOf, explicitNotFound, checkOrder, mapConcurrent };

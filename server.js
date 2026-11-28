@@ -140,6 +140,7 @@ const otpWebhookUrl = process.env.OTP_WEBHOOK_URL || "";
 const otpWebhookSecret = process.env.OTP_WEBHOOK_SECRET || "";
 const otpWebhookIntervalMs = readPositiveIntegerEnv("OTP_WEBHOOK_POLL_INTERVAL_MS", 5000, 1000, 60000);
 const otpWebhookConcurrency = readPositiveIntegerEnv("OTP_WEBHOOK_POLL_CONCURRENCY", 4, 1, 16);
+const otpWebhookDeliveryConcurrency = readPositiveIntegerEnv("OTP_WEBHOOK_DELIVERY_CONCURRENCY", 8, 1, 32);
 const failedLoginAttempts = new Map();
 const activeNumberCache = new Map();
 const numberPools = new Map();
@@ -170,6 +171,8 @@ let numberPoolWarmupPromise = null;
 let numberPoolWarmupTimer = null;
 let priorityStockTimer = null;
 let otpWebhookTimer = null;
+let otpWebhookDeliveryTimer = null;
+let otpWebhookStartTimer = null;
 let otpWebhookPollPromise = null;
 let otpWebhookDeliveryPromise = null;
 let priorityStockPromise = null;
@@ -1054,16 +1057,10 @@ function getLatestCarrierNumber(messages) {
 
 async function initializeOrderExpirationTimers() {
   await (await getRuntimeStore()).call("expire");
-  if (otpWebhookUrl && otpWebhookSecret && await acquireOtpWebhookWorkerLock() && !otpWebhookTimer) {
-    console.log(`OTP webhook worker started; polling active and completed orders every ${otpWebhookIntervalMs}ms.`);
-    setTimeout(() => {
-      void deliverPendingOtpWebhooks().catch((error) => {
-        console.error("Could not resume pending OTP webhooks:", error.message);
-      });
-      void pollOrdersForWebhook();
-    }, 1500).unref();
-    otpWebhookTimer = setInterval(pollOrdersForWebhook, otpWebhookIntervalMs);
-    otpWebhookTimer.unref();
+  if (!otpWebhookUrl || !otpWebhookSecret) {
+    console.error("OTP webhook worker disabled: OTP_WEBHOOK_URL and OTP_WEBHOOK_SECRET must both be set.");
+  } else {
+    await startOtpWebhookWorker();
   }
   // Expiry is indexed and checked at claim/read time; no per-order timers or JSON rewrites.
   if (!await acquireInventoryWorkerLock()) return;
@@ -1086,6 +1083,38 @@ async function initializeOrderExpirationTimers() {
     numberPoolWarmupTimer = setInterval(startNumberPoolWarmup, numberPoolWarmupIntervalMs);
     numberPoolWarmupTimer.unref();
   }
+}
+
+async function startOtpWebhookWorker() {
+  if (!otpWebhookUrl || !otpWebhookSecret || otpWebhookTimer) return;
+  if (!await acquireOtpWebhookWorkerLock()) {
+    if (!otpWebhookStartTimer) {
+      console.error("OTP webhook worker waiting for .otp-webhook-worker.lock; will retry startup.");
+      otpWebhookStartTimer = setTimeout(() => {
+        otpWebhookStartTimer = null;
+        void startOtpWebhookWorker().catch((error) => {
+          console.error("Could not retry OTP webhook worker startup:", error.message);
+        });
+      }, Math.max(otpWebhookIntervalMs, 5000));
+      otpWebhookStartTimer.unref();
+    }
+    return;
+  }
+  console.log(`OTP webhook worker started; polling active and completed orders every ${otpWebhookIntervalMs}ms.`);
+  setTimeout(() => {
+    void deliverPendingOtpWebhooks().catch((error) => {
+      console.error("Could not resume pending OTP webhooks:", error.message);
+    });
+    void pollOrdersForWebhook();
+  }, 1500).unref();
+  otpWebhookTimer = setInterval(pollOrdersForWebhook, otpWebhookIntervalMs);
+  otpWebhookTimer.unref();
+  otpWebhookDeliveryTimer = setInterval(() => {
+    void deliverPendingOtpWebhooks().catch((error) => {
+      console.error("Could not drain pending OTP webhooks:", error.message);
+    });
+  }, Math.min(otpWebhookIntervalMs, 1000));
+  otpWebhookDeliveryTimer.unref();
 }
 
 async function acquireOtpWebhookWorkerLock() {
@@ -1118,24 +1147,26 @@ async function deliverPendingOtpWebhooks() {
 
 async function deliverPendingOtpWebhooksOnce() {
   const store = await getRuntimeStore();
-  const pending = await store.call("pendingOtpWebhooks", { limit: 100 });
-  for (const item of pending) {
-    let sent = false;
-    try {
-      const response = await fetch(otpWebhookUrl, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${otpWebhookSecret}`,
-          "x-provider-webhook-secret": otpWebhookSecret
-        },
-        body: JSON.stringify({ external_order_id: item.external_order_id, otp: item.otp }),
-        signal: AbortSignal.timeout(10000)
-      });
-      sent = response.ok;
-      if (!sent) console.error(`OTP webhook failed for ${item.external_order_id}: HTTP ${response.status}`);
-    } catch (error) { console.error(`OTP webhook failed for ${item.external_order_id}:`, error.message); }
-    await store.call("markOtpWebhookAttempt", { orderId: item.local_order_id, otpKey: item.otpKey, sent });
+  const pending = await store.call("pendingOtpWebhooks", { limit: 500 });
+  for (let index = 0; index < pending.length; index += otpWebhookDeliveryConcurrency) {
+    await Promise.all(pending.slice(index, index + otpWebhookDeliveryConcurrency).map(async (item) => {
+      let sent = false;
+      try {
+        const response = await fetch(otpWebhookUrl, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${otpWebhookSecret}`,
+            "x-provider-webhook-secret": otpWebhookSecret
+          },
+          body: JSON.stringify({ external_order_id: item.external_order_id, otp: item.otp }),
+          signal: AbortSignal.timeout(10000)
+        });
+        sent = response.ok;
+        if (!sent) console.error(`OTP webhook failed for ${item.external_order_id}: HTTP ${response.status}`);
+      } catch (error) { console.error(`OTP webhook failed for ${item.external_order_id}:`, error.message); }
+      await store.call("markOtpWebhookAttempt", { orderId: item.local_order_id, otpKey: item.otpKey, sent });
+    }));
   }
 }
 

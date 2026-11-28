@@ -217,12 +217,12 @@ class RuntimeStore {
       const entries = this.sql("SELECT p.order_id AS local_order_id,COALESCE(o.webhook_order_id,o.external_order_id) AS external_order_id,"
         + "p.otp_key AS otpKey,p.otp,p.received_at AS receivedAt,p.attempts FROM otp_webhook_outbox p "
         + "JOIN orders o ON o.id=p.order_id WHERE p.sent_at IS NULL AND p.next_attempt_at<=? AND p.claimed_until<=? "
+        + "AND COALESCE(o.webhook_order_id,o.external_order_id) IS NOT NULL "
         + "ORDER BY p.received_at LIMIT ?")
         .all(now, now, Math.min(500, Math.max(1, Number(limit) || 100)));
-      const deliverable = entries.filter((entry) => entry.external_order_id);
-      for (const entry of deliverable) this.sql("UPDATE otp_webhook_outbox SET claimed_until=? WHERE order_id=? AND otp_key=? AND sent_at IS NULL")
+      for (const entry of entries) this.sql("UPDATE otp_webhook_outbox SET claimed_until=? WHERE order_id=? AND otp_key=? AND sent_at IS NULL")
         .run(now + 30000, entry.local_order_id, entry.otpKey);
-      return deliverable;
+      return entries;
     });
   }
   otpWebhookStatus({ now = Date.now() } = {}) {
