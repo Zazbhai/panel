@@ -18,7 +18,7 @@ class RuntimeStore {
       + "CREATE INDEX IF NOT EXISTS orders_received ON orders(received_at DESC);"
       + "CREATE INDEX IF NOT EXISTS orders_demand ON orders(created_at DESC,service);"
       + "CREATE TABLE IF NOT EXISTS otps(order_id TEXT NOT NULL REFERENCES orders(id),key TEXT NOT NULL,code TEXT NOT NULL,received_at INTEGER NOT NULL,message_key TEXT,PRIMARY KEY(order_id,key));"
-      + "CREATE TABLE IF NOT EXISTS otp_webhook_outbox(order_id TEXT NOT NULL REFERENCES orders(id),otp_key TEXT NOT NULL,otp TEXT NOT NULL,received_at INTEGER NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,next_attempt_at INTEGER NOT NULL DEFAULT 0,claimed_until INTEGER NOT NULL DEFAULT 0,sent_at INTEGER,PRIMARY KEY(order_id,otp_key));"
+      + "CREATE TABLE IF NOT EXISTS otp_webhook_outbox(order_id TEXT NOT NULL REFERENCES orders(id),otp_key TEXT NOT NULL,otp TEXT NOT NULL,received_at INTEGER NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,next_attempt_at INTEGER NOT NULL DEFAULT 0,claimed_until INTEGER NOT NULL DEFAULT 0,sent_at INTEGER,failure_code TEXT,failed_at INTEGER,PRIMARY KEY(order_id,otp_key));"
       + "CREATE INDEX IF NOT EXISTS otps_recent ON otps(received_at DESC);"
       + "CREATE TABLE IF NOT EXISTS messages(order_id TEXT NOT NULL REFERENCES orders(id),key TEXT NOT NULL,timestamp INTEGER NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(order_id,key));"
       + "CREATE TABLE IF NOT EXISTS service_locks(service TEXT NOT NULL,number TEXT NOT NULL,locked_at INTEGER NOT NULL,PRIMARY KEY(service,number));"
@@ -40,6 +40,9 @@ class RuntimeStore {
     if (!this.db.prepare("PRAGMA table_info(orders)").all().some((column) => column.name === "webhook_order_id")) {
       this.db.exec("ALTER TABLE orders ADD COLUMN webhook_order_id TEXT;");
     }
+    const webhookColumns = this.db.prepare("PRAGMA table_info(otp_webhook_outbox)").all().map((column) => column.name);
+    if (!webhookColumns.includes("failure_code")) this.db.exec("ALTER TABLE otp_webhook_outbox ADD COLUMN failure_code TEXT;");
+    if (!webhookColumns.includes("failed_at")) this.db.exec("ALTER TABLE otp_webhook_outbox ADD COLUMN failed_at INTEGER;");
     this.db.exec("CREATE UNIQUE INDEX IF NOT EXISTS orders_external_id ON orders(external_order_id) WHERE external_order_id IS NOT NULL;");
     this.db.exec("CREATE INDEX IF NOT EXISTS numbers_ready_claim ON numbers(checked_at DESC,number) WHERE online=1;");
     const now = Date.now();
@@ -170,18 +173,24 @@ class RuntimeStore {
   setWebhookOrderId({ orderId, externalOrderId }) {
     const normalized = String(externalOrderId || "").trim();
     if (!normalized || normalized.length > 128 || /[\r\n]/.test(normalized)) return { ok: false, code: "BAD_EXTERNAL_ORDER_ID" };
-    const result = this.sql("UPDATE orders SET webhook_order_id=? WHERE id=? AND (webhook_order_id IS NULL OR webhook_order_id=?)")
-      .run(normalized, orderId, normalized);
-    if (result.changes) return { ok: true, orderId, externalOrderId: normalized };
-    const existing = this.sql("SELECT webhook_order_id FROM orders WHERE id=?").get(orderId);
-    return existing ? { ok: false, code: "EXTERNAL_ORDER_ID_CONFLICT" } : { ok: false, code: "ORDER_NOT_FOUND" };
+    return this.transaction(() => {
+      const result = this.sql("UPDATE orders SET webhook_order_id=? WHERE id=? AND (webhook_order_id IS NULL OR webhook_order_id=?)")
+        .run(normalized, orderId, normalized);
+      if (result.changes) {
+        this.sql("UPDATE otp_webhook_outbox SET failed_at=NULL,failure_code=NULL,next_attempt_at=0,claimed_until=0 WHERE order_id=? AND sent_at IS NULL")
+          .run(orderId);
+        return { ok: true, orderId, externalOrderId: normalized };
+      }
+      const existing = this.sql("SELECT webhook_order_id FROM orders WHERE id=?").get(orderId);
+      return existing ? { ok: false, code: "EXTERNAL_ORDER_ID_CONFLICT" } : { ok: false, code: "ORDER_NOT_FOUND" };
+    });
   }
   requeueOrderWebhook({ orderId, now = Date.now() }) {
     return this.transaction(() => {
       const order = this.sql("SELECT webhook_order_id,external_order_id FROM orders WHERE id=?").get(orderId);
       if (!order) return { ok: false, code: "ORDER_NOT_FOUND" };
       if (!order.webhook_order_id && !order.external_order_id) return { ok: false, code: "EXTERNAL_ORDER_ID_REQUIRED" };
-      const result = this.sql("UPDATE otp_webhook_outbox SET sent_at=NULL,next_attempt_at=?,claimed_until=0 WHERE order_id=?")
+      const result = this.sql("UPDATE otp_webhook_outbox SET sent_at=NULL,next_attempt_at=?,claimed_until=0,failure_code=NULL,failed_at=NULL WHERE order_id=?")
         .run(now, orderId);
       return { ok: result.changes > 0, code: result.changes ? "REQUEUED" : "NO_SAVED_OTP" };
     });
@@ -216,7 +225,7 @@ class RuntimeStore {
     return this.transaction(() => {
       const entries = this.sql("SELECT p.order_id AS local_order_id,COALESCE(o.webhook_order_id,o.external_order_id,o.id) AS external_order_id,"
         + "p.otp_key AS otpKey,p.otp,p.received_at AS receivedAt,p.attempts FROM otp_webhook_outbox p "
-        + "JOIN orders o ON o.id=p.order_id WHERE p.sent_at IS NULL AND p.next_attempt_at<=? AND p.claimed_until<=? "
+        + "JOIN orders o ON o.id=p.order_id WHERE p.sent_at IS NULL AND p.failed_at IS NULL AND p.next_attempt_at<=? AND p.claimed_until<=? "
         + "ORDER BY p.received_at LIMIT ?")
         .all(now, now, Math.min(500, Math.max(1, Number(limit) || 100)));
       for (const entry of entries) this.sql("UPDATE otp_webhook_outbox SET claimed_until=? WHERE order_id=? AND otp_key=? AND sent_at IS NULL")
@@ -227,24 +236,25 @@ class RuntimeStore {
   otpWebhookStatus({ now = Date.now() } = {}) {
     const counts = this.sql("SELECT COUNT(*) AS total,"
       + "COUNT(CASE WHEN p.sent_at IS NULL THEN 1 END) AS pending,"
+      + "COUNT(CASE WHEN p.sent_at IS NULL AND p.failed_at IS NOT NULL THEN 1 END) AS permanentFailed,"
       + "COUNT(CASE WHEN p.sent_at IS NULL AND p.claimed_until>? THEN 1 END) AS claimed,"
       + "COUNT(CASE WHEN p.sent_at IS NOT NULL THEN 1 END) AS sent,"
       + "COUNT(CASE WHEN p.sent_at IS NULL AND COALESCE(o.webhook_order_id,o.external_order_id) IS NULL THEN 1 END) AS localIdFallback,"
       + "COUNT(CASE WHEN p.sent_at IS NULL AND COALESCE(o.webhook_order_id,o.external_order_id,o.id) IS NULL THEN 1 END) AS unlinked,"
       + "MAX(p.attempts) AS maxAttempts FROM otp_webhook_outbox p JOIN orders o ON o.id=p.order_id")
       .get(now);
-    const lastAttempt = this.sql("SELECT order_id AS localOrderId,otp_key AS otpKey,attempts,next_attempt_at AS nextAttemptAt,sent_at AS sentAt "
+    const lastAttempt = this.sql("SELECT order_id AS localOrderId,otp_key AS otpKey,attempts,next_attempt_at AS nextAttemptAt,sent_at AS sentAt,failure_code AS failureCode,failed_at AS failedAt "
       + "FROM otp_webhook_outbox ORDER BY COALESCE(sent_at,next_attempt_at) DESC LIMIT 1").get() || null;
     return { ...counts, lastAttempt };
   }
-  markOtpWebhookAttempt({ orderId, otpKey, sent = false, now = Date.now() }) {
+  markOtpWebhookAttempt({ orderId, otpKey, sent = false, permanent = false, failureCode = null, now = Date.now() }) {
     return this.transaction(() => {
     const entry = this.sql("SELECT attempts FROM otp_webhook_outbox WHERE order_id=? AND otp_key=?").get(orderId, otpKey);
     if (!entry) return false;
     const attempts = entry.attempts + 1;
     const delay = Math.min(300000, 1000 * (2 ** Math.min(attempts - 1, 8)));
-    this.sql("UPDATE otp_webhook_outbox SET attempts=?,next_attempt_at=?,claimed_until=0,sent_at=? WHERE order_id=? AND otp_key=?")
-      .run(attempts, sent ? now : now + delay, sent ? now : null, orderId, otpKey);
+    this.sql("UPDATE otp_webhook_outbox SET attempts=?,next_attempt_at=?,claimed_until=0,sent_at=?,failure_code=?,failed_at=? WHERE order_id=? AND otp_key=?")
+      .run(attempts, sent || permanent ? now : now + delay, sent ? now : null, sent ? null : failureCode, permanent ? now : null, orderId, otpKey);
     return true;
     });
   }

@@ -698,6 +698,16 @@ function completedOrder() {
     assert.equal(pending[0].local_order_id, "unlinked-0");
     assert.equal(pending[0].external_order_id, "unlinked-0",
       "Unmapped OTPs must be deliverable with their dashboard order ID");
+    f.runtime.markOtpWebhookAttempt({ orderId: "unlinked-0", otpKey: "sms", permanent: true, failureCode: "ORDER_NOT_FOUND", now: timestamp + 500 });
+    assert(!f.runtime.pendingOtpWebhooks({ now: timestamp + 600, limit: 200 })
+      .some((entry) => entry.local_order_id === "unlinked-0"),
+    "A permanent provider 404 must stop automatic retries while retaining the OTP");
+    const relinked = f.runtime.setWebhookOrderId({ orderId: "unlinked-0", externalOrderId: "provider-order-0" });
+    assert.equal(relinked.ok, true);
+    const retry = f.runtime.pendingOtpWebhooks({ now: timestamp + 600, limit: 200 })
+      .find((entry) => entry.local_order_id === "unlinked-0");
+    assert.equal(retry.external_order_id, "provider-order-0",
+      "Correcting the provider order ID must make the saved OTP retryable");
   }
   {
     const f = serverFixture();

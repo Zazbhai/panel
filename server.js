@@ -1152,10 +1152,10 @@ async function deliverPendingOtpWebhooksOnce() {
   const store = await getRuntimeStore();
   const status = await store.call("otpWebhookStatus");
   const pending = await store.call("pendingOtpWebhooks", { limit: 500 });
-  const queueSignature = `${pending.length}:${status.localIdFallback}:${status.sent}:${status.pending}`;
+  const queueSignature = `${pending.length}:${status.localIdFallback}:${status.permanentFailed}:${status.sent}:${status.pending}`;
   if (pending.length || status.localIdFallback || status.unlinked) {
     if (queueSignature !== otpWebhookQueueLogSignature || Date.now() - otpWebhookQueueLogAt >= 30000) {
-      console.log(`[OTP webhook] queue: ${pending.length} ready, ${status.localIdFallback} using dashboard order ID, ${status.sent} sent, ${status.pending} pending total.`);
+      console.log(`[OTP webhook] queue: ${pending.length} ready, ${status.localIdFallback} using dashboard order ID, ${status.permanentFailed} permanent failures, ${status.sent} sent, ${status.pending} pending total.`);
       otpWebhookQueueLogSignature = queueSignature;
       otpWebhookQueueLogAt = Date.now();
     }
@@ -1163,6 +1163,8 @@ async function deliverPendingOtpWebhooksOnce() {
   for (let index = 0; index < pending.length; index += otpWebhookDeliveryConcurrency) {
     await Promise.all(pending.slice(index, index + otpWebhookDeliveryConcurrency).map(async (item) => {
       let sent = false;
+      let permanent = false;
+      let failureCode = null;
       const payload = { external_order_id: item.external_order_id, otp: item.otp };
       const attempt = item.attempts + 1;
       console.log(`[OTP webhook] POST ${otpWebhookUrl} attempt ${attempt}: ${JSON.stringify(payload)}`);
@@ -1179,11 +1181,18 @@ async function deliverPendingOtpWebhooksOnce() {
         });
         const responseBody = (await response.text()).slice(0, 2000);
         sent = response.ok;
+        if (!sent) {
+          try { failureCode = JSON.parse(responseBody).code || null; } catch { /* non-JSON provider response */ }
+          permanent = response.status >= 400 && response.status < 500
+            && ![408, 425, 429].includes(response.status);
+        }
         const responseLog = `[OTP webhook] response for ${item.external_order_id}: HTTP ${response.status}; body=${responseBody || "<empty>"}`;
         if (sent) console.log(responseLog);
-        else console.error(responseLog);
+        else console.error(`${responseLog}${permanent ? "; automatic retries stopped pending ID correction/manual retry" : ""}`);
       } catch (error) { console.error(`[OTP webhook] request failed for ${item.external_order_id}:`, error.message); }
-      await store.call("markOtpWebhookAttempt", { orderId: item.local_order_id, otpKey: item.otpKey, sent });
+      await store.call("markOtpWebhookAttempt", {
+        orderId: item.local_order_id, otpKey: item.otpKey, sent, permanent, failureCode
+      });
     }));
   }
 }
