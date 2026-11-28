@@ -42,18 +42,26 @@ let deviceMessagesReturnFocus = null;
 
 async function readJson(url) {
   const response = await window.dashboardApiFetch(url);
-  let data;
-  try {
-    data = await response.json();
-  } catch {
-    throw new Error(`The server returned invalid data (HTTP ${response.status}).`);
-  }
+  const data = await readJsonResponse(response);
   if (!response.ok) {
     throw new Error(data && data.error
       ? data.error
       : `Request failed (HTTP ${response.status}).`);
   }
   return data;
+}
+
+async function readJsonResponse(response) {
+  const contentType = response.headers.get("content-type") || "";
+  const body = await response.text();
+  try { return JSON.parse(body); }
+  catch {
+    const preview = body.replace(/\s+/g, " ").trim().slice(0, 160);
+    const hint = /<html|<!doctype/i.test(preview)
+      ? " The request received an HTML page; check the dashboard URL, reverse proxy, and API-key configuration."
+      : "";
+    throw new Error(`Expected JSON but received ${contentType || "an unknown content type"} (HTTP ${response.status}).${hint}`);
+  }
 }
 
 function formatOrderTime(timestamp) {
@@ -558,7 +566,7 @@ async function loadRecentOrders() {
       const response = await window.dashboardApiFetch(`/api/recent-orders?${params}`, {
         cache: "no-store", signal: controller.signal
       });
-      const page = await response.json();
+      const page = await readJsonResponse(response);
       if (!response.ok) throw new Error(page?.error || `Could not load recent orders (HTTP ${response.status}).`);
       if (!page || !Array.isArray(page.orders)) throw new Error("The server returned an invalid recent orders list.");
       collected.push(...page.orders);
@@ -624,7 +632,7 @@ async function loadMoreOrders() {
     const response = await window.dashboardApiFetch(`/api/recent-orders?${params}`, {
       cache: "no-store", signal: controller.signal
     });
-    const page = await response.json();
+    const page = await readJsonResponse(response);
     if (!response.ok) throw new Error(page?.error || `Could not load recent orders (HTTP ${response.status}).`);
     if (!page || !Array.isArray(page.orders)) throw new Error("The server returned an invalid recent orders list.");
     if (requestId !== requestSequence) return;
