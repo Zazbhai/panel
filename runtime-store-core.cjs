@@ -32,6 +32,8 @@ class RuntimeStore {
       + "CREATE INDEX IF NOT EXISTS numbers_ready ON numbers(online,verified_at DESC,checked_at DESC);"
       + "CREATE INDEX IF NOT EXISTS numbers_by_database ON numbers(database_url,online,verified_at,checked_at,number);"
       + "CREATE INDEX IF NOT EXISTS numbers_service_candidates ON numbers(online,checked_at,verified_at,database_url,number);");
+    this.db.exec("INSERT OR IGNORE INTO otp_webhook_outbox(order_id,otp_key,otp,received_at) "
+      + "SELECT order_id,key,code,received_at FROM otps;");
     if (!this.db.prepare("PRAGMA table_info(orders)").all().some((column) => column.name === "external_order_id")) {
       this.db.exec("ALTER TABLE orders ADD COLUMN external_order_id TEXT;");
     }
@@ -203,9 +205,9 @@ class RuntimeStore {
   activeOrders({ now = Date.now(), limit = 500, after = null } = {}) {
     const pageLimit = Math.min(1000, Math.max(1, Number(limit) || 500));
     const rows = after && Number.isFinite(after.createdAt) && typeof after.orderId === "string"
-      ? this.sql("SELECT * FROM orders WHERE status='active' AND expires_at>? AND (created_at>? OR (created_at=? AND id>?)) ORDER BY created_at,id LIMIT ?")
+      ? this.sql("SELECT * FROM orders WHERE status IN ('active','completed') AND expires_at>? AND (created_at>? OR (created_at=? AND id>?)) ORDER BY created_at,id LIMIT ?")
         .all(now, after.createdAt, after.createdAt, after.orderId, pageLimit)
-      : this.sql("SELECT * FROM orders WHERE status='active' AND expires_at>? ORDER BY created_at,id LIMIT ?")
+      : this.sql("SELECT * FROM orders WHERE status IN ('active','completed') AND expires_at>? ORDER BY created_at,id LIMIT ?")
         .all(now, pageLimit);
     return rows
       .map((row) => this.decode(row, false));

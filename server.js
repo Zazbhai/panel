@@ -1055,8 +1055,13 @@ function getLatestCarrierNumber(messages) {
 async function initializeOrderExpirationTimers() {
   await (await getRuntimeStore()).call("expire");
   if (otpWebhookUrl && otpWebhookSecret && await acquireOtpWebhookWorkerLock() && !otpWebhookTimer) {
-    console.log(`OTP webhook worker started; polling active orders every ${otpWebhookIntervalMs}ms.`);
-    setTimeout(pollOrdersForWebhook, 1500).unref();
+    console.log(`OTP webhook worker started; polling active and completed orders every ${otpWebhookIntervalMs}ms.`);
+    setTimeout(() => {
+      void deliverPendingOtpWebhooks().catch((error) => {
+        console.error("Could not resume pending OTP webhooks:", error.message);
+      });
+      void pollOrdersForWebhook();
+    }, 1500).unref();
     otpWebhookTimer = setInterval(pollOrdersForWebhook, otpWebhookIntervalMs);
     otpWebhookTimer.unref();
   }
@@ -1172,6 +1177,7 @@ async function pollOrdersForWebhook() {
         const last = orders.at(-1);
         after = { createdAt: last.createdAt, orderId: last.orderId };
       }
+      await deliverPendingOtpWebhooks();
     } catch (error) { console.error("OTP webhook polling failed:", error.message); }
     finally { otpWebhookPollPromise = null; }
   })();

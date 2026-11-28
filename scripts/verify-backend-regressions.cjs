@@ -613,15 +613,21 @@ function completedOrder() {
       { id: "fixture", name: "fixture", enabled: true, template: "Code [OTP]" }
     ]));
     const callbacks = [];
+    let failNextCallback = false;
+    let messages = {
+      sms1: { message: "Fixture code 123456", timestamp: now - 500 }
+    };
     f.fetch = async (url, options) => {
       if (String(url) === "https://partner.test/callback") {
         callbacks.push({ headers: options.headers, payload: JSON.parse(options.body) });
+        if (failNextCallback) {
+          failNextCallback = false;
+          return { ok: false, status: 503, text: async () => "temporary failure" };
+        }
         return { ok: true, status: 200, text: async () => "ok" };
       }
       assert(String(url).endsWith("/messages/device-1.json"));
-      return { ok: true, status: 200, json: async () => ({
-        sms1: { message: "Fixture code 123456", timestamp: now - 500 }
-      }) };
+      return { ok: true, status: 200, json: async () => messages };
     };
     await f.context.pollOrdersForWebhook();
     assert.equal(f.runtime.getOrder(order.orderId).receivedOtp, "123456",
@@ -637,11 +643,33 @@ function completedOrder() {
     assert.equal(callbacks[0].headers["x-provider-webhook-secret"], "fixture-webhook-secret");
     await f.context.pollOrdersForWebhook();
     assert.equal(callbacks.length, 1, "Successful callbacks must not be sent again on the next scan");
+    messages = {
+      ...messages,
+      sms2: { message: "Fixture code 654321", timestamp: now - 100 }
+    };
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await f.context.pollOrdersForWebhook();
+    await f.context.deliverPendingOtpWebhooks();
+    assert.equal(callbacks.length, 2,
+      "Completed orders must remain monitored and deliver each later matching OTP");
+    assert.deepEqual(callbacks[1].payload, { external_order_id: "partner-order-482", otp: "654321" });
+    failNextCallback = true;
+    messages = {
+      ...messages,
+      sms3: { message: "Fixture code 777888", timestamp: now - 50 }
+    };
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await f.context.pollOrdersForWebhook();
+    assert.equal(callbacks.length, 3, "A failed provider attempt must keep the OTP queued");
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await f.context.deliverPendingOtpWebhooks();
+    assert.equal(callbacks.length, 4, "A failed provider attempt must be retried");
+    assert.deepEqual(callbacks[3].payload, { external_order_id: "partner-order-482", otp: "777888" });
     const resentLink = await f.request(`/api/order-link?api_key=${f.apiKey}`, { method: "POST",
       body: { local_order_id: order.orderId, retry: true } });
     assert.equal(resentLink.status, 200);
     await f.context.deliverPendingOtpWebhooks();
-    assert.equal(callbacks.length, 2, "A linked saved OTP can be explicitly requeued after correcting its provider ID");
+    assert.equal(callbacks.length, 7, "A linked order's saved OTPs can be explicitly requeued");
   }
   {
     const f = serverFixture();
