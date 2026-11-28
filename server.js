@@ -3172,13 +3172,18 @@ async function handleLocalOtpRequest(requestUrl, response) {
     // verifies a candidate online immediately before it is reserved.
     requestNumberPoolRefresh(service);
     let reservation;
+    let allocationWork;
     try {
-      reservation = await waitForAbortable(
-        findAvailableActiveNumber(service, allocationController.signal, null, allocationDeadline, { cachedOnly: true }),
-        allocationController.signal
-      );
+      allocationWork = findAvailableActiveNumber(service, allocationController.signal, null, allocationDeadline, { cachedOnly: true });
+      reservation = await waitForAbortable(allocationWork, allocationController.signal);
       throwIfAborted(allocationController.signal);
     } catch (error) {
+      // The abortable wrapper may stop waiting while a SQLite claim is still
+      // in flight. Observe its settlement before replying so a timed-out
+      // caller can never lose an order that committed in the background.
+      if (allocationWork && allocationController.signal.aborted) {
+        try { await allocationWork; } catch { /* timed out work must settle before its response */ }
+      }
       if (error.code === "ALLOCATION_TIMEOUT" || Date.now() >= allocationDeadline) {
         sendText(response, 200, "NO_NUMBERS");
         return;

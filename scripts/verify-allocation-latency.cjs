@@ -632,9 +632,7 @@ function configureService(f) {
     configureService(f);
     f.context.setTimeout = (callback, milliseconds) => setTimeout(callback, Math.min(milliseconds, 40));
     f.context.clearTimeout = clearTimeout;
-    f.context.findAvailableActiveNumber = async (_service, signal, onCommit) => {
-      const finishCommit = onCommit();
-      finishCommit(false);
+    f.context.findAvailableActiveNumber = async (_service, signal) => {
       return new Promise((_resolve, reject) => {
         signal.addEventListener("abort", () => reject(f.context.makeAbortError()), { once: true });
       });
