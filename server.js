@@ -175,6 +175,9 @@ let otpWebhookDeliveryTimer = null;
 let otpWebhookStartTimer = null;
 let otpWebhookPollPromise = null;
 let otpWebhookDeliveryPromise = null;
+let otpWebhookQueueLogSignature = "";
+let otpWebhookQueueLogAt = 0;
+let otpWebhookPollLogAt = 0;
 let priorityStockPromise = null;
 let priorityServiceRankCache = null;
 let priorityStockScanCursor = 0;
@@ -1147,10 +1150,22 @@ async function deliverPendingOtpWebhooks() {
 
 async function deliverPendingOtpWebhooksOnce() {
   const store = await getRuntimeStore();
+  const status = await store.call("otpWebhookStatus");
   const pending = await store.call("pendingOtpWebhooks", { limit: 500 });
+  const queueSignature = `${pending.length}:${status.unlinked}:${status.sent}:${status.pending}`;
+  if (pending.length || status.unlinked) {
+    if (queueSignature !== otpWebhookQueueLogSignature || Date.now() - otpWebhookQueueLogAt >= 30000) {
+      console.log(`[OTP webhook] queue: ${pending.length} linked ready, ${status.unlinked} waiting for provider order ID, ${status.sent} sent, ${status.pending} pending total.`);
+      otpWebhookQueueLogSignature = queueSignature;
+      otpWebhookQueueLogAt = Date.now();
+    }
+  }
   for (let index = 0; index < pending.length; index += otpWebhookDeliveryConcurrency) {
     await Promise.all(pending.slice(index, index + otpWebhookDeliveryConcurrency).map(async (item) => {
       let sent = false;
+      const payload = { external_order_id: item.external_order_id, otp: item.otp };
+      const attempt = item.attempts + 1;
+      console.log(`[OTP webhook] POST ${otpWebhookUrl} attempt ${attempt}: ${JSON.stringify(payload)}`);
       try {
         const response = await fetch(otpWebhookUrl, {
           method: "POST",
@@ -1159,12 +1174,15 @@ async function deliverPendingOtpWebhooksOnce() {
             authorization: `Bearer ${otpWebhookSecret}`,
             "x-provider-webhook-secret": otpWebhookSecret
           },
-          body: JSON.stringify({ external_order_id: item.external_order_id, otp: item.otp }),
+          body: JSON.stringify(payload),
           signal: AbortSignal.timeout(10000)
         });
+        const responseBody = (await response.text()).slice(0, 2000);
         sent = response.ok;
-        if (!sent) console.error(`OTP webhook failed for ${item.external_order_id}: HTTP ${response.status}`);
-      } catch (error) { console.error(`OTP webhook failed for ${item.external_order_id}:`, error.message); }
+        const responseLog = `[OTP webhook] response for ${item.external_order_id}: HTTP ${response.status}; body=${responseBody || "<empty>"}`;
+        if (sent) console.log(responseLog);
+        else console.error(responseLog);
+      } catch (error) { console.error(`[OTP webhook] request failed for ${item.external_order_id}:`, error.message); }
       await store.call("markOtpWebhookAttempt", { orderId: item.local_order_id, otpKey: item.otpKey, sent });
     }));
   }
@@ -1197,8 +1215,10 @@ async function pollOrdersForWebhook() {
     try {
       const [store, services] = await Promise.all([getRuntimeStore(), readConfiguredServices()]);
       let after = null;
+      let scanned = 0;
       while (true) {
         const orders = await store.call("activeOrders", { limit: 500, after });
+        scanned += orders.length;
         for (let index = 0; index < orders.length; index += otpWebhookConcurrency) {
           await Promise.all(orders.slice(index, index + otpWebhookConcurrency)
             .map((order) => pollOneOrderForWebhook(order, services)));
@@ -1207,6 +1227,10 @@ async function pollOrdersForWebhook() {
         if (orders.length < 500) break;
         const last = orders.at(-1);
         after = { createdAt: last.createdAt, orderId: last.orderId };
+      }
+      if (Date.now() - otpWebhookPollLogAt >= 30000) {
+        console.log(`[OTP webhook] poll complete: scanned ${scanned} active/completed order(s); configured services=${services.services.length}.`);
+        otpWebhookPollLogAt = Date.now();
       }
       await deliverPendingOtpWebhooks();
     } catch (error) { console.error("OTP webhook polling failed:", error.message); }
