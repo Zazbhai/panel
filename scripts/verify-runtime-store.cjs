@@ -154,7 +154,9 @@ const state = { initialized: true, databaseUrls: [database], orders: [], service
     const unlockOrder = unlockStore.claim({ service: "partner-unlock", candidate: unlockCandidate });
     assert(unlockOrder);
     unlockStore.setStatus({ id: unlockOrder.orderId, status: "8" });
-    assert.deepEqual(unlockStore.unlockUnreceivedOrder({ orderId: unlockOrder.orderId }), {
+    assert.equal(unlockStore.unlockUnreceivedOrder({ orderId: unlockOrder.orderId, partnerStatus: "completed" }).code,
+      "PARTNER_STATUS_NOT_CANCELLED", "Only a cancelled partner status may release an order number");
+    assert.deepEqual(unlockStore.unlockUnreceivedOrder({ orderId: unlockOrder.orderId, partnerStatus: "cancelled" }), {
       ok: true, code: "UNLOCKED", orderId: unlockOrder.orderId, service: "partner-unlock", number: unlockCandidate.number
     });
     assert.equal(unlockStore.sql("SELECT 1 FROM service_locks WHERE service=? AND number=?")
@@ -168,7 +170,7 @@ const state = { initialized: true, databaseUrls: [database], orders: [], service
     unlockStore.receive({ id: protectedOrder.orderId, matches: [
       { key: "protected-otp", code: "445566", timestamp: protectedOrder.createdAt + 1, message: { text: "Code 445566" } }
     ], now: protectedOrder.createdAt + 2 });
-    assert.equal(unlockStore.unlockUnreceivedOrder({ orderId: protectedOrder.orderId }).code, "UNLOCKED",
+    assert.equal(unlockStore.unlockUnreceivedOrder({ orderId: protectedOrder.orderId, partnerStatus: "cancelled" }).code, "UNLOCKED",
       "An explicit partner non-receipt can unlock an order even if the local device received an OTP");
     const duplicateHistoryOrder = unlockStore.claim({ service: "partner-unlock", candidate: unlockCandidate });
     assert(duplicateHistoryOrder);
@@ -179,7 +181,7 @@ const state = { initialized: true, databaseUrls: [database], orders: [], service
         duplicateHistoryOrder.createdAt - 1000, duplicateHistoryOrder.createdAt - 500, duplicateHistoryOrder.createdAt - 900);
     unlockStore.sql("INSERT INTO otps VALUES(?,?,?,?,?)")
       .run(previousOtpOrderId, "old-otp", "778899", duplicateHistoryOrder.createdAt - 900, "old-message");
-    assert.equal(unlockStore.unlockUnreceivedOrder({ orderId: duplicateHistoryOrder.orderId }).code, "NUMBER_HAS_OTHER_OTP");
+    assert.equal(unlockStore.unlockUnreceivedOrder({ orderId: duplicateHistoryOrder.orderId, partnerStatus: "cancelled" }).code, "NUMBER_HAS_OTHER_OTP");
     unlockStore.close();
     const originalSend = a.send.bind(a);
     let orderReads = 0;
