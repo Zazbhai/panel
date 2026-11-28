@@ -135,6 +135,40 @@ const state = { initialized: true, databaseUrls: [database], orders: [], service
     assert.equal(otpStatsStore.getOrder(multiOtpOrder.orderId).receivedOtps.length, 2,
       "Each order retains its individual OTP history");
     otpStatsStore.close();
+    const unlockStore = new RuntimeStore(":memory:");
+    unlockStore.initialize(state);
+    const unlockCandidate = { ...candidate, deviceId: "partner-unlock-device", number: "9666666671" };
+    unlockStore.remember(unlockCandidate);
+    const unlockOrder = unlockStore.claim({ service: "partner-unlock", candidate: unlockCandidate });
+    assert(unlockOrder);
+    unlockStore.setStatus({ id: unlockOrder.orderId, status: "8" });
+    assert.deepEqual(unlockStore.unlockUnreceivedOrder({ orderId: unlockOrder.orderId }), {
+      ok: true, code: "UNLOCKED", orderId: unlockOrder.orderId, service: "partner-unlock", number: unlockCandidate.number
+    });
+    assert.equal(unlockStore.sql("SELECT 1 FROM service_locks WHERE service=? AND number=?")
+      .get("partner-unlock", unlockCandidate.number), undefined);
+    assert.equal(unlockStore.sql("SELECT 1 FROM service_usage WHERE service=? AND number=?")
+      .get("partner-unlock", unlockCandidate.number), undefined);
+    const protectedCandidate = { ...candidate, deviceId: "partner-unlock-protected", number: "9666666672" };
+    unlockStore.remember(protectedCandidate);
+    const protectedOrder = unlockStore.claim({ service: "partner-unlock", candidate: protectedCandidate });
+    assert(protectedOrder);
+    unlockStore.receive({ id: protectedOrder.orderId, matches: [
+      { key: "protected-otp", code: "445566", timestamp: protectedOrder.createdAt + 1, message: { text: "Code 445566" } }
+    ], now: protectedOrder.createdAt + 2 });
+    assert.equal(unlockStore.unlockUnreceivedOrder({ orderId: protectedOrder.orderId }).code, "UNLOCKED",
+      "An explicit partner non-receipt can unlock an order even if the local device received an OTP");
+    const duplicateHistoryOrder = unlockStore.claim({ service: "partner-unlock", candidate: unlockCandidate });
+    assert(duplicateHistoryOrder);
+    unlockStore.setStatus({ id: duplicateHistoryOrder.orderId, status: "8" });
+    const previousOtpOrderId = "e".repeat(24);
+    unlockStore.sql("INSERT INTO orders VALUES(?,?,?,?,?,?,?,'completed','778899',?,0)")
+      .run(previousOtpOrderId, "partner-unlock", unlockCandidate.number, database, "old-device",
+        duplicateHistoryOrder.createdAt - 1000, duplicateHistoryOrder.createdAt - 500, duplicateHistoryOrder.createdAt - 900);
+    unlockStore.sql("INSERT INTO otps VALUES(?,?,?,?,?)")
+      .run(previousOtpOrderId, "old-otp", "778899", duplicateHistoryOrder.createdAt - 900, "old-message");
+    assert.equal(unlockStore.unlockUnreceivedOrder({ orderId: duplicateHistoryOrder.orderId }).code, "NUMBER_HAS_OTHER_OTP");
+    unlockStore.close();
     const originalSend = a.send.bind(a);
     let orderReads = 0;
     a.send = (method, args) => {

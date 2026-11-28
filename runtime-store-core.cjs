@@ -616,6 +616,24 @@ class RuntimeStore {
       return "ACCESS_RETRY_GET";
     });
   }
+  unlockUnreceivedOrder({ orderId, now = Date.now() }) {
+    return this.transaction(() => {
+      const order = this.sql("SELECT * FROM orders WHERE id=?").get(orderId);
+      if (!order) return { ok: false, code: "ORDER_NOT_FOUND" };
+      if (this.sql("SELECT 1 FROM orders o LEFT JOIN otps p ON p.order_id=o.id "
+        + "WHERE o.service=? AND o.number=? AND o.id<>? AND (o.received_otp IS NOT NULL OR p.order_id IS NOT NULL) LIMIT 1")
+        .get(order.service, order.number, orderId)) {
+        return { ok: false, code: "NUMBER_HAS_OTHER_OTP" };
+      }
+      if (order.status === "active") return { ok: false, code: "ORDER_ACTIVE" };
+      const cycle = this.sql("SELECT cycle FROM service_cycles WHERE service=?").get(order.service);
+      const lock = this.sql("DELETE FROM service_locks WHERE service=? AND number=?").run(order.service, order.number);
+      let usage = 0;
+      if (cycle) usage = this.sql("DELETE FROM service_usage WHERE service=? AND number=? AND cycle=?")
+        .run(order.service, order.number, cycle.cycle).changes;
+      return { ok: lock.changes > 0 || usage > 0, code: "UNLOCKED", orderId, service: order.service, number: order.number };
+    });
+  }
   updateOrderState({ id, numberActive, matches = [], now = Date.now() }) {
     let row = this.sql("SELECT * FROM orders WHERE id=?").get(id);
     if (!row) return null;
