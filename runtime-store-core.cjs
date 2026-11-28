@@ -18,6 +18,7 @@ class RuntimeStore {
       + "CREATE INDEX IF NOT EXISTS orders_received ON orders(received_at DESC);"
       + "CREATE INDEX IF NOT EXISTS orders_demand ON orders(created_at DESC,service);"
       + "CREATE TABLE IF NOT EXISTS otps(order_id TEXT NOT NULL REFERENCES orders(id),key TEXT NOT NULL,code TEXT NOT NULL,received_at INTEGER NOT NULL,message_key TEXT,PRIMARY KEY(order_id,key));"
+      + "CREATE TABLE IF NOT EXISTS otp_webhook_outbox(order_id TEXT NOT NULL REFERENCES orders(id),otp_key TEXT NOT NULL,otp TEXT NOT NULL,received_at INTEGER NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,next_attempt_at INTEGER NOT NULL DEFAULT 0,claimed_until INTEGER NOT NULL DEFAULT 0,sent_at INTEGER,PRIMARY KEY(order_id,otp_key));"
       + "CREATE INDEX IF NOT EXISTS otps_recent ON otps(received_at DESC);"
       + "CREATE TABLE IF NOT EXISTS messages(order_id TEXT NOT NULL REFERENCES orders(id),key TEXT NOT NULL,timestamp INTEGER NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(order_id,key));"
       + "CREATE TABLE IF NOT EXISTS service_locks(service TEXT NOT NULL,number TEXT NOT NULL,locked_at INTEGER NOT NULL,PRIMARY KEY(service,number));"
@@ -154,6 +155,37 @@ class RuntimeStore {
     return order;
   }
   getOrder(id) { return this.decode(this.sql("SELECT * FROM orders WHERE id=?").get(id)); }
+  activeOrders({ now = Date.now(), limit = 500, after = null } = {}) {
+    const pageLimit = Math.min(1000, Math.max(1, Number(limit) || 500));
+    const rows = after && Number.isFinite(after.createdAt) && typeof after.orderId === "string"
+      ? this.sql("SELECT * FROM orders WHERE status='active' AND expires_at>? AND (created_at>? OR (created_at=? AND id>?)) ORDER BY created_at,id LIMIT ?")
+        .all(now, after.createdAt, after.createdAt, after.orderId, pageLimit)
+      : this.sql("SELECT * FROM orders WHERE status='active' AND expires_at>? ORDER BY created_at,id LIMIT ?")
+        .all(now, pageLimit);
+    return rows
+      .map((row) => this.decode(row, false));
+  }
+  pendingOtpWebhooks({ now = Date.now(), limit = 100 } = {}) {
+    return this.transaction(() => {
+      const entries = this.sql("SELECT order_id AS external_order_id,otp_key AS otpKey,otp,received_at AS receivedAt,attempts FROM otp_webhook_outbox "
+        + "WHERE sent_at IS NULL AND next_attempt_at<=? AND claimed_until<=? ORDER BY received_at LIMIT ?")
+        .all(now, now, Math.min(500, Math.max(1, Number(limit) || 100)));
+      for (const entry of entries) this.sql("UPDATE otp_webhook_outbox SET claimed_until=? WHERE order_id=? AND otp_key=? AND sent_at IS NULL")
+        .run(now + 30000, entry.external_order_id, entry.otpKey);
+      return entries;
+    });
+  }
+  markOtpWebhookAttempt({ orderId, otpKey, sent = false, now = Date.now() }) {
+    return this.transaction(() => {
+    const entry = this.sql("SELECT attempts FROM otp_webhook_outbox WHERE order_id=? AND otp_key=?").get(orderId, otpKey);
+    if (!entry) return false;
+    const attempts = entry.attempts + 1;
+    const delay = Math.min(300000, 1000 * (2 ** Math.min(attempts - 1, 8)));
+    this.sql("UPDATE otp_webhook_outbox SET attempts=?,next_attempt_at=?,claimed_until=0,sent_at=? WHERE order_id=? AND otp_key=?")
+      .run(attempts, sent ? now : now + delay, sent ? now : null, orderId, otpKey);
+    return true;
+    });
+  }
   rebuySource({ oldOrderId }) {
     const row = this.sql("SELECT id,service,number,database_url,device_id,created_at,expires_at,status,received_otp,received_at,number_active "
       + "FROM orders WHERE id=?").get(oldOrderId);
@@ -588,7 +620,10 @@ class RuntimeStore {
           .get(row.database_url, row.device_id, match.key);
         if (owner && owner.order_id !== id) continue;
         this.sql("INSERT OR IGNORE INTO message_owners VALUES(?,?,?,?)").run(row.database_url, row.device_id, match.key, id);
-        this.insertOtp(id, { code: match.code, receivedAt: match.timestamp, messageKey: match.key });
+        const otp = { code: match.code, receivedAt: match.timestamp, messageKey: match.key };
+        const inserted = this.insertOtp(id, otp);
+        if (inserted) this.sql("INSERT OR IGNORE INTO otp_webhook_outbox(order_id,otp_key,otp,received_at) VALUES(?,?,?,?)")
+          .run(id, otp.messageKey || JSON.stringify([otp.code, otp.receivedAt]), otp.code, otp.receivedAt);
         this.sql("INSERT OR IGNORE INTO messages VALUES(?,?,?,?)")
           .run(id, match.key, match.timestamp, JSON.stringify(match.message));
         this.lock(row.service, row.number, match.timestamp);

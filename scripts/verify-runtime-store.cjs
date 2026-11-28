@@ -34,6 +34,18 @@ const state = { initialized: true, databaseUrls: [database], orders: [], service
     core.receive({ id: first.orderId, matches: [followup, followup] });
     assert.equal(core.getOrder(first.orderId).receivedOtps.length, 2, "Completed orders accept additional distinct OTPs");
     assert.equal(core.getOrder(first.orderId).messageHistory.length, 2);
+    const webhookBatch = core.pendingOtpWebhooks();
+    assert.equal(webhookBatch.length, 2, "Newly saved OTPs are durably queued for webhook delivery");
+    assert.equal(core.pendingOtpWebhooks().length, 0, "Outbox claims prevent concurrent duplicate sends");
+    core.markOtpWebhookAttempt({ orderId: first.orderId, otpKey: webhookBatch[0].otpKey, sent: false });
+    core.markOtpWebhookAttempt({ orderId: first.orderId, otpKey: webhookBatch[1].otpKey, sent: false });
+    assert.equal(core.pendingOtpWebhooks({ now: Date.now() + 500 }).length, 0,
+      "Failed webhooks retry only after their backoff delay");
+    const retry = core.pendingOtpWebhooks({ now: Date.now() + 2000 });
+    assert.equal(retry.length, 2);
+    core.markOtpWebhookAttempt({ orderId: first.orderId, otpKey: retry[0].otpKey, sent: true });
+    assert.equal(core.pendingOtpWebhooks({ now: Date.now() + 2000 }).length, 0,
+      "Successful webhook rows are removed and the remaining failed row stays in backoff");
     assert.equal(core.latestMessages().orders.length, 2, "Saved OTP feed is backed by individual recent OTP rows");
     assert.equal(core.claim({ service: "flipkart", candidate }), null, "A follow-up OTP must not release another order's lease");
     assert.equal(core.setStatus({ id: second.orderId, status: "8" }), "ACCESS_CANCEL");

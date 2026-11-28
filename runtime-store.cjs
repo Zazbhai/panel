@@ -29,7 +29,8 @@ class AsyncRuntimeStore {
     if (!this.pending.size) this.worker.unref();
   }
   call(method, ...args) {
-    if (method === "claimReady" || method === "refreshDatabaseInventory" || method === "rebuyOrder") {
+    if (["claimReady", "refreshDatabaseInventory", "rebuyOrder", "pendingOtpWebhooks", "markOtpWebhookAttempt"]
+      .includes(method)) {
       return this.retryTransaction(method, args);
     }
     // Status polling can produce many identical reads for the same order.

@@ -42,6 +42,7 @@ const smsFormatsDataPath = path.join(__dirname, "service-sms-formats.json");
 const rotationDataPath = path.join(__dirname, "rotation.json");
 const runtimeDataPath = path.join(__dirname, "runtime.sqlite");
 const inventoryWorkerLockPath = path.join(__dirname, ".inventory-worker.lock");
+const otpWebhookWorkerLockPath = path.join(__dirname, ".otp-webhook-worker.lock");
 let runtimeStorePromise = null;
 const maximumServicesRequestBytes = 16 * 1024 * 1024;
 const maximumRotationRequestBytes = 1024 * 1024;
@@ -135,6 +136,10 @@ const priorityStockJobTimeoutMs = readPositiveIntegerEnv("PRIORITY_STOCK_JOB_TIM
 // read. Warm-pool requests still return immediately; this only affects cold
 // discovery and explicit NUMBER_REQUEST_TIMEOUT_MS overrides.
 const numberRequestTimeoutMs = readPositiveIntegerEnv("NUMBER_REQUEST_TIMEOUT_MS", 30000, 1000, 30000);
+const otpWebhookUrl = process.env.OTP_WEBHOOK_URL || "";
+const otpWebhookSecret = process.env.OTP_WEBHOOK_SECRET || "";
+const otpWebhookIntervalMs = readPositiveIntegerEnv("OTP_WEBHOOK_POLL_INTERVAL_MS", 5000, 1000, 60000);
+const otpWebhookConcurrency = readPositiveIntegerEnv("OTP_WEBHOOK_POLL_CONCURRENCY", 4, 1, 16);
 const failedLoginAttempts = new Map();
 const activeNumberCache = new Map();
 const numberPools = new Map();
@@ -164,6 +169,8 @@ let numberMappingPrefetchRunId = 0;
 let numberPoolWarmupPromise = null;
 let numberPoolWarmupTimer = null;
 let priorityStockTimer = null;
+let otpWebhookTimer = null;
+let otpWebhookPollPromise = null;
 let priorityStockPromise = null;
 let priorityServiceRankCache = null;
 let priorityStockScanCursor = 0;
@@ -171,6 +178,7 @@ const priorityStockServices = new Set();
 let priorityStockState = { status: "idle", checkedAt: null, services: [] };
 let numberMappingPrefetchWatchdogTimer = null;
 let inventoryWorkerLockHandle = null;
+let otpWebhookWorkerLockHandle = null;
 let numberMappingPrefetchState = {
   status: "idle", total: 0, completed: 0, failed: 0, mappings: 0,
   discoveryTotal: 0, discoveryCompleted: 0, startedAt: null, completedAt: null
@@ -1045,6 +1053,11 @@ function getLatestCarrierNumber(messages) {
 
 async function initializeOrderExpirationTimers() {
   await (await getRuntimeStore()).call("expire");
+  if (otpWebhookUrl && otpWebhookSecret && await acquireOtpWebhookWorkerLock() && !otpWebhookTimer) {
+    setTimeout(pollOrdersForWebhook, 1500).unref();
+    otpWebhookTimer = setInterval(pollOrdersForWebhook, otpWebhookIntervalMs);
+    otpWebhookTimer.unref();
+  }
   // Expiry is indexed and checked at claim/read time; no per-order timers or JSON rewrites.
   if (!await acquireInventoryWorkerLock()) return;
   setTimeout(startPriorityStockWorkers, 800).unref();
@@ -1066,6 +1079,94 @@ async function initializeOrderExpirationTimers() {
     numberPoolWarmupTimer = setInterval(startNumberPoolWarmup, numberPoolWarmupIntervalMs);
     numberPoolWarmupTimer.unref();
   }
+}
+
+async function acquireOtpWebhookWorkerLock() {
+  if (otpWebhookWorkerLockHandle) return true;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      otpWebhookWorkerLockHandle = await open(otpWebhookWorkerLockPath, "wx");
+      await otpWebhookWorkerLockHandle.writeFile(`${process.pid}\n`, "utf8");
+      return true;
+    } catch (error) {
+      if (error.code !== "EEXIST") return false;
+      let ownerPid = 0;
+      try { ownerPid = Number((await readFile(otpWebhookWorkerLockPath, "utf8")).trim()); } catch { /* stale lock */ }
+      if (ownerPid && ownerPid !== process.pid) {
+        try { process.kill(ownerPid, 0); return false; } catch { /* stale lock */ }
+      }
+      await unlink(otpWebhookWorkerLockPath).catch(() => {});
+    }
+  }
+  return false;
+}
+
+async function deliverPendingOtpWebhooks() {
+  if (!otpWebhookUrl || !otpWebhookSecret) return;
+  const store = await getRuntimeStore();
+  const pending = await store.call("pendingOtpWebhooks", { limit: 100 });
+  for (const item of pending) {
+    let sent = false;
+    try {
+      const response = await fetch(otpWebhookUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${otpWebhookSecret}`,
+          "x-provider-webhook-secret": otpWebhookSecret
+        },
+        body: JSON.stringify({ external_order_id: item.external_order_id, otp: item.otp }),
+        signal: AbortSignal.timeout(10000)
+      });
+      sent = response.ok;
+      if (!sent) console.error(`OTP webhook failed for ${item.external_order_id}: HTTP ${response.status}`);
+    } catch (error) { console.error(`OTP webhook failed for ${item.external_order_id}:`, error.message); }
+    await store.call("markOtpWebhookAttempt", { orderId: item.external_order_id, otpKey: item.otpKey, sent });
+  }
+}
+
+async function pollOneOrderForWebhook(order, services) {
+  const configured = services.services.find((item) => item
+    && typeof item.name === "string"
+    && normalizeServiceName(item.name).toLowerCase() === normalizeServiceName(order.service).toLowerCase());
+  if (!configured) return;
+  try {
+    const messages = await fetchSharedDatabaseJson(
+      `${order.databaseUrl}/messages/${encodeURIComponent(order.deviceId)}.json`, 5000, numberMessagesCacheTtlMs
+    );
+    const matches = findMatchingMessages(messages, order.createdAt, configured, Math.min(Date.now(), order.expiresAt));
+    if (!matches.length) return;
+    const updated = await (await getRuntimeStore()).call("updateOrderState", { id: order.orderId, matches });
+    if (updated?.receivedOtp) {
+      recentOrdersCache = null;
+      await deliverPendingOtpWebhooks();
+    }
+  } catch (error) {
+    if (error.code !== "RESPONSE_TOO_LARGE") console.error(`Webhook OTP poll failed for ${order.orderId}:`, error.message);
+  }
+}
+
+async function pollOrdersForWebhook() {
+  if (otpWebhookPollPromise || !otpWebhookUrl || !otpWebhookSecret) return;
+  otpWebhookPollPromise = (async () => {
+    try {
+      const [store, services] = await Promise.all([getRuntimeStore(), readConfiguredServices()]);
+      let after = null;
+      while (true) {
+        const orders = await store.call("activeOrders", { limit: 500, after });
+        for (let index = 0; index < orders.length; index += otpWebhookConcurrency) {
+          await Promise.all(orders.slice(index, index + otpWebhookConcurrency)
+            .map((order) => pollOneOrderForWebhook(order, services)));
+          await deliverPendingOtpWebhooks();
+        }
+        if (orders.length < 500) break;
+        const last = orders.at(-1);
+        after = { createdAt: last.createdAt, orderId: last.orderId };
+      }
+    } catch (error) { console.error("OTP webhook polling failed:", error.message); }
+    finally { otpWebhookPollPromise = null; }
+  })();
+  await otpWebhookPollPromise;
 }
 
 async function acquireInventoryWorkerLock() {
@@ -3259,6 +3360,9 @@ async function handleLocalOtpRequest(requestUrl, response) {
       return;
     }
     if (updatedOrder && updatedOrder.receivedOtp !== null) {
+      void deliverPendingOtpWebhooks().catch((error) => {
+        console.error("Could not queue OTP webhook delivery:", error.message);
+      });
       sendText(response, 200, await getStatusOkText(updatedOrder));
     } else {
       sendText(response, 200, "STATUS_CANCEL");

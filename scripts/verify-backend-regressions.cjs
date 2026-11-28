@@ -601,6 +601,39 @@ function completedOrder() {
       "Completed orders must return saved OTPs without requiring Firebase or service-config reads");
   }
   {
+    const f = serverFixture({ env: {
+      OTP_WEBHOOK_URL: "https://partner.test/callback",
+      OTP_WEBHOOK_SECRET: "fixture-webhook-secret"
+    } });
+    const now = Date.now();
+    const order = { ...completedOrder(), status: "active", receivedOtp: null, receivedAt: null,
+      receivedOtps: [], createdAt: now - 1000, expiresAt: now + 600000 };
+    f.setRotation({ databaseUrls: ["https://fixture.firebaseio.com"], serviceUsage: {}, orders: [order] });
+    f.files.set([...f.files.keys()].find((file) => file.endsWith("services.json")), JSON.stringify([
+      { id: "fixture", name: "fixture", enabled: true, template: "Code [OTP]" }
+    ]));
+    const callbacks = [];
+    f.fetch = async (url, options) => {
+      if (String(url) === "https://partner.test/callback") {
+        callbacks.push({ headers: options.headers, payload: JSON.parse(options.body) });
+        return { ok: true, status: 200, text: async () => "ok" };
+      }
+      assert(String(url).endsWith("/messages/device-1.json"));
+      return { ok: true, status: 200, json: async () => ({
+        sms1: { message: "Fixture code 123456", timestamp: now - 500 }
+      }) };
+    };
+    await f.context.pollOrdersForWebhook();
+    assert.equal(f.runtime.getOrder(order.orderId).receivedOtp, "123456",
+      "Background polling must save OTPs without a partner getStatus call");
+    assert.equal(callbacks.length, 1);
+    assert.deepEqual(callbacks[0].payload, { external_order_id: order.orderId, otp: "123456" });
+    assert.equal(callbacks[0].headers.authorization, "Bearer fixture-webhook-secret");
+    assert.equal(callbacks[0].headers["x-provider-webhook-secret"], "fixture-webhook-secret");
+    await f.context.pollOrdersForWebhook();
+    assert.equal(callbacks.length, 1, "Successful callbacks must not be sent again on the next scan");
+  }
+  {
     const f = serverFixture();
     f.fetch = async () => ({ ok: true, status: 200, json: async () => null });
     const result = await f.context.readRotatingDeviceStats();
