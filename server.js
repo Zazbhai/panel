@@ -1152,10 +1152,10 @@ async function deliverPendingOtpWebhooksOnce() {
   const store = await getRuntimeStore();
   const status = await store.call("otpWebhookStatus");
   const pending = await store.call("pendingOtpWebhooks", { limit: 500 });
-  const queueSignature = `${pending.length}:${status.unlinked}:${status.sent}:${status.pending}`;
-  if (pending.length || status.unlinked) {
+  const queueSignature = `${pending.length}:${status.localIdFallback}:${status.sent}:${status.pending}`;
+  if (pending.length || status.localIdFallback || status.unlinked) {
     if (queueSignature !== otpWebhookQueueLogSignature || Date.now() - otpWebhookQueueLogAt >= 30000) {
-      console.log(`[OTP webhook] queue: ${pending.length} linked ready, ${status.unlinked} waiting for provider order ID, ${status.sent} sent, ${status.pending} pending total.`);
+      console.log(`[OTP webhook] queue: ${pending.length} ready, ${status.localIdFallback} using dashboard order ID, ${status.sent} sent, ${status.pending} pending total.`);
       otpWebhookQueueLogSignature = queueSignature;
       otpWebhookQueueLogAt = Date.now();
     }

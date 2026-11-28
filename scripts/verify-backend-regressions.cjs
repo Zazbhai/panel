@@ -632,13 +632,14 @@ function completedOrder() {
     await f.context.pollOrdersForWebhook();
     assert.equal(f.runtime.getOrder(order.orderId).receivedOtp, "123456",
       "Background polling must save OTPs without a partner getStatus call");
-    assert.equal(callbacks.length, 0, "Unlinked orders must not send the local ID as a provider ID");
+    assert.equal(callbacks.length, 1, "An OTP must be delivered without waiting for a provider order ID");
+    assert.deepEqual(callbacks[0].payload, { external_order_id: order.orderId, otp: "123456" },
+      "An unmapped order must use the dashboard order ID in the webhook payload");
     const linked = await f.request(`/api/order-link?api_key=${f.apiKey}`, { method: "POST",
       body: { local_order_id: order.orderId, external_order_id: "partner-order-482" } });
     assert.equal(linked.status, 200);
     await f.context.deliverPendingOtpWebhooks();
     assert.equal(callbacks.length, 1);
-    assert.deepEqual(callbacks[0].payload, { external_order_id: "partner-order-482", otp: "123456" });
     assert.equal(callbacks[0].headers.authorization, "Bearer fixture-webhook-secret");
     assert.equal(callbacks[0].headers["x-provider-webhook-secret"], "fixture-webhook-secret");
     await f.context.pollOrdersForWebhook();
@@ -694,8 +695,9 @@ function completedOrder() {
       .run("linked-order", "sms", "222222", timestamp + 200);
     const pending = f.runtime.pendingOtpWebhooks({ now: timestamp + 500, limit: 1 });
     assert.equal(pending.length, 1);
-    assert.equal(pending[0].local_order_id, "linked-order",
-      "Unlinked outbox entries must not consume delivery batch capacity or starve linked OTPs");
+    assert.equal(pending[0].local_order_id, "unlinked-0");
+    assert.equal(pending[0].external_order_id, "unlinked-0",
+      "Unmapped OTPs must be deliverable with their dashboard order ID");
   }
   {
     const f = serverFixture();

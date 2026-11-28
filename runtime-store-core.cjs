@@ -214,10 +214,9 @@ class RuntimeStore {
   }
   pendingOtpWebhooks({ now = Date.now(), limit = 100 } = {}) {
     return this.transaction(() => {
-      const entries = this.sql("SELECT p.order_id AS local_order_id,COALESCE(o.webhook_order_id,o.external_order_id) AS external_order_id,"
+      const entries = this.sql("SELECT p.order_id AS local_order_id,COALESCE(o.webhook_order_id,o.external_order_id,o.id) AS external_order_id,"
         + "p.otp_key AS otpKey,p.otp,p.received_at AS receivedAt,p.attempts FROM otp_webhook_outbox p "
         + "JOIN orders o ON o.id=p.order_id WHERE p.sent_at IS NULL AND p.next_attempt_at<=? AND p.claimed_until<=? "
-        + "AND COALESCE(o.webhook_order_id,o.external_order_id) IS NOT NULL "
         + "ORDER BY p.received_at LIMIT ?")
         .all(now, now, Math.min(500, Math.max(1, Number(limit) || 100)));
       for (const entry of entries) this.sql("UPDATE otp_webhook_outbox SET claimed_until=? WHERE order_id=? AND otp_key=? AND sent_at IS NULL")
@@ -230,7 +229,8 @@ class RuntimeStore {
       + "COUNT(CASE WHEN p.sent_at IS NULL THEN 1 END) AS pending,"
       + "COUNT(CASE WHEN p.sent_at IS NULL AND p.claimed_until>? THEN 1 END) AS claimed,"
       + "COUNT(CASE WHEN p.sent_at IS NOT NULL THEN 1 END) AS sent,"
-      + "COUNT(CASE WHEN p.sent_at IS NULL AND COALESCE(o.webhook_order_id,o.external_order_id) IS NULL THEN 1 END) AS unlinked,"
+      + "COUNT(CASE WHEN p.sent_at IS NULL AND COALESCE(o.webhook_order_id,o.external_order_id) IS NULL THEN 1 END) AS localIdFallback,"
+      + "COUNT(CASE WHEN p.sent_at IS NULL AND COALESCE(o.webhook_order_id,o.external_order_id,o.id) IS NULL THEN 1 END) AS unlinked,"
       + "MAX(p.attempts) AS maxAttempts FROM otp_webhook_outbox p JOIN orders o ON o.id=p.order_id")
       .get(now);
     const lastAttempt = this.sql("SELECT order_id AS localOrderId,otp_key AS otpKey,attempts,next_attempt_at AS nextAttemptAt,sent_at AS sentAt "
