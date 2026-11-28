@@ -23,4 +23,5 @@ services.json.backup-*
 runtime.sqlite
 runtime.sqlite-*
 .inventory-worker.lock
+.otp-webhook-worker.lock
 rotation.pre-sqlite.json
