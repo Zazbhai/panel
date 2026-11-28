@@ -32,6 +32,13 @@ class RuntimeStore {
       + "CREATE INDEX IF NOT EXISTS numbers_ready ON numbers(online,verified_at DESC,checked_at DESC);"
       + "CREATE INDEX IF NOT EXISTS numbers_by_database ON numbers(database_url,online,verified_at,checked_at,number);"
       + "CREATE INDEX IF NOT EXISTS numbers_service_candidates ON numbers(online,checked_at,verified_at,database_url,number);");
+    if (!this.db.prepare("PRAGMA table_info(orders)").all().some((column) => column.name === "external_order_id")) {
+      this.db.exec("ALTER TABLE orders ADD COLUMN external_order_id TEXT;");
+    }
+    if (!this.db.prepare("PRAGMA table_info(orders)").all().some((column) => column.name === "webhook_order_id")) {
+      this.db.exec("ALTER TABLE orders ADD COLUMN webhook_order_id TEXT;");
+    }
+    this.db.exec("CREATE UNIQUE INDEX IF NOT EXISTS orders_external_id ON orders(external_order_id) WHERE external_order_id IS NOT NULL;");
     this.db.exec("CREATE INDEX IF NOT EXISTS numbers_ready_claim ON numbers(checked_at DESC,number) WHERE online=1;");
     const now = Date.now();
     this.db.prepare("DELETE FROM leases WHERE expires_at<=?").run(now);
@@ -77,9 +84,10 @@ class RuntimeStore {
     });
   }
   importOrder(order) {
-    const inserted = this.sql("INSERT OR IGNORE INTO orders VALUES(?,?,?,?,?,?,?,?,?,?,?)").run(
+    const inserted = this.sql("INSERT OR IGNORE INTO orders(id,service,number,database_url,device_id,created_at,expires_at,status,received_otp,received_at,number_active,external_order_id,webhook_order_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)").run(
       order.orderId, order.service, order.number, order.databaseUrl, order.deviceId,
-      order.createdAt, order.expiresAt, order.status, order.receivedOtp, order.receivedAt, Number(order.numberActive === true)
+      order.createdAt, order.expiresAt, order.status, order.receivedOtp, order.receivedAt, Number(order.numberActive === true),
+      order.externalOrderId || null, order.webhookOrderId || null
     );
     if (!inserted.changes && !this.sql("SELECT 1 FROM orders WHERE id=?").get(order.orderId)) {
       throw new Error("Runtime storage rejected a second active order for the same number.");
@@ -141,6 +149,8 @@ class RuntimeStore {
     if (!row) return null;
     const order = {
       orderId: row.id, service: row.service, number: row.number, databaseUrl: row.database_url,
+      externalOrderId: row.external_order_id || null,
+      webhookOrderId: row.webhook_order_id || null,
       deviceId: row.device_id, createdAt: row.created_at, expiresAt: row.expires_at,
       status: row.status === "active" && row.expires_at <= now ? "expired" : row.status,
       receivedOtp: row.received_otp, receivedAt: row.received_at,
@@ -155,6 +165,41 @@ class RuntimeStore {
     return order;
   }
   getOrder(id) { return this.decode(this.sql("SELECT * FROM orders WHERE id=?").get(id)); }
+  setWebhookOrderId({ orderId, externalOrderId }) {
+    const normalized = String(externalOrderId || "").trim();
+    if (!normalized || normalized.length > 128 || /[\r\n]/.test(normalized)) return { ok: false, code: "BAD_EXTERNAL_ORDER_ID" };
+    const result = this.sql("UPDATE orders SET webhook_order_id=? WHERE id=? AND (webhook_order_id IS NULL OR webhook_order_id=?)")
+      .run(normalized, orderId, normalized);
+    if (result.changes) return { ok: true, orderId, externalOrderId: normalized };
+    const existing = this.sql("SELECT webhook_order_id FROM orders WHERE id=?").get(orderId);
+    return existing ? { ok: false, code: "EXTERNAL_ORDER_ID_CONFLICT" } : { ok: false, code: "ORDER_NOT_FOUND" };
+  }
+  requeueOrderWebhook({ orderId, now = Date.now() }) {
+    return this.transaction(() => {
+      const order = this.sql("SELECT webhook_order_id,external_order_id FROM orders WHERE id=?").get(orderId);
+      if (!order) return { ok: false, code: "ORDER_NOT_FOUND" };
+      if (!order.webhook_order_id && !order.external_order_id) return { ok: false, code: "EXTERNAL_ORDER_ID_REQUIRED" };
+      const result = this.sql("UPDATE otp_webhook_outbox SET sent_at=NULL,next_attempt_at=?,claimed_until=0 WHERE order_id=?")
+        .run(now, orderId);
+      return { ok: result.changes > 0, code: result.changes ? "REQUEUED" : "NO_SAVED_OTP" };
+    });
+  }
+  setExternalOrderId({ orderId, externalOrderId }) {
+    const normalized = String(externalOrderId || "").trim();
+    if (!normalized || normalized.length > 128 || /[\r\n]/.test(normalized)) return { ok: false, code: "BAD_EXTERNAL_ORDER_ID" };
+    try {
+      const result = this.sql("UPDATE orders SET external_order_id=? WHERE id=? AND (external_order_id IS NULL OR external_order_id=?)")
+        .run(normalized, orderId, normalized);
+      if (result.changes) return { ok: true, orderId, externalOrderId: normalized };
+      const existing = this.sql("SELECT external_order_id FROM orders WHERE id=?").get(orderId);
+      return existing ? { ok: false, code: "EXTERNAL_ORDER_ID_CONFLICT" } : { ok: false, code: "ORDER_NOT_FOUND" };
+    } catch (error) {
+      if (error.code === "ERR_SQLITE_ERROR" && /UNIQUE constraint failed/.test(error.message)) {
+        return { ok: false, code: "EXTERNAL_ORDER_ID_IN_USE" };
+      }
+      throw error;
+    }
+  }
   activeOrders({ now = Date.now(), limit = 500, after = null } = {}) {
     const pageLimit = Math.min(1000, Math.max(1, Number(limit) || 500));
     const rows = after && Number.isFinite(after.createdAt) && typeof after.orderId === "string"
@@ -167,12 +212,15 @@ class RuntimeStore {
   }
   pendingOtpWebhooks({ now = Date.now(), limit = 100 } = {}) {
     return this.transaction(() => {
-      const entries = this.sql("SELECT order_id AS external_order_id,otp_key AS otpKey,otp,received_at AS receivedAt,attempts FROM otp_webhook_outbox "
-        + "WHERE sent_at IS NULL AND next_attempt_at<=? AND claimed_until<=? ORDER BY received_at LIMIT ?")
+      const entries = this.sql("SELECT p.order_id AS local_order_id,COALESCE(o.webhook_order_id,o.external_order_id) AS external_order_id,"
+        + "p.otp_key AS otpKey,p.otp,p.received_at AS receivedAt,p.attempts FROM otp_webhook_outbox p "
+        + "JOIN orders o ON o.id=p.order_id WHERE p.sent_at IS NULL AND p.next_attempt_at<=? AND p.claimed_until<=? "
+        + "ORDER BY p.received_at LIMIT ?")
         .all(now, now, Math.min(500, Math.max(1, Number(limit) || 100)));
-      for (const entry of entries) this.sql("UPDATE otp_webhook_outbox SET claimed_until=? WHERE order_id=? AND otp_key=? AND sent_at IS NULL")
-        .run(now + 30000, entry.external_order_id, entry.otpKey);
-      return entries;
+      const deliverable = entries.filter((entry) => entry.external_order_id);
+      for (const entry of deliverable) this.sql("UPDATE otp_webhook_outbox SET claimed_until=? WHERE order_id=? AND otp_key=? AND sent_at IS NULL")
+        .run(now + 30000, entry.local_order_id, entry.otpKey);
+      return deliverable;
     });
   }
   markOtpWebhookAttempt({ orderId, otpKey, sent = false, now = Date.now() }) {
@@ -231,7 +279,7 @@ class RuntimeStore {
       const cycle = this.sql("SELECT cycle,cursor_url FROM service_cycles WHERE service=?")
         .get(old.service);
       const orderId = randomBytes(12).toString("hex");
-      this.sql("INSERT INTO orders VALUES(?,?,?,?,?,?,?,'active',NULL,NULL,1)")
+      this.sql("INSERT INTO orders(id,service,number,database_url,device_id,created_at,expires_at,status,received_otp,received_at,number_active) VALUES(?,?,?,?,?,?,?,'active',NULL,NULL,1)")
         .run(orderId, old.service, old.number, old.database_url, old.device_id, now, now + duration);
       this.sql("INSERT INTO leases VALUES(?,?,?)").run(old.number, orderId, now + duration);
       this.sql("INSERT INTO service_cycles VALUES(?,?,?) ON CONFLICT(service) DO UPDATE SET cursor_url=excluded.cursor_url")
@@ -595,20 +643,19 @@ class RuntimeStore {
     const cycleState = this.sql("SELECT * FROM service_cycles WHERE service=?").get(service);
     const cycle = cycleState?.cycle || 0;
     const id = randomBytes(12).toString("hex");
+      if (Date.now() >= deadline) {
+        const error = new Error("Number allocation deadline exceeded.");
+        error.code = "ALLOCATION_TIMEOUT"; throw error;
+      }
     this.sql("DELETE FROM leases WHERE number=? AND expires_at<=?").run(candidate.number, now);
-    this.sql("INSERT INTO orders VALUES(?,?,?,?,?,?,?,'active',NULL,NULL,1)")
+    this.sql("INSERT INTO orders(id,service,number,database_url,device_id,created_at,expires_at,status,received_otp,received_at,number_active) VALUES(?,?,?,?,?,?,?,'active',NULL,NULL,1)")
       .run(id, service, candidate.number, candidate.database, candidate.deviceId, now, now + duration);
     this.sql("INSERT INTO leases VALUES(?,?,?)").run(candidate.number, id, now + duration);
     this.sql("INSERT INTO service_cycles VALUES(?,?,?) ON CONFLICT(service) DO UPDATE SET cycle=excluded.cycle,cursor_url=excluded.cursor_url")
       .run(service, cycle, candidate.database);
     this.sql("INSERT INTO service_usage VALUES(?,?,?) ON CONFLICT(service,number) DO UPDATE SET cycle=excluded.cycle")
       .run(service, candidate.number, cycle);
-    const order = this.getOrder(id);
-    if (Date.now() >= deadline) {
-      const error = new Error("Number allocation deadline exceeded.");
-      error.code = "ALLOCATION_TIMEOUT"; throw error;
-    }
-    return order;
+    return this.getOrder(id);
   }
   receive({ id, matches, now = Date.now() }) {
     return this.transaction(() => {

@@ -171,6 +171,7 @@ let numberPoolWarmupTimer = null;
 let priorityStockTimer = null;
 let otpWebhookTimer = null;
 let otpWebhookPollPromise = null;
+let otpWebhookDeliveryPromise = null;
 let priorityStockPromise = null;
 let priorityServiceRankCache = null;
 let priorityStockScanCursor = 0;
@@ -1103,6 +1104,13 @@ async function acquireOtpWebhookWorkerLock() {
 
 async function deliverPendingOtpWebhooks() {
   if (!otpWebhookUrl || !otpWebhookSecret) return;
+  if (otpWebhookDeliveryPromise) return otpWebhookDeliveryPromise;
+  otpWebhookDeliveryPromise = deliverPendingOtpWebhooksOnce();
+  try { await otpWebhookDeliveryPromise; }
+  finally { otpWebhookDeliveryPromise = null; }
+}
+
+async function deliverPendingOtpWebhooksOnce() {
   const store = await getRuntimeStore();
   const pending = await store.call("pendingOtpWebhooks", { limit: 100 });
   for (const item of pending) {
@@ -1121,7 +1129,7 @@ async function deliverPendingOtpWebhooks() {
       sent = response.ok;
       if (!sent) console.error(`OTP webhook failed for ${item.external_order_id}: HTTP ${response.status}`);
     } catch (error) { console.error(`OTP webhook failed for ${item.external_order_id}:`, error.message); }
-    await store.call("markOtpWebhookAttempt", { orderId: item.external_order_id, otpKey: item.otpKey, sent });
+    await store.call("markOtpWebhookAttempt", { orderId: item.local_order_id, otpKey: item.otpKey, sent });
   }
 }
 
@@ -3127,22 +3135,17 @@ async function handleLocalOtpRequest(requestUrl, response) {
       sendText(response, 400, "BAD_SERVICE");
       return;
     }
+    const externalIds = requestUrl.searchParams.getAll("external_order_id");
+    if (externalIds.length > 1 || (externalIds.length === 1
+      && (!externalIds[0].trim() || externalIds[0].trim().length > 128 || /[\r\n]/.test(externalIds[0])))) {
+      sendText(response, 400, "BAD_EXTERNAL_ORDER_ID");
+      return;
+    }
+    const externalOrderId = externalIds[0]?.trim() || null;
     const service = normalizeServiceName(services[0].trim()).toLowerCase();
     const allocationDeadline = Date.now() + numberRequestTimeoutMs;
     const allocationController = new AbortController();
-    let allocationTimer = setTimeout(() => allocationController.abort(), numberRequestTimeoutMs);
-    const beginReservationCommit = () => {
-      throwIfAborted(allocationController.signal);
-      clearTimeout(allocationTimer);
-      // Do not report a timeout while an atomic claim is committing. If the
-      // claim loses a race, restore the original deadline before trying again.
-      return (committed) => {
-        if (committed) return;
-        const remainingMs = allocationDeadline - Date.now();
-        if (remainingMs <= 0) allocationController.abort();
-        else allocationTimer = setTimeout(() => allocationController.abort(), remainingMs);
-      };
-    };
+    const allocationTimer = setTimeout(() => allocationController.abort(), numberRequestTimeoutMs);
     let configuredServices;
     try {
       configuredServices = await waitForAbortable(readConfiguredServices(), allocationController.signal);
@@ -3171,7 +3174,7 @@ async function handleLocalOtpRequest(requestUrl, response) {
     let reservation;
     try {
       reservation = await waitForAbortable(
-        findAvailableActiveNumber(service, allocationController.signal, beginReservationCommit, allocationDeadline, { cachedOnly: true }),
+        findAvailableActiveNumber(service, allocationController.signal, null, allocationDeadline, { cachedOnly: true }),
         allocationController.signal
       );
       throwIfAborted(allocationController.signal);
@@ -3200,9 +3203,7 @@ async function handleLocalOtpRequest(requestUrl, response) {
             : "UPSTREAM_UNAVAILABLE"
       }, headers);
       return;
-    } finally {
-      clearTimeout(allocationTimer);
-    }
+    } finally { clearTimeout(allocationTimer); }
     if (!reservation) {
       const poolFailure = numberPoolFailures.get(service);
       if (poolFailure && poolFailure.expiresAt > Date.now()) {
@@ -3216,6 +3217,18 @@ async function handleLocalOtpRequest(requestUrl, response) {
       }
       sendText(response, 200, "NO_NUMBERS");
       return;
+    }
+    if (externalOrderId) {
+      try {
+        const mapping = await (await getRuntimeStore()).call("setWebhookOrderId", {
+          orderId: reservation.orderId, externalOrderId
+        });
+        if (!mapping.ok) {
+          console.error(`Could not map provider order ID to local order ${reservation.orderId}: ${mapping.code}`);
+        }
+      } catch (error) {
+        console.error(`Could not map provider order ID to local order ${reservation.orderId}:`, error.message);
+      }
     }
     sendText(response, 200, `ACCESS_NUMBER:${reservation.orderId}:${reservation.number}`);
     return;
@@ -3783,6 +3796,7 @@ async function handleRequest(request, response) {
     || requestUrl.pathname === "/api/rebuy"
     || requestUrl.pathname === "/api/health"
     || requestUrl.pathname === "/api/balance";
+  const isOrderLinkApi = requestUrl.pathname === "/api/order-link";
   const isBulkDatabaseUrlApi = requestUrl.pathname === "/api/addDatabaseUrls";
   if (isApiRequest) {
     const authorized = isBulkDatabaseUrlApi
@@ -3803,6 +3817,50 @@ async function handleRequest(request, response) {
       sendJson(response, 403, { error: "Dashboard changes must come from this dashboard." });
       return;
     }
+  }
+
+  if (isOrderLinkApi) {
+    if (request.method !== "POST") {
+      response.writeHead(405, { Allow: "POST" });
+      response.end("Method Not Allowed");
+      return;
+    }
+    let input;
+    try { input = await readJsonBody(request, 4096); }
+    catch (error) { sendJson(response, error.statusCode || 400, { error: error.message }); return; }
+    if (!input || typeof input.local_order_id !== "string") {
+      sendJson(response, 400, { error: "Provide local_order_id." });
+      return;
+    }
+    try {
+      const store = await getRuntimeStore();
+      if (typeof input.external_order_id === "string") {
+        const result = await store.call("setWebhookOrderId", {
+          orderId: input.local_order_id.trim(), externalOrderId: input.external_order_id.trim()
+        });
+        if (!result.ok) {
+          sendJson(response, result.code === "ORDER_NOT_FOUND" ? 404 : 409, { error: result.code, code: result.code });
+          return;
+        }
+      } else if (input.retry === true) {
+        const result = await store.call("requeueOrderWebhook", { orderId: input.local_order_id.trim() });
+        if (!result.ok) {
+          sendJson(response, result.code === "ORDER_NOT_FOUND" ? 404 : 409, { error: result.code, code: result.code });
+          return;
+        }
+      } else {
+        sendJson(response, 400, { error: "Provide external_order_id or retry: true." });
+        return;
+      }
+      void deliverPendingOtpWebhooks().catch((error) => {
+        console.error("Could not deliver linked OTP webhook:", error.message);
+      });
+      sendJson(response, 200, { linked: true, local_order_id: input.local_order_id.trim() });
+    } catch (error) {
+      console.error("Could not link provider order ID:", error.message);
+      sendJson(response, 500, { error: "Could not link provider order ID." });
+    }
+    return;
   }
 
   const isLoginAsset = ["/login", "/login.html", "/login.js"].includes(requestUrl.pathname);

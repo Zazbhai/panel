@@ -34,6 +34,7 @@ const state = { initialized: true, databaseUrls: [database], orders: [], service
     core.receive({ id: first.orderId, matches: [followup, followup] });
     assert.equal(core.getOrder(first.orderId).receivedOtps.length, 2, "Completed orders accept additional distinct OTPs");
     assert.equal(core.getOrder(first.orderId).messageHistory.length, 2);
+    core.setWebhookOrderId({ orderId: first.orderId, externalOrderId: "jio-provider-100" });
     const webhookBatch = core.pendingOtpWebhooks();
     assert.equal(webhookBatch.length, 2, "Newly saved OTPs are durably queued for webhook delivery");
     assert.equal(core.pendingOtpWebhooks().length, 0, "Outbox claims prevent concurrent duplicate sends");
@@ -105,11 +106,11 @@ const state = { initialized: true, databaseUrls: [database], orders: [], service
     "The active-order invariant must hold after cancellation races too");
     const invariantStore = new RuntimeStore(":memory:");
     invariantStore.initialize(state);
-    invariantStore.sql("INSERT INTO orders VALUES(?,?,?,?,?,?,?,'active',NULL,NULL,1)")
+    invariantStore.sql("INSERT INTO orders(id,service,number,database_url,device_id,created_at,expires_at,status,received_otp,received_at,number_active) VALUES(?,?,?,?,?,?,?,'active',NULL,NULL,1)")
       .run("first-invariant-order", "first-service", "9000000008", database, "first-device",
         Date.now(), Date.now() + 60000);
     assert.throws(() => {
-      invariantStore.sql("INSERT INTO orders VALUES(?,?,?,?,?,?,?,'active',NULL,NULL,1)")
+      invariantStore.sql("INSERT INTO orders(id,service,number,database_url,device_id,created_at,expires_at,status,received_otp,received_at,number_active) VALUES(?,?,?,?,?,?,?,'active',NULL,NULL,1)")
         .run("duplicate-order", "other-service", "9000000008", database, "duplicate-device",
           Date.now(), Date.now() + 60000);
     }, /UNIQUE constraint failed: orders.number/,
@@ -176,7 +177,7 @@ const state = { initialized: true, databaseUrls: [database], orders: [], service
     assert(duplicateHistoryOrder);
     unlockStore.setStatus({ id: duplicateHistoryOrder.orderId, status: "8" });
     const previousOtpOrderId = "e".repeat(24);
-    unlockStore.sql("INSERT INTO orders VALUES(?,?,?,?,?,?,?,'completed','778899',?,0)")
+    unlockStore.sql("INSERT INTO orders(id,service,number,database_url,device_id,created_at,expires_at,status,received_otp,received_at,number_active) VALUES(?,?,?,?,?,?,?,'completed','778899',?,0)")
       .run(previousOtpOrderId, "partner-unlock", unlockCandidate.number, database, "old-device",
         duplicateHistoryOrder.createdAt - 1000, duplicateHistoryOrder.createdAt - 500, duplicateHistoryOrder.createdAt - 900);
     unlockStore.sql("INSERT INTO otps VALUES(?,?,?,?,?)")
